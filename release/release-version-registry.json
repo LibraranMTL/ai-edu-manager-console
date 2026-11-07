@@ -1,0 +1,43 @@
+{
+  "schema": "edu-manager.release-version-registry.v1",
+  "channel": "production",
+  "products": {
+    "windowsHost": {
+      "versionCode": 272,
+      "versionName": "0.23.3",
+      "releaseStatus": "stable",
+      "zipFilename": "AI-edu-manager-console-Windows-0.23.3.zip",
+      "portableFilename": "AI-edu-manager-console-Windows-0.23.3.exe",
+      "setupFilename": "AI-edu-manager-console-Windows-0.23.3-Setup.exe"
+    },
+    "windowsStudent": {
+      "versionCode": 236,
+      "versionName": "0.18.6",
+      "releaseStatus": "stable",
+      "filename": "AI-edu-manager-student-terminal-Windows-0.18.6.exe"
+    },
+    "androidStudent": {
+      "versionCode": 97,
+      "versionName": "0.6.27",
+      "filename": "AI-edu-manager-tablet-terminal-0.6.27.apk",
+      "sha256": "F0A29D9B8F952FA021872F871A91D9E92CA56319E5A302EAE00E2DE31B113EF7"
+    },
+    "androidTeacher": {
+      "versionCode": 6,
+      "versionName": "0.1.5",
+      "filename": "AI-edu-manager-teacher-terminal-0.1.5.apk",
+      "sha256": "7654B196990F089175581D1F0FE7E7348283160C7144B2FB70DB47C6003A586A"
+    },
+    "androidStandalone": {
+      "versionCode": 38,
+      "versionName": "1.3.4",
+      "filename": "AI-Education-Manager-Android-Standalone-1.3.4-release.apk",
+      "sha256": "6E6CBE2D9B2031111E41B1949B5F83154AAC6B36BBA638DDAB145CBBC3AF7DD3"
+    },
+    "androidManager": {
+      "versionCode": 23,
+      "versionName": "0.2.3",
+      "releaseStatus": "internal"
+    }
+  }
+}

@@ -11,6 +11,7 @@ output/
 release/**
 !release/
 !release/edu-manager-version.json
+!release/release-version-registry.json
 !release/agreement.html
 !release/privacy.html
 !release/windows/

@@ -3,6 +3,10 @@
 $realScriptRoot = $PSScriptRoot
 $realProjectRoot = Split-Path -Parent $realScriptRoot
 
+$node = Get-Command node -ErrorAction Stop
+& $node.Source (Join-Path $realProjectRoot 'scripts\check-release-version-registry.cjs')
+if ($LASTEXITCODE -ne 0) { throw 'Release version registry check failed before Android teacher build.' }
+
 function Assert-LastExitCode {
   param([string]$Step)
   if ($LASTEXITCODE -ne 0) {

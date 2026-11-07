@@ -55,6 +55,8 @@ test('portable migration contract rejects traversal-like IDs and identifies cont
 
 test('three current candidate clients expose the one-click upgrade contract', () => {
   const repo = path.join(__dirname, '..');
+  const versions = JSON.parse(fs.readFileSync(path.join(repo, 'release', 'release-version-registry.json'), 'utf8'));
+  const androidStudent = versions.products.androidStudent;
   const host = fs.readFileSync(path.join(repo, 'electron', 'main.cjs'), 'utf8');
   const student = fs.readFileSync(path.join(repo, 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'MainActivity.java'), 'utf8');
   const standalone = fs.readFileSync(path.join(repo, 'android-standalone-manager', 'app', 'src', 'main', 'java', 'com', 'qxmatrix', 'edumanager', 'standalone', 'StudentPortableMigrationService.kt'), 'utf8');
@@ -63,8 +65,8 @@ test('three current candidate clients expose the one-click upgrade contract', ()
   assert.match(host, /auth\.allowedStudentIds\.includes\(String\(studentId\)\)/);
   assert.match(host, /portable-migrations/);
   assert.match(student, /从 Windows 主机升级到单机版（少量资料）/);
-  assert.match(student, /VERSION_NAME = "0\.6\.26"/);
-  assert.match(student, /VERSION_CODE = 96/);
+  assert.match(student, new RegExp(`VERSION_NAME = "${androidStudent.versionName.replaceAll('.', '\\.')}"`));
+  assert.match(student, new RegExp(`VERSION_CODE = ${androidStudent.versionCode}`));
   assert.match(student, /!student\.fileStatsReady/);
   assert.match(student, /student\.rawFileCount >= 1000/);
   assert.match(student, /student\.rawTotalBytes >= 3L \* 1024L \* 1024L \* 1024L/);

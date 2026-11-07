@@ -33,3 +33,10 @@ ZIP 内 EXE 的 SHA-256 与便携 EXE 相同：`BC77A7CF260796B9EAF7A37280CA8D9F
   - `https://www.greatbg.com/download/edu-manager-version.json`：`0.23.4/273/stable`，SHA-256 `96559c2304492aa64b17f4454262ce00f057196cc2e94caf4395af1fa8ebe5ed`。
   - `https://www.greatbg.com/education/download.html`：SHA-256 `8356bc4b29218375324e963739649ef19f0198559cab125fbd50b71481500724`，包含三种 `0.23.4` 下载链接。
   - 便携 EXE、ZIP、安装器的公网 `Content-Length` 分别为 `99143136`、`99153570`、`99784207` 字节。
+
+## 下载页 Android 版本纠正（2026-11-07）
+
+- 发现原因：Windows `0.23.4` 发布时，客户端更新清单仍正确声明 Android 学生端 `0.6.27/97`、教师端 `0.1.5/6`；但被整体替换的静态下载页仍是旧源文件，重新写入了学生端 `0.6.26` 和教师端 `0.1.4` 的显示及链接。因此是下载页与清单的双来源不同步，不是 APK 或更新清单回滚。
+- 已恢复并以 HTTPS 逐页 SHA-256 验证：下载页 `66571f1fdbf0d9b6bb94a62882f388aa772d0f3cc20e83de74a806839ba08973`、Android 学生端手册及 `tablet-manual.html` `27142f69ae93984598c8bbbc5c98d616c4f6f245fcbca1e63d31af5f85dd2b53`、Android 教师端手册 `04904212a73a25a7bf52baaf469df856f15ed4ca8fdafe390e230644c29c1a05`。两个 APK 下载端点均返回 `200`。
+- 本次静态页修复回滚备份：`/www/backups/website-mobile-version-repair-20261107-1215`；服务器暂存目录已删除。
+- 防复发：新增 `verify:release-website`，对三个版本清单、下载页、两份 Android 手册和学生端兼容手册强制比对；`build:win` 与 Windows 发布构建脚本均会先执行该检查。另提供 `sync:web-manuals:android`，只生成 Android 两个产品族的手册，避免范围外页面被重写。

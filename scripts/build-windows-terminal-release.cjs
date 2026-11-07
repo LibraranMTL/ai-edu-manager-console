@@ -18,9 +18,11 @@ const artifactName = `${artifactBase}.exe`;
 const stageBase = path.resolve(process.env.LOCALAPPDATA || os.tmpdir(), 'AI-Education-Manager', 'terminal-release-stage');
 const stageRoot = path.resolve(stageBase, candidateTag ? `${version}-${candidateTag}` : version);
 const stageOutput = path.join(stageRoot, 'out');
-const releaseDir = candidateTag
+const candidateOutputDirectory = String(process.env.EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR || '').trim();
+const defaultReleaseDir = candidateTag
   ? path.join(repoRoot, 'release', 'windows-terminal', 'candidates', candidateTag)
   : path.join(repoRoot, 'release', 'windows-terminal');
+const releaseDir = candidateOutputDirectory ? path.resolve(candidateOutputDirectory) : defaultReleaseDir;
 const electronLanguages = ['zh-CN', 'en-US'];
 // Keep the student terminal bounded and dependency-free. The original 5 MiB
 // ceiling was reached by the published-course reader baseline (83 bytes left);
@@ -152,6 +154,9 @@ function build() {
     throw new Error(`Windows student candidate requires a clean source commit; found ${sourceControl.changedPathCount} changed paths.`);
   }
   assertInside(stageRoot, stageBase);
+  if (candidateOutputDirectory && !candidateTag) throw new Error('EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR requires EDU_WINDOWS_CANDIDATE_TAG.');
+  const releaseArtifactPath = path.join(releaseDir, artifactName);
+  if (releaseArtifactPath.length > 240) throw new Error(`Windows student candidate output path is too long (${releaseArtifactPath.length}); set EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR to a short absolute directory.`);
   fs.mkdirSync(stageBase, { recursive: true });
   fs.rmSync(stageRoot, { recursive: true, force: true });
   fs.mkdirSync(stageRoot, { recursive: true });

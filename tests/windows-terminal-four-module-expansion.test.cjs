@@ -105,6 +105,8 @@ test('learning-cockpit UI keeps five modules, a learning workbench and wide read
   assert.match(css, /@media print/);
   assert.match(build, /const terminalAsarBudgetBytes = 5 \* 1024 \* 1024 \+ 64 \* 1024/);
   assert.match(build, /nodeModuleFiles\.length/);
+  assert.match(build, /EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR/);
+  assert.match(build, /candidate output path is too long/);
 });
 
 test('archive owns knowledge tracking and planning; project material and mentor are in the project workspace', () => {

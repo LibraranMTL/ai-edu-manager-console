@@ -12,6 +12,7 @@ const { compactWindowsRuntime } = require('./compact-windows-runtime.cjs');
 const { compactPngResources } = require('./compact-png-resources.cjs');
 const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
 const { createSourceControlAudit } = require('./source-control-audit.cjs');
+const { assertReleaseWebsiteParity } = require('./verify-release-website-parity.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
@@ -50,6 +51,7 @@ for (const manifestPath of [
     throw new Error(`${manifestPath} 不得指向候选标识 ${candidateTag}。`);
   }
 }
+assertReleaseWebsiteParity();
 const artifactBase = `AI-edu-manager-console-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;
 const localAppData = process.env.LOCALAPPDATA || os.tmpdir();
 const stageBase = path.resolve(localAppData, 'AI-Education-Manager', 'release-stage');

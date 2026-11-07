@@ -17,6 +17,8 @@
     "test:infrastructure": "node --test tests/windows-artifact-budget.test.cjs tests/windows-low-risk-infrastructure.test.cjs tests/windows-release-staging-contract.test.cjs",
     "typecheck": "tsc --noEmit --pretty false",
     "audit:resources": "node scripts/audit-windows-resources.cjs --strict",
+    "verify:release-website": "node scripts/verify-release-website-parity.cjs",
+    "sync:web-manuals:android": "node scripts/sync-windows-host-web-manual.cjs --android-clients-only",
     "audit:structural-performance": "node scripts/audit-structural-performance-candidate.cjs",
     "baseline:windows": "node scripts/verify-windows-build-baseline.cjs",
     "verify:low-risk": "pnpm typecheck && pnpm audit:resources && pnpm test:infrastructure && pnpm benchmark:assets:smoke",
@@ -43,7 +45,7 @@
     "acceptance:p0:causal": "node scripts/check-p0-evidence-readiness.cjs --stage=causal",
     "acceptance:p0:release": "node scripts/check-p0-evidence-readiness.cjs --stage=release",
     "test:p0:evidence": "node --test tests/p0-evidence-gate.test.cjs tests/p0-task-timeline-capture.test.cjs tests/p0-flow-timeline.test.cjs tests/p0-provenance-classification.test.cjs tests/p0-process-tree.test.cjs tests/p0-runtime-fixture.test.cjs tests/p0-live-runtime-sampler.test.cjs tests/p0-causal-ablation-runner.test.cjs tests/source-control-audit.test.cjs",
-    "build:win": "pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts/build-windows-release.cjs",
+    "build:win": "pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm verify:release-website && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts/build-windows-release.cjs",
     "build:win-terminal": "pnpm test && node scripts/build-windows-terminal-release.cjs",
     "license-admin:desktop": "electron tools/license-admin-app",
     "build:license-admin": "node scripts/build-license-admin-qr-vendor.cjs && electron-builder --projectDir tools/license-admin-app --win portable --x64"

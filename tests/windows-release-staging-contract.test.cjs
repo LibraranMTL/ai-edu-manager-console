@@ -12,7 +12,8 @@ const pdfRuntimeScript = fs.readFileSync(path.join(root, 'scripts', 'build-proje
 const pdfWorker = fs.readFileSync(path.join(root, 'electron', 'project-material-pdf-worker.cjs'), 'utf8');
 
 test('Windows release builds through an isolated local staging directory', () => {
-  assert.equal(packageJson.scripts['build:win'], 'pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts/build-windows-release.cjs');
+  assert.match(packageJson.scripts['build:win'], /^pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm verify:release-website && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts\/build-windows-release\.cjs$/);
+  assert.match(releaseScript, /assertReleaseWebsiteParity\(\)/);
   assert.match(releaseScript, /process\.env\.LOCALAPPDATA/);
   assert.match(releaseScript, /release-stage/);
   assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);

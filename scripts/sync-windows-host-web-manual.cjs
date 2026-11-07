@@ -163,6 +163,11 @@ const fallbackTemplatePath = path.join(websiteRoot, 'android-student-manual.html
 // Scoped releases must not regenerate manuals belonging to other products.
 const selectedManualSpecs = process.argv.includes('--host-only')
   ? manualSpecs.slice(0, 1)
+  : process.argv.includes('--android-clients-only')
+    ? manualSpecs.filter(({ currentHref }) => [
+      './android-student-manual.html',
+      './android-teacher-manual.html',
+    ].includes(currentHref))
   : process.argv.includes('--android-standalone-only')
     ? manualSpecs.filter(({ currentHref }) => currentHref === './android-standalone-manual.html')
     : process.argv.includes('--terminal-clients-only')

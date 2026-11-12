@@ -28,11 +28,11 @@ try {
   if (-not (Test-Path -LiteralPath $app)) { throw 'Expected signed APK not found.' }
   $oldPreference = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
-  $verification = & 'Y:\sdk\build-tools\34.0.0\apksigner.bat' verify --print-certs $app 2>&1
+  $verification = & 'Y:\android-sdk\build-tools\34.0.0\apksigner.bat' verify --print-certs $app 2>&1
   $verifyExit = $LASTEXITCODE
   $ErrorActionPreference = $oldPreference
   if ($verifyExit -ne 0 -or (($verification -join "`n") -notmatch '647087c196380bed06ff285a95b29617dc5a31c4977a0c04ddba895adc67164f')) { throw 'Release signature verification failed.' }
-  $badging = & 'Y:\sdk\build-tools\34.0.0\aapt.exe' dump badging $app
+  $badging = & 'Y:\android-sdk\build-tools\34.0.0\aapt.exe' dump badging $app
   if ($LASTEXITCODE -ne 0 -or (($badging -join "`n") -notmatch "package: name='com\.qxmatrix\.edumanager\.standalone' versionCode='41' versionName='1\.3\.7'")) { throw 'Package or version verification failed.' }
   $buildConfig = Get-Content -Raw -LiteralPath 'X:\android-standalone-manager\app\build\generated\source\buildConfig\release\com\qxmatrix\edumanager\standalone\BuildConfig.java'
   if ($buildConfig -notmatch 'FAULT_HARNESS\s*=\s*false') { throw 'Fault harness is unexpectedly enabled.' }

@@ -168,6 +168,10 @@ class CloudReportSync(private val context: Context) {
         val student = StudentIndexRepository(context).requireExact(studentId)
         val license = LicenseManager(context)
         license.requireActive()
+        // A previous response may already have been committed before receipt writing failed.
+        // Never replace an existing student's explicit upload scope on a repeated enrollment.
+        val current = status(studentId)
+        if (current.configured) return current
         val base = checkedBase(CloudServiceEndpoint.OFFICIAL_BASE_URL)
         val currentBase = prefs.getString("server", "").orEmpty()
         require(currentBase.isBlank() || currentBase == base) { "本机已绑定另一云端服务地址" }

@@ -941,6 +941,7 @@ class MainActivity : ComponentActivity() {
         val pending = queue.count(::materialPending)
         val processing = queue.count(::materialProcessing)
         val digestReady = queue.count { materialPending(it) && digestEligible(it) }
+        val processingServiceMissing = runCatching { AgentConfigurationStore(this).load() == null }.getOrDefault(true)
         configureSectionHeader("添加资料并查看自动整理进度", listOf("$pending 等待", "${processing + recovering} 系统处理中", "$needsHelp 归属待确认"))
         addMaterialWorkspaceTabs()
         when (activeMaterialWorkspaceTab) {
@@ -965,6 +966,7 @@ class MainActivity : ComponentActivity() {
                 sectionContent.addView(statusCard().apply {
                     text = when {
                         needsHelp > 0 -> "有 $needsHelp 份资料归属需要确认；其他资料仍会继续处理。"
+                        processingServiceMissing && pending + recovering > 0 -> "资料已保存，但尚未配置 AI 处理服务。请在系统设置中配置并测试服务，之后系统会继续处理。"
                         processing > 0 -> "正在自动整理 $processing 份资料，可以继续使用其他功能。"
                         recovering > 0 -> "$recovering 份资料正在等待系统自动恢复，不需要人工处理。"
                         pending > 0 -> "$pending 份资料正在等待整理。"

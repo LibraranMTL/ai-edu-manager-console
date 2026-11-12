@@ -20,6 +20,22 @@ object DigestCompletionReceiptPolicy {
             actualTextHash.isNotBlank() && actualTextHash == evidence.optString("textSha256")
 }
 
+/** A later terminal parent attempt is acceptable only with evidence of the original run. */
+object MissingModelParentPolicy {
+    fun matches(parent: JSONObject, studentId: String, originalExecution: String, events: List<JSONObject>): Boolean {
+        if (studentId.isBlank() || originalExecution.isBlank() ||
+            parent.optString("kind") != "automation_digest_material" ||
+            parent.optJSONObject("input")?.optString("studentId") != studentId ||
+            parent.optString("status") in setOf("cancelled", "archived")) return false
+        if (parent.optString("executionId") == originalExecution) return true
+        if (parent.optString("status") !in setOf("failed", "blocked", "timed_out") ||
+            parent.optBoolean("autoRetry")) return false
+        return events.any { it.optString("taskId") == parent.optString("id") &&
+            it.optString("executionId") == originalExecution && it.optString("type") == "status_changed" &&
+            it.optJSONObject("detail")?.optString("to") == "running" }
+    }
+}
+
 /** A completed write sequence can be finalized only against its exact original sources. */
 class DigestBatchRecovery(private val context: Context) {
     fun receiptForTask(task: JSONObject): JSONObject? {
@@ -159,8 +175,8 @@ class DigestBatchRecovery(private val context: Context) {
         val parentId = stage.optString("automationTaskId")
         if (parentId.isNotBlank()) {
             val parent = runCatching { TaskRepository(context).requireExact(parentId) }.getOrNull() ?: return false
-            if (parent.optString("executionId") != stage.optString("automationExecutionId") ||
-                parent.optString("status") in setOf("cancelled", "archived")) return false
+            val events = runCatching { TaskRepository(context).events(parentId, 100) }.getOrNull() ?: return false
+            if (!MissingModelParentPolicy.matches(parent, studentId, stage.optString("automationExecutionId"), events)) return false
         }
         val sources = stage.optJSONArray("sources") ?: return false
         if (sources.length() == 0) return false

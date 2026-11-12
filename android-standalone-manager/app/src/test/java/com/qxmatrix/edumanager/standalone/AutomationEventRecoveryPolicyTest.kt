@@ -6,6 +6,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AutomationEventRecoveryPolicyTest {
+    @Test fun missingModelRecoveryRequiresExactHistoricalParentRun() {
+        val parent = JSONObject().put("id", "parent").put("kind", "automation_digest_material")
+            .put("input", JSONObject().put("studentId", "s1")).put("executionId", "later")
+            .put("status", "failed").put("autoRetry", false)
+        val event = JSONObject().put("taskId", "parent").put("executionId", "original")
+            .put("type", "status_changed").put("detail", JSONObject().put("to", "running"))
+        assertTrue(MissingModelParentPolicy.matches(parent, "s1", "original", listOf(event)))
+        assertFalse(MissingModelParentPolicy.matches(parent, "s2", "original", listOf(event)))
+        assertFalse(MissingModelParentPolicy.matches(parent, "s1", "other", listOf(event)))
+        assertFalse(MissingModelParentPolicy.matches(parent, "s1", "original", emptyList()))
+        assertFalse(MissingModelParentPolicy.matches(JSONObject(parent.toString()).put("status", "cancelled"), "s1", "original", listOf(event)))
+        assertFalse(MissingModelParentPolicy.matches(JSONObject(parent.toString()).put("status", "running"), "s1", "original", listOf(event)))
+        assertFalse(MissingModelParentPolicy.matches(JSONObject(parent.toString()).put("autoRetry", true), "s1", "original", listOf(event)))
+    }
     private fun material(id: String, status: String, fingerprint: String = "batch-v1", ids: List<String> = listOf("a", "b")) =
         JSONObject().put("id", id).put("status", status).put("automationDigestFingerprint", fingerprint)
             .put("automationDigestSourceIds", JSONArray(ids))

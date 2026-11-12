@@ -49,6 +49,16 @@ class AutomationOrchestrationPolicyTest {
         assertEquals(AutomationReconciliationDecision.NEEDS_ATTENTION, AutomationReconciliationPolicy.decide(task))
     }
 
+    @Test fun missingModelIsRetryableButUnknownOutcomeIsNot() {
+        val missing = AutomationFailurePolicy.decide(IllegalStateException("尚未配置 Agent 模型"), 1, 4)
+        assertEquals(AutomationFailureClass.CAPABILITY_MISSING, missing.classification)
+        assertTrue(missing.autoRetry)
+        assertFalse(missing.resultUnknown)
+        val unknown = AutomationFailurePolicy.decide(IllegalStateException("模型请求结果未知"), 1, 4)
+        assertTrue(unknown.resultUnknown)
+        assertFalse(unknown.autoRetry)
+    }
+
     @Test fun onlyExhaustedOrUnrecoverableFailuresNeedAttention() {
         assertEquals(AutomationReconciliationDecision.RESCHEDULE,
             AutomationReconciliationPolicy.decide(automationTask("queued", false, 0, 4, "")))

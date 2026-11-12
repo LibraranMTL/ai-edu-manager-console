@@ -876,7 +876,9 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     }
     const knownV2Grant = db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
       AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL LIMIT 1`).get(source.id, studentId);
-    if (!knownV2Grant) {
+    const knownAutoBinding = db.prepare(`SELECT 1 FROM source_auto_bindings WHERE source_device_id=? AND student_id=?
+      AND revoked_at IS NULL LIMIT 1`).get(source.id, studentId);
+    if (!knownV2Grant && !knownAutoBinding) {
       fail(403, '旧版上传许可不能直接扩大为新版资料授权，请重新开通');
     }
     const requestedProfileFields = Array.isArray(input?.profileFields) ? input.profileFields : [];

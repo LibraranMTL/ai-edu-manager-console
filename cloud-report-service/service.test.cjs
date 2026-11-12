@@ -41,6 +41,14 @@ test('Android product activation auto-enrolls idempotently without granting mate
       .get(first.body.deviceId, first.body.cloudStudentId).enabled, 0);
     assert.equal(app.service.db.prepare("SELECT COUNT(*) AS count FROM v2_grants WHERE scope='student_profile.write'").get().count, 0);
     assert.equal(app.service.db.prepare("SELECT COUNT(*) AS count FROM v2_grants WHERE scope='material.write'").get().count, 0);
+    const expiry = Date.parse('2026-09-25T00:00:00Z') + 7 * 24 * 60 * 60 * 1000;
+    const granted = app.service.setOwnUploadScope(second.body.deviceToken, {
+      cloudStudentId: second.body.cloudStudentId, profileFields: ['displayName'],
+      materialCategories: ['learning_report'], authorizationPurpose: 'expert_interpretation', authorizationExpiresAt: expiry,
+    });
+    assert.deepEqual(granted.materialCategories, ['learning_report']);
+    assert.equal(app.service.db.prepare("SELECT enabled FROM grants WHERE device_id=? AND student_id=? AND scope='report.write'")
+      .get(second.body.deviceId, second.body.cloudStudentId).enabled, 1);
   }, { trustedLicenseIssuers: license.trust });
 });
 

@@ -6,6 +6,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AutomationEventRecoveryPolicyTest {
+    @Test fun observationReportsGiveDistinctBoundedSections() {
+        val profile = ObservationDraftPolicy.sections("profile", "- source", 1)
+        val changes = ObservationDraftPolicy.sections("changes", "- source", 1)
+        val daily = ObservationDraftPolicy.sections("daily", "- source", 1)
+        val stage = ObservationDraftPolicy.sections("stage", "- source", 1)
+        assertTrue(profile.contains("资料概览")); assertTrue(changes.contains("不足以证明"))
+        assertTrue(daily.contains("独立练习")); assertTrue(stage.contains("阶段资料整理"))
+        assertTrue(listOf(profile, changes, daily, stage).all { it.contains("- source") && it.contains("不") })
+        assertEquals(4, setOf(profile, changes, daily, stage).size)
+    }
     @Test fun supersededFailureKeepsHistoryAndLeavesAttentionQueue() {
         val task = TaskProtocol.envelope(JSONObject().put("status", "archived")
             .put("error", JSONObject().put("attentionRequired", true).put("message", "old failure"))

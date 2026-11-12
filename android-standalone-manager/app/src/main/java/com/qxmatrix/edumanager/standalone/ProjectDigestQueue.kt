@@ -24,6 +24,8 @@ object ProjectAutoDigestPolicy {
         projectStatus !in setOf("sealed", "archived") && lastStatus !in setOf("queued", "running", "failed", "needs_user")
 }
 
+private object ProjectDigestLocks { val execution = Any() }
+
 /** Durable, bounded queue for project knowledge digestion. Original files never live in this queue. */
 class ProjectDigestQueue(context: Context) {
     private val appContext = context.applicationContext
@@ -74,6 +76,34 @@ class ProjectDigestQueue(context: Context) {
         if (changed) write(root)
     }
 
+    /** Only replay an exact locally persisted result; cacheOnly can never dispatch a model call. */
+    fun reconcileUnknowns(projectId: String = ""): JSONObject = synchronized(ProjectDigestLocks.execution) {
+        if (projectId.isNotBlank()) ProjectRepository(appContext).requireExact(projectId)
+        val unknown = synchronized(STATE_LOCK) { read().getJSONArray("jobs").objects()
+            .filter { it.optString("status") == "needs_user" && (projectId.isBlank() || it.optString("projectId") == projectId) }
+            .map { JSONObject(it.toString()) } }
+        var recovered = 0; var retained = 0
+        unknown.forEach { old ->
+            val result = runCatching {
+                LocalProjectDigestService(appContext).digestFrozen(old.getString("projectId"), old.getJSONArray("frozenMaterials"),
+                    old.optString("studentId"), cacheOnly = true)
+            }.getOrNull()
+            if (result == null) { retained++; return@forEach }
+            synchronized(STATE_LOCK) state@{
+                val root = read(); val job = root.getJSONArray("jobs").objects().singleOrNull { it.optString("jobId") == old.optString("jobId") }
+                if (job == null || job.optString("status") != "needs_user" ||
+                    job.getJSONArray("frozenMaterials").toString() != old.getJSONArray("frozenMaterials").toString()) {
+                    retained++; return@state
+                }
+                job.put("status", "completed").put("result", result).put("recoveryMethod", "verified_local_checkpoint")
+                    .put("message", "已核对本机检查点和固定来源并恢复产物；未再次调用模型")
+                    .put("updatedAt", Timestamp.now()).put("completedAt", Timestamp.now())
+                write(root); recovered++
+            }
+        }
+        JSONObject().put("recovered", recovered).put("retainedUnknown", retained)
+    }
+
     internal fun start(jobId: String): JSONObject? = synchronized(STATE_LOCK) {
         val root = read(); val job = root.getJSONArray("jobs").objects().singleOrNull { it.optString("jobId") == jobId } ?: return@synchronized null
         if (job.optString("status") == "running" && job.optString("processSession") != BusinessDatabase.processSession) {
@@ -102,13 +132,13 @@ class ProjectDigestQueue(context: Context) {
         write(root)
     }
 
-    fun acknowledgeUnknown(projectId: String, jobId: String) = synchronized(STATE_LOCK) {
+    fun acknowledgeUnknown(projectId: String, jobId: String) = synchronized(ProjectDigestLocks.execution) { synchronized(STATE_LOCK) {
         ProjectRepository(appContext).requireExact(projectId)
         val root = read(); val job = root.getJSONArray("jobs").objects().single { it.getString("jobId") == jobId && it.getString("projectId") == projectId }
         require(job.getString("status") == "needs_user")
         job.put("status", "cancelled").put("message", "用户已核对并结束未知任务；不自动重试").put("updatedAt", Timestamp.now())
         write(root)
-    }
+    } }
 
     private fun schedule(job: JSONObject) {
         val request = OneTimeWorkRequestBuilder<ProjectDigestWorker>()
@@ -152,7 +182,7 @@ class ProjectDigestQueue(context: Context) {
 }
 
 class ProjectDigestWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
-    override fun doWork(): Result = synchronized(EXECUTION_LOCK) {
+    override fun doWork(): Result = synchronized(ProjectDigestLocks.execution) {
         if (runCatching { BusinessRestoreRecovery.recover(applicationContext) }.isFailure) return@synchronized Result.failure()
         val jobId = inputData.getString("jobId") ?: return@synchronized Result.failure()
         val queue = ProjectDigestQueue(applicationContext)
@@ -170,5 +200,4 @@ class ProjectDigestWorker(context: Context, parameters: WorkerParameters) : Work
         }, onFailure = { queue.fail(jobId, it); Result.success() })
     }
 
-    companion object { private val EXECUTION_LOCK = Any() }
 }

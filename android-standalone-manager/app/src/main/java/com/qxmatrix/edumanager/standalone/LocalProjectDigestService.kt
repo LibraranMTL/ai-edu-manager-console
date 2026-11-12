@@ -6,6 +6,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+object ProjectCheckpointRecoveryPolicy {
+    fun matches(cache: JSONObject, expectedKey: String, frozen: JSONArray): Boolean {
+        if (expectedKey.isBlank() || cache.optString("key") != expectedKey || frozen.length() == 0) return false
+        val markdown = cache.optString("markdown"); val summary = cache.optJSONObject("result")?.optString("summary").orEmpty()
+        if (summary.isBlank() || !markdown.contains(summary)) return false
+        val ids = mutableSetOf<String>()
+        for (i in 0 until frozen.length()) {
+            val source = frozen.optJSONObject(i) ?: return false
+            val id = source.optString("materialId"); val version = source.optInt("version"); val hash = source.optString("sha256")
+            if (id.isBlank() || !ids.add(id) || version < 1 || !hash.matches(Regex("[0-9a-f]{64}")) ||
+                !markdown.contains("$id v$version · $hash")) return false
+        }
+        return true
+    }
+}
+
 /** Executes a bounded project digest from fixed local material versions. */
 class LocalProjectDigestService(private val context: Context) {
     private val materials = LocalProjectMaterialService(context)
@@ -29,7 +45,7 @@ class LocalProjectDigestService(private val context: Context) {
 
     fun digestPending(projectId: String, maximum: Int = 20): JSONObject = digestFrozen(projectId, freezePending(projectId, maximum))
 
-    fun digestFrozen(projectId: String, frozen: JSONArray, studentId: String = ""): JSONObject = synchronized(LOCK) {
+    fun digestFrozen(projectId: String, frozen: JSONArray, studentId: String = "", cacheOnly: Boolean = false): JSONObject = synchronized(LOCK) {
         require(frozen.length() in 1..50) { "固定资料批次为空或过大" }
         val project = projects.requireExact(projectId)
         require(project.materialStorageMode == "workspace-v1" && project.materialMigrationState != "running") { "项目资料尚未统一或正在迁移" }
@@ -50,6 +66,7 @@ class LocalProjectDigestService(private val context: Context) {
         val cacheKey = "project-digest-cache:$projectId:$key"
         val saved = db.tasks().metadata(cacheKey)?.let(::JSONObject)
         val operationId = "project-digest-${key.take(32)}"
+        require(!cacheOnly || saved != null) { "没有可核验的项目模型检查点，保留未知状态且不重复调用" }
         val cached = saved ?: run {
             val taskId = "project:$projectId:$key"
             require(!db.ledger().hasUnresolvedCall(scope, listOf(taskId))) { "上次项目模型结果未知，请核对计费和产物；不重复调用" }
@@ -64,17 +81,18 @@ class LocalProjectDigestService(private val context: Context) {
             payload
         }
         require(cached.getString("key") == key) { "项目缓存指纹不匹配" }
+        if (cacheOnly) require(ProjectCheckpointRecoveryPolicy.matches(cached, key, frozen)) { "项目检查点与固定来源不一致，保留未知状态" }
         val parsed = cached.getJSONObject("result")
         val store = SafWorkspaceStore(context, Uri.parse(project.knowledgeRootUri))
         val artifact = "${project.paths.summaryPath}/资料消化-$operationId.md"
-        store.writeBytesSafely(artifact, cached.getString("markdown").toByteArray(), "text/markdown")
+        writeVerified(store, artifact, cached.getString("markdown"))
         writeList(store, project.paths.conceptPath, "资料概念-$operationId.md", "概念", parsed.optJSONArray("concepts"))
         writeList(store, project.paths.entityPath, "资料实体-$operationId.md", "实体", parsed.optJSONArray("entities"))
         val qa = parsed.optJSONArray("qa") ?: JSONArray()
-        if (qa.length() > 0) store.writeBytesSafely("${project.paths.qaPath}/资料问答-$operationId.md", buildString {
+        if (qa.length() > 0) writeVerified(store, "${project.paths.qaPath}/资料问答-$operationId.md", buildString {
             appendLine("# 项目问答精华"); appendLine()
             for (index in 0 until qa.length()) qa.optJSONObject(index)?.let { appendLine("## ${it.optString("question")}"); appendLine(); appendLine(it.optString("answer")); appendLine() }
-        }.toByteArray(), "text/markdown")
+        })
         materials.markProcessedVersions(projectId, fixed.associate { it.getString("materialId") to it.getInt("version") }, artifact, operationId)
         JSONObject().put("ok", true).put("processed", fixed.size).put("operationId", operationId).put("artifactPath", artifact)
     }
@@ -111,7 +129,13 @@ class LocalProjectDigestService(private val context: Context) {
     private fun writeList(store: SafWorkspaceStore, root: String, name: String, title: String, values: JSONArray?) {
         if (root.isBlank() || values == null || values.length() == 0) return
         val body = buildString { appendLine("# $title"); appendLine(); for (index in 0 until values.length()) appendLine("- ${values.optString(index)}") }
-        store.writeBytesSafely("$root/$name", body.toByteArray(), "text/markdown")
+        writeVerified(store, "$root/$name", body)
+    }
+    private fun writeVerified(store: SafWorkspaceStore, path: String, text: String) {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        if (store.exists(path)) require(store.readBytes(path).contentEquals(bytes)) { "已有项目知识产物与检查点不一致，保留原文件" }
+        else store.writeBytesSafely(path, bytes, "text/markdown")
+        require(store.readBytes(path).contentEquals(bytes)) { "项目知识产物回读校验失败" }
     }
     private fun parse(text: String): JSONObject {
         val clean = text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()

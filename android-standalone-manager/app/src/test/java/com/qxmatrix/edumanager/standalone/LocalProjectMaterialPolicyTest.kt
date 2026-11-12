@@ -7,6 +7,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LocalProjectMaterialPolicyTest {
+    @Test fun automaticClassificationUsesExistingCategoryOrExplicitGenericFallback() {
+        val actual = mapOf("reference" to "资料", "progress" to "进展", "deliverable" to "成果")
+        assertEquals("progress" to "filename_unique", LocalProjectMaterialPolicy.automaticCategory("progress-log.txt", actual))
+        assertEquals("reference" to "generic_unclassified", LocalProjectMaterialPolicy.automaticCategory("unknown.txt", actual))
+        assertEquals("reference" to "generic_ambiguous", LocalProjectMaterialPolicy.automaticCategory("progress-final.txt", actual))
+        assertNull(LocalProjectMaterialPolicy.automaticCategory("index.html", actual))
+        assertNull(LocalProjectMaterialPolicy.automaticCategory("unknown.txt", mapOf("progress" to "进展")))
+    }
     @Test
     fun keepsStableCategoryIdsAndSanitizesProviderNames() {
         assertEquals(

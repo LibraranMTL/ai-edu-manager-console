@@ -59,6 +59,11 @@ class ProjectMaterialsActivity : Activity() {
         } }, weighted())
         second.addView(button("历史迁移") { migrationMenu() }, weighted())
         root.addView(second, matchWrap())
+        root.addView(button("自动核对未知任务") { background("正在核对固定来源和本机结果检查点") {
+            val queue = ProjectDigestQueue(this); val result = queue.reconcileUnknowns(project.id)
+            runCatching { queue.enqueueAutomatic(project.id) }
+            "已从本机检查点恢复 ${result.optInt("recovered")} 项；仍无法确定 ${result.optInt("retainedUnknown")} 项。没有重复调用模型。"
+        } }, matchWrap())
         root.addView(button("核对并结束结果未知的消化任务") {
             AlertDialog.Builder(this).setTitle("人工核对未知结果")
                 .setMessage("请先检查项目知识目录和模型计费。本操作仅结束未知任务，不删除原文件或生成结果，也不自动再次调用模型。")

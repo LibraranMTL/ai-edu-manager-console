@@ -216,6 +216,32 @@ class LocalProjectMaterialService(private val context: Context) {
         return changed
     }
 
+    /** Reversible logical categorization. Originals stay in place until separate organization consent. */
+    @Synchronized fun autoClassify(projectId: String): Int {
+        val project = projects.requireExact(projectId); requireWritable(project)
+        val registry = readRegistry(project); val actual = categories(project); val store = controlStore(project)
+        var changed = 0
+        registry.getJSONArray("materials").objects().forEach { item ->
+            if (changed >= LocalProjectMaterialPolicy.MAX_BATCH) return@forEach
+            val classification = item.optJSONObject("classification") ?: return@forEach
+            val location = item.optJSONObject("location") ?: return@forEach
+            if (classification.optBoolean("manualLocked") || classification.optString("categoryId").isNotBlank() ||
+                item.optString("adoption") != "accepted" || item.optString("availability") != "available" ||
+                location.optString("rootId") != "workspace") return@forEach
+            val relative = location.optString("relativePath")
+            val choice = LocalProjectMaterialPolicy.automaticCategory(item.optString("title"), actual) ?: return@forEach
+            if (relative.isBlank() || item.optString("sha256").isBlank() ||
+                runCatching { fingerprint(store, relative).first }.getOrNull() != item.optString("sha256")) return@forEach
+            classification.put("categoryId", choice.first).put("source", "automatic_rule")
+                .put("status", "auto_provisional").put("manualLocked", false).put("suggestedCategoryId", "")
+                .put("suggestionReason", choice.second).put("classifiedAt", Timestamp.now())
+            item.put("organizationState", "classified").put("recordRevision", item.optInt("recordRevision") + 1)
+                .put("updatedAt", Timestamp.now()); changed++
+        }
+        if (changed > 0) writeRegistry(project, registry)
+        return changed
+    }
+
     @Synchronized fun classify(projectId: String, materialId: String, categoryId: String) {
         val project = projects.requireExact(projectId); requireWritable(project)
         require(categoryId in categories(project)) { "工作空间中不存在该分类文件夹，请刷新分类" }

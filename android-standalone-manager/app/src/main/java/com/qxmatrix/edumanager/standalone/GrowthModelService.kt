@@ -20,6 +20,18 @@ object ObservationDraftPolicy {
         val excerpt = evidence.optString("content").substringAfter("原文摘录：", "").trim()
         return excerpt.takeIf { it.isNotBlank() && DigestEvidencePolicy.matchesExcerpt(sourceText, it) }?.take(500)
     }
+
+    fun sections(reportId: String, evidenceLines: String, sourceCount: Int): String {
+        val safeCount = sourceCount.coerceAtLeast(0)
+        val introduction = when (reportId) {
+            "profile" -> "## 当前资料概览\n\n已核对 $safeCount 条可追溯摘录；它们仅反映资料记录，不代表稳定能力或整体水平。"
+            "changes" -> "## 历史变化\n\n现有摘录尚不足以证明能力、习惯或表现的变化，需继续积累不同时间的可比记录。"
+            "daily" -> "## 可执行的下一步\n\n- 选择下方一条资料，复述记录中的具体问题或方法。\n- 完成一次独立练习并保存过程，再用原始资料核对。\n- 下次记录日期、遇到的问题和自己的解释，便于后续比较。"
+            "stage" -> "## 阶段资料整理\n\n当前汇总 $safeCount 条可核验摘录。请结合更多独立活动记录，再形成阶段性结论。"
+            else -> error("未知观察报告")
+        }
+        return "$introduction\n\n## 可核验的资料摘录\n\n$evidenceLines\n\n## 观察边界\n\n资料仅反映所记录的具体活动；证据不足以判断掌握程度、长期变化或作出诊断。\n"
+    }
 }
 
 private data class GeneratedReportSections(
@@ -242,7 +254,7 @@ class GrowthModelService(private val context: Context) {
         }.distinctBy { it.optString("id") }.take(30)
         if (excerpts.isEmpty()) return JSONObject().put("ok", true).put("status", "deferred_insufficient_evidence")
             .put("message", "尚无可核验的观察资料，保留现有报告")
-        val fingerprint = ScopedContentPolicy.fingerprint(JSONObject().put("schema", "observation-draft-v1")
+        val fingerprint = ScopedContentPolicy.fingerprint(JSONObject().put("schema", "observation-draft-v2")
             .put("studentId", studentId).put("date", Timestamp.now().take(10)).put("excerpts", JSONArray(excerpts)))
         val root = "${reportRoot(student)}/观察草稿/$fingerprint"
         val entries = JSONObject()
@@ -253,7 +265,7 @@ class GrowthModelService(private val context: Context) {
             }
             val body = reportHeader(student, definition, "draft", excerpts.map { it.getString("id") }) +
                 "> 观察草稿：以下是已核对原件的资料摘录，相关观察仍待持续验证，不代表能力结论或正式报告。\n\n" +
-                "## 可核验的资料摘录\n\n$lines\n\n## 观察边界\n\n资料仅反映所记录的具体活动；证据不足以判断掌握程度、长期变化或作出诊断。\n\n## 后续建议\n\n继续收集相关学习记录，并结合原文与后续表现核对。\n"
+                ObservationDraftPolicy.sections(definition.id, lines, excerpts.size)
             val path = "$root/${definition.fileName}"; val bytes = body.toByteArray()
             if (workspace.exists(path)) require(workspace.readBytes(path).contentEquals(bytes)) { "观察草稿已有不同内容，保留原版本" }
             else workspace.writeBytesSafely(path, bytes, "text/markdown")

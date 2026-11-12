@@ -164,7 +164,7 @@ class AutomationTriggerAdapters(private val context: Context) {
         if (materialService.persistedSnapshotFingerprint(projectId) != triggerFingerprint)
             return JSONObject().put("projectId", projectId).put("status", "superseded")
                 .put("message", "项目资料已变化，等待最新快照事件")
-        if (project.studentIds.size == 1 && materialService.autoClassify(projectId) > 0)
+        if (materialService.autoClassify(projectId) > 0)
             return JSONObject().put("projectId", projectId).put("status", "superseded")
                 .put("message", "已自动登记可核验的资料分类，等待新快照生成报告")
         val status = materialService.status(projectId)

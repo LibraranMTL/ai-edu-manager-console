@@ -166,6 +166,25 @@ class GrowthModelService(private val context: Context) {
     fun attentionCandidates(studentId: String): List<JSONObject> = candidates(studentId)
         .filter { it.optString("status") == "needs_attention" || it.optJSONObject("risk")?.optString("level") == "high" }
 
+    /** Called only after an explicit user review; revalidates the exact student, source and excerpt. */
+    fun confirmObservation(studentId: String, evidenceId: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val evidence = readReview(student).getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }
+            ?: error("未找到当前学生的观察证据")
+        val prefix = "edu://student/$studentId/raw/"; val uri = evidence.optString("sourceUri")
+        require(uri.startsWith(prefix)) { "证据来源不属于当前学生的原始资料" }
+        val id = uri.removePrefix(prefix); val files = FileAssetService(context)
+        val row = files.materials(studentId).singleOrNull { it.optString("id") == id } ?: error("原始资料不存在")
+        val hash = ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id))
+        requireNotNull(ObservationDraftPolicy.verifiedExcerpt(studentId, evidence, row, hash,
+            MaterialDigestSourceResolver(context, files).resolve(studentId, row))) { "资料来源或摘录已变化，请重新核对" }
+        val reviewed = reviewCandidate(studentId, evidenceId, "confirmed", "用户核对原始资料与观察后确认采用")
+        runCatching { AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, studentId,
+            ScopedContentPolicy.fingerprint(JSONObject().put("reviewedEvidenceId", evidenceId).put("sourceSha256", hash)
+                .put("reviewedAt", reviewed.optString("updatedAt")))) }
+        reviewed
+    }
+
     fun excludeCandidate(studentId: String, evidenceId: String, note: String = "自动成长模型异常清单中排除"): JSONObject =
         reviewCandidate(studentId, evidenceId, "rejected", note)
 

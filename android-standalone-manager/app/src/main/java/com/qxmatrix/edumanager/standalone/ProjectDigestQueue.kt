@@ -20,8 +20,13 @@ object ProjectAutoDigestPolicy {
         row.optString("availability") == "available" && row.optJSONObject("processing")?.optString("state") == "pending" &&
         row.optString("title").substringAfterLast('.', "").lowercase() in textExtensions
     fun permitted(fullMode: Boolean, licensed: Boolean, configured: Boolean, studentCount: Int,
-        projectStatus: String, lastStatus: String): Boolean = fullMode && licensed && configured && studentCount == 1 &&
+        projectStatus: String, lastStatus: String): Boolean = fullMode && licensed && configured && studentCount >= 1 &&
         projectStatus !in setOf("sealed", "archived") && lastStatus !in setOf("queued", "running", "failed", "needs_user")
+    fun scope(automatic: Boolean, students: List<String>, selected: String): String =
+        if (automatic && students.size > 1) "" else selected.takeIf { it in students } ?: students.singleOrNull().orEmpty()
+    fun sameMembership(expected: List<String>, actual: List<String>): Boolean = expected.isNotEmpty() &&
+        expected.none(String::isBlank) && expected.distinct().size == expected.size &&
+        actual.distinct().size == actual.size && expected.sorted() == actual.sorted()
 }
 
 private object ProjectDigestLocks { val execution = Any() }
@@ -34,7 +39,7 @@ class ProjectDigestQueue(context: Context) {
     fun enqueue(projectId: String, maximum: Int = 20, automatic: Boolean = false): JSONObject = synchronized(STATE_LOCK) {
         val project = ProjectRepository(appContext).requireExact(projectId)
         val selectedStudent = appContext.getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, Context.MODE_PRIVATE).getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
-        val scopeStudent = selectedStudent.takeIf { it in project.studentIds } ?: project.studentIds.singleOrNull().orEmpty()
+        val scopeStudent = ProjectAutoDigestPolicy.scope(automatic, project.studentIds, selectedStudent)
         if (scopeStudent.isNotBlank()) StudentIndexRepository(appContext).requireExact(scopeStudent)
         val root = read()
         root.getJSONArray("jobs").objects().lastOrNull {
@@ -46,6 +51,7 @@ class ProjectDigestQueue(context: Context) {
             .put("studentId", scopeStudent)
             .put("status", "queued").put("attempt", 0).put("frozenMaterials", frozen)
             .put("createdAt", Timestamp.now()).put("updatedAt", Timestamp.now()).put("message", "等待系统执行")
+        if (automatic) job.put("boundStudentIds", JSONArray(project.studentIds.sorted()))
         val jobs = root.getJSONArray("jobs"); jobs.put(job); trim(jobs); write(root); schedule(job)
         JSONObject(job.toString())
     }
@@ -61,6 +67,7 @@ class ProjectDigestQueue(context: Context) {
         if (!ProjectAutoDigestPolicy.permitted(mode == AutomationMode.FULL, LicenseManager(appContext).status().active,
                 AgentConfigurationStore(appContext).load() != null, project.studentIds.size, project.status, last) ||
             project.materialStorageMode != "workspace-v1" || project.materialMigrationState == "running") return@synchronized null
+        project.studentIds.forEach { StudentIndexRepository(appContext).requireExact(it) }
         if (LocalProjectMaterialService(appContext).list(projectId, "materials").none(ProjectAutoDigestPolicy::eligibleMaterial)) return@synchronized null
         enqueue(projectId, automatic = true)
     }
@@ -220,6 +227,12 @@ class ProjectDigestWorker(context: Context, parameters: WorkerParameters) : Work
         return@synchronized runCatching {
             require(LicenseManager(applicationContext).status().active) { "产品尚未激活" }
             requireNotNull(AgentConfigurationStore(applicationContext).load()) { "尚未配置任务 Agent" }
+            job.optJSONArray("boundStudentIds")?.let { expected ->
+                val ids = (0 until expected.length()).map { expected.getString(it) }.sorted()
+                require(ProjectAutoDigestPolicy.sameMembership(ids, ProjectRepository(applicationContext).requireExact(job.getString("projectId")).studentIds)) {
+                    "项目学生关联在执行前变化，保留固定资料并停止自动消化"
+                }
+            }
             val retryJobId = if (job.optString("retryOriginalJobId").isNotBlank()) jobId else ""
             if (job.optString("studentId").isBlank()) LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"), retryJobId = retryJobId)
             else LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"), job.getString("studentId"), retryJobId = retryJobId)

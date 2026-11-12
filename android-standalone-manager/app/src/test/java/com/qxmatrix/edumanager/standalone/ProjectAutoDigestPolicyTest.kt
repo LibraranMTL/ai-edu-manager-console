@@ -34,8 +34,14 @@ class ProjectAutoDigestPolicyTest {
             ProjectAutoDigestPolicy.permitted(mode, license, model, students, project, last)
         assertTrue(permitted())
         assertFalse(permitted(mode = false)); assertFalse(permitted(license = false)); assertFalse(permitted(model = false))
-        assertFalse(permitted(students = 0)); assertFalse(permitted(students = 2)); assertFalse(permitted(project = "sealed"))
+        assertFalse(permitted(students = 0)); assertTrue(permitted(students = 2)); assertFalse(permitted(project = "sealed"))
         for (last in listOf("queued", "running", "failed", "needs_user")) assertFalse(permitted(last = last))
+        assertEquals("", ProjectAutoDigestPolicy.scope(true, listOf("s1", "s2"), "s1"))
+        assertEquals("s1", ProjectAutoDigestPolicy.scope(true, listOf("s1"), "s2"))
+        assertEquals("s2", ProjectAutoDigestPolicy.scope(false, listOf("s1", "s2"), "s2"))
+        assertTrue(ProjectAutoDigestPolicy.sameMembership(listOf("s1", "s2"), listOf("s2", "s1")))
+        assertFalse(ProjectAutoDigestPolicy.sameMembership(listOf("s1", "s2"), listOf("s1")))
+        assertFalse(ProjectAutoDigestPolicy.sameMembership(listOf("s1", "s1"), listOf("s1", "s1")))
     }
 
     @Test fun onlyAvailableAcceptedPendingTextIsAutomaticallyFrozen() {

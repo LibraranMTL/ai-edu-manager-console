@@ -1260,6 +1260,7 @@ class MainActivity : ComponentActivity() {
         sectionNote("成长模型自动更新；资料充分时自动采用，信息不足时继续观察，只有学生或项目归属冲突需要确认。")
         addActionGrid(listOf(
             YouthAction("↗", "成长模型概览", "查看能力维度、项目贡献和来源证据") { chooseGrowthStudent() },
+            YouthAction("✓", "观察证据核对", "查看原始资料摘录，自愿确认后更新正式报告") { withCurrentStudent { showObservationReview(it) } },
             YouthAction("!", "归属待确认", "仅列出无法确定学生或学习项目归属的候选", if (attentionCount > 0) "$attentionCount 条" else "暂无冲突") { withCurrentStudent { showGrowthAttention(it) } },
         ), preferredColumns = 2, colorful = false)
     }
@@ -3593,6 +3594,27 @@ class MainActivity : ComponentActivity() {
             .setNegativeButton("取消", null)
             .setPositiveButton("确认更新并发布") { _, _ -> generateAndPublishReports(student) }
             .show()
+    }
+
+    private fun showObservationReview(student: StudentRecord) {
+        val service = GrowthModelService(this)
+        val candidates = runCatching { service.candidates(student.id).filter { it.optString("status") == "watching" } }
+            .getOrElse { showMessage("观察证据不可用", it.message ?: "原数据保持不变"); return }
+        if (candidates.isEmpty()) { showMessage("暂无观察证据", "当前没有可供核对的观察记录。"); return }
+        AlertDialog.Builder(this).setTitle("核对 ${student.name} 的观察证据")
+            .setItems(candidates.map { it.optString("title").ifBlank { "未命名观察" } }.toTypedArray()) { _, index ->
+                val item = candidates[index]
+                AlertDialog.Builder(this).setTitle(item.optString("title").ifBlank { "观察证据" })
+                    .setMessage("请核对观察与原始资料摘录是否一致；确认表示采用该条记录，不代表已证明长期能力或掌握程度。\n\n${item.optString("content")}\n\n来源：${item.optString("sourceUri")}")
+                    .setNegativeButton("继续观察", null).setPositiveButton("确认采用") { _, _ ->
+                        if (selectedStudent()?.id != student.id) { showMessage("学生已切换", "请回到当前学生重新核对。"); return@setPositiveButton }
+                        Thread {
+                            val result = runCatching { service.confirmObservation(student.id, item.getString("id")) }
+                            runOnUiThread { result.onSuccess { showMessage("已确认", "已核对来源并登记，系统将按当前自动化设置更新报告。") }
+                                .onFailure { showMessage("未确认", it.message ?: "原资料和证据保持不变") } }
+                        }.start()
+                    }.show()
+            }.setNegativeButton("关闭", null).show()
     }
 
     private fun showGrowthAttention(student: StudentRecord) {

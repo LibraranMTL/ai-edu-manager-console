@@ -53,6 +53,14 @@ class CloudSyncActivity : Activity() {
         root.addView(button("学生基础信息字段预览") { showProfilePreview() })
         root.addView(button("选择五类同步范围") { showScopeDialog() })
         root.addView(button("逐项选择学习资料原件") { showMaterialDialog() })
+        root.addView(button("关闭资料上传授权") {
+            AlertDialog.Builder(this).setTitle("关闭后续上传？")
+                .setMessage("本机立即停止后续上传，并在联网后同步关闭云端上传开关。已上传或已下载的资料不会自动删除。")
+                .setNegativeButton("取消", null).setPositiveButton("确认关闭") { _, _ -> worker.execute {
+                    val result = runCatching { CloudReportSync(this).setUpload(studentId, false) }
+                    runOnUiThread { result.onSuccess { refresh() }.onFailure { message("关闭未完成", it.message ?: "请重试") } }
+                } }.show()
+        })
         root.addView(button("云端成果收件箱") { showInbox() })
         root.addView(button("受限远程 Agent 任务") { showRemoteAgentActions() })
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

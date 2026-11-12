@@ -329,6 +329,8 @@ class CloudReportSync(private val context: Context) {
             synchronizeProfile(studentId, state.cloudStudentId)
         }
         val categories = status(studentId).materialCategories
+        var reportFailure: Throwable? = null
+        try {
         val contents = if ("learning_report" in categories) snapshotForUpload(studentId) else emptyList()
         for ((index, definition) in GrowthModelService.REPORTS.withIndex()) {
             if ("learning_report" !in categories) break
@@ -357,7 +359,13 @@ class CloudReportSync(private val context: Context) {
             )
             prefs.edit().putString("hash:$studentId:${definition.id}", hash).apply()
         }
+        } catch (error: Exception) {
+            reportFailure = error
+        }
+        // A missing or invalid report must not block explicitly selected, independently
+        // authorized materials. Report the partial failure after sending the other categories.
         synchronizeSelectedCategories(studentId, state.cloudStudentId)
+        reportFailure?.let { throw it }
         prefs.edit().putLong("lastSync:$studentId", System.currentTimeMillis())
             .putString("lastError:$studentId", "").apply()
         val receipts = CloudSyncReceiptStore(context)
@@ -417,8 +425,16 @@ class CloudReportSync(private val context: Context) {
             val hash = ScopedContentPolicy.hash(bytes); require(expected.isBlank() || expected == hash) { "${material.optString("fileName")} 原件已变化，停止上传" }
             val key = "materialHash:$studentId:learning_material:$materialId"
             if (prefs.getString(key, "") == hash) return@forEach
-            uploadMaterial(cloudStudentId, studentId, materialId, material.optString("fileName", "$materialId.bin"), hash, bytes,
-                "learning_material", "application/octet-stream", material.optString("projectId"))
+            val filename = material.optString("fileName", "$materialId.bin")
+            val contentType = when (filename.substringAfterLast('.', "").lowercase()) {
+                "txt" -> "text/plain"
+                "md" -> "text/markdown"
+                "pdf" -> "application/pdf"
+                "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                else -> error("暂不支持上传此原件格式：$filename；原件仍保留在本机")
+            }
+            uploadMaterial(cloudStudentId, studentId, materialId, filename, hash, bytes,
+                "learning_material", contentType, material.optString("projectId"))
             prefs.edit().putString(key, hash).apply()
         }
     }

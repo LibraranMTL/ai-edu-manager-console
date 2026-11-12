@@ -1306,7 +1306,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const contentType = String(metadata?.contentType || '').split(';')[0];
     const projectId = String(metadata?.projectId || '').trim();
     const scopeFingerprint = String(metadata?.scopeFingerprint || '').trim();
-    const suffix = DOCUMENT_TYPES.get(contentType);
+    const suffix = contentType === 'text/plain' && category === 'learning_material' ? '.txt' : DOCUMENT_TYPES.get(contentType);
     if (!/^[A-Za-z0-9:_-]{8,160}$/.test(materialId) || !/^[A-Za-z0-9:_-]{8,200}$/.test(idempotencyKey)) fail(400, '资料标识或幂等键无效');
     if (!displayName || displayName.length > 120 || /[\\/\x00-\x1f]/.test(displayName) || !suffix || !displayName.toLowerCase().endsWith(suffix)) {
       fail(400, '资料名称或类型无效');

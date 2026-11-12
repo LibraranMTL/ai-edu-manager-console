@@ -44,11 +44,24 @@ test('Android product activation auto-enrolls idempotently without granting mate
     const expiry = Date.parse('2026-09-25T00:00:00Z') + 7 * 24 * 60 * 60 * 1000;
     const granted = app.service.setOwnUploadScope(second.body.deviceToken, {
       cloudStudentId: second.body.cloudStudentId, profileFields: ['displayName'],
-      materialCategories: ['learning_report'], authorizationPurpose: 'expert_interpretation', authorizationExpiresAt: expiry,
+      materialCategories: ['learning_material'], authorizationPurpose: 'expert_interpretation', authorizationExpiresAt: expiry,
     });
-    assert.deepEqual(granted.materialCategories, ['learning_report']);
+    assert.deepEqual(granted.materialCategories, ['learning_material']);
     assert.equal(app.service.db.prepare("SELECT enabled FROM grants WHERE device_id=? AND student_id=? AND scope='report.write'")
       .get(second.body.deviceId, second.body.cloudStudentId).enabled, 1);
+    const contents = Buffer.from('Synthetic student material');
+    const upload = app.service.prepareV2Material(second.body.deviceToken, second.body.cloudStudentId, {
+      category: 'learning_material', materialId: 'learning_material:sample-1', idempotencyKey: 'android:sample-upload-1',
+      displayName: 'sample.txt', contentType: 'text/plain',
+    });
+    fs.writeFileSync(upload.tempPath, contents);
+    const receipt = upload.commit({ sha: crypto.createHash('sha256').update(contents).digest('hex'), size: contents.length, head: contents });
+    assert.equal(receipt.byteSize, contents.length);
+    app.service.setOwnWrite(second.body.deviceToken, second.body.cloudStudentId, false);
+    assert.throws(() => app.service.prepareV2Material(second.body.deviceToken, second.body.cloudStudentId, {
+      category: 'learning_material', materialId: 'learning_material:sample-2', idempotencyKey: 'android:sample-upload-2',
+      displayName: 'sample.txt', contentType: 'text/plain',
+    }), /许可|授权|关闭/);
   }, { trustedLicenseIssuers: license.trust });
 });
 

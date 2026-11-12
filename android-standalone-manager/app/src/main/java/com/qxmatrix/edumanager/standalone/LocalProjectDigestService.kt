@@ -22,6 +22,14 @@ object ProjectCheckpointRecoveryPolicy {
     }
 }
 
+object ProjectRetryPolicy {
+    fun matches(ticket: JSONObject, jobId: String, projectId: String, studentId: String, frozen: JSONArray): Boolean =
+        jobId.isNotBlank() && projectId.isNotBlank() && studentId.isNotBlank() && frozen.length() > 0 &&
+            ticket.optString("state") == "authorized" && ticket.optString("jobId") == jobId &&
+            ticket.optString("projectId") == projectId && ticket.optString("studentId") == studentId &&
+            ticket.optString("frozenFingerprint") == ScopedContentPolicy.fingerprint(JSONObject().put("frozen", frozen))
+}
+
 /** Executes a bounded project digest from fixed local material versions. */
 class LocalProjectDigestService(private val context: Context) {
     private val materials = LocalProjectMaterialService(context)
@@ -45,7 +53,8 @@ class LocalProjectDigestService(private val context: Context) {
 
     fun digestPending(projectId: String, maximum: Int = 20): JSONObject = digestFrozen(projectId, freezePending(projectId, maximum))
 
-    fun digestFrozen(projectId: String, frozen: JSONArray, studentId: String = "", cacheOnly: Boolean = false): JSONObject = synchronized(LOCK) {
+    fun digestFrozen(projectId: String, frozen: JSONArray, studentId: String = "", cacheOnly: Boolean = false,
+        retryJobId: String = ""): JSONObject = synchronized(LOCK) {
         require(frozen.length() in 1..50) { "固定资料批次为空或过大" }
         val project = projects.requireExact(projectId)
         require(project.materialStorageMode == "workspace-v1" && project.materialMigrationState != "running") { "项目资料尚未统一或正在迁移" }
@@ -86,7 +95,18 @@ class LocalProjectDigestService(private val context: Context) {
         require(!cacheOnly || saved != null) { "没有可核验的项目模型检查点，保留未知状态且不重复调用" }
         val cached = saved ?: run {
             val taskId = "project:$projectId:$key"
-            require(!db.ledger().hasUnresolvedCall(scope, listOf(taskId))) { "上次项目模型结果未知，请核对计费和产物；不重复调用" }
+            val unresolved = db.ledger().hasUnresolvedCall(scope, listOf(taskId))
+            if (unresolved || retryJobId.isNotBlank()) {
+                db.runInTransaction {
+                    val ticketKey = "project-digest-retry:$retryJobId"
+                    val ticket = db.tasks().metadata(ticketKey)?.let(::JSONObject)
+                    require(ticket != null && ProjectRetryPolicy.matches(ticket, retryJobId, projectId, scope, frozen)) {
+                        "上次项目模型结果未知，请核对计费和产物；不重复调用"
+                    }
+                    db.tasks().metadata(BusinessMetadataEntity(ticketKey, ticket.put("state", "consumed")
+                        .put("consumedAt", Timestamp.now()).put("taskId", taskId).toString()))
+                }
+            }
             val response = OpenAiCompatibleAgentAdapter(config, context, scope, taskId).execute(
                 "你是Android家庭单机版项目资料消化Agent。严格遵守AGENT.md；固定来源版本不可替换，只输出JSON。",
                 prompt(project, rules, inputs),

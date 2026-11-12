@@ -64,6 +64,14 @@ class ProjectMaterialsActivity : Activity() {
             runCatching { queue.enqueueAutomatic(project.id) }
             "已从本机检查点恢复 ${result.optInt("recovered")} 项；仍无法确定 ${result.optInt("retainedUnknown")} 项。没有重复调用模型。"
         } }, matchWrap())
+        root.addView(button("授权固定资料单次重试") {
+            AlertDialog.Builder(this).setTitle("授权单次重试")
+                .setMessage("上次模型请求的结果未知，可能已经产生费用。确认后仅对该任务的固定资料版本重试一次，保留原未知记录；如果再次中断或结果未知，不会自动重复调用。")
+                .setNegativeButton("取消", null).setPositiveButton("授权一次") { _, _ -> background("正在核对原任务和固定来源") {
+                    val queue = ProjectDigestQueue(this); val old = requireNotNull(queue.latest(project.id))
+                    queue.authorizeUnknownRetry(project.id, old.getString("jobId")); "已授权原固定资料单次重试，等待系统执行。"
+                } }.show()
+        }, matchWrap())
         root.addView(button("核对并结束结果未知的消化任务") {
             AlertDialog.Builder(this).setTitle("人工核对未知结果")
                 .setMessage("请先检查项目知识目录和模型计费。本操作仅结束未知任务，不删除原文件或生成结果，也不自动再次调用模型。")

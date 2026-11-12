@@ -6,6 +6,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProjectAutoDigestPolicyTest {
+    @Test fun singleRetryTicketBindsJobStudentProjectAndFrozenBytes() {
+        val frozen = JSONArray().put(JSONObject().put("materialId", "m1").put("version", 1).put("sha256", "a".repeat(64)))
+        val ticket = JSONObject().put("state", "authorized").put("jobId", "j1").put("projectId", "p1").put("studentId", "s1")
+            .put("frozenFingerprint", ScopedContentPolicy.fingerprint(JSONObject().put("frozen", frozen)))
+        assertTrue(ProjectRetryPolicy.matches(ticket, "j1", "p1", "s1", frozen))
+        assertFalse(ProjectRetryPolicy.matches(ticket, "j2", "p1", "s1", frozen))
+        assertFalse(ProjectRetryPolicy.matches(ticket, "j1", "p2", "s1", frozen))
+        assertFalse(ProjectRetryPolicy.matches(ticket, "j1", "p1", "s2", frozen))
+        assertFalse(ProjectRetryPolicy.matches(JSONObject(ticket.toString()).put("state", "consumed"), "j1", "p1", "s1", frozen))
+        assertFalse(ProjectRetryPolicy.matches(ticket, "j1", "p1", "s1", JSONArray().put(JSONObject().put("materialId", "other"))))
+    }
     @Test fun unknownResultRequiresExactCachedSourcesAndSummary() {
         val hash = "a".repeat(64)
         val frozen = JSONArray().put(JSONObject().put("materialId", "m1").put("version", 1).put("sha256", hash))

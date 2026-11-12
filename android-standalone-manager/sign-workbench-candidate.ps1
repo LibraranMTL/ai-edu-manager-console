@@ -2,7 +2,7 @@ param(
   [string]$ToolsRoot = 'C:\Users\bxw00\android-build-deps',
   [string]$GradleRoot = 'C:\Users\bxw00\android-build-deps\gradle\gradle-8.10.2',
   [string]$KeystorePath = 'D:\AndroidSigning\AI-Education-Manager\ai-education-manager-release.jks',
-  [string]$OutputDirectory = 'D:\AndroidCandidates\standalone-workbench-1.3.7-20261112-r12'
+  [string]$OutputDirectory = 'D:\AndroidCandidates\standalone-workbench-1.3.7-20261112-r13'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -38,7 +38,7 @@ try {
   if ($buildConfig -notmatch 'FAULT_HARNESS\s*=\s*false') { throw 'Fault harness is unexpectedly enabled.' }
   if ($buildConfig -notmatch 'PUBLIC_CONTENT_BASE_URL\s*=\s*"https://www\.greatbg\.com/edu-cloud-candidate"') { throw 'Candidate cloud endpoint binding is incorrect.' }
   New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
-  $out = Join-Path $OutputDirectory 'AI-Education-Manager-Android-Standalone-1.3.7-workbench-candidate-r12.apk'
+  $out = Join-Path $OutputDirectory 'AI-Education-Manager-Android-Standalone-1.3.7-workbench-candidate-r13.apk'
   Copy-Item -LiteralPath $app -Destination $out
   $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $out).Hash
   $head = (& git -C $repo rev-parse HEAD).Trim()

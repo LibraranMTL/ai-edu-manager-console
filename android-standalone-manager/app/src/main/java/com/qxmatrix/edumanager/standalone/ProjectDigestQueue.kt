@@ -140,6 +140,35 @@ class ProjectDigestQueue(context: Context) {
         write(root)
     } }
 
+    /** An explicit user decision creates exactly one job bound to the original frozen sources. */
+    fun authorizeUnknownRetry(projectId: String, jobId: String): JSONObject = synchronized(ProjectDigestLocks.execution) { synchronized(STATE_LOCK) {
+        val project = ProjectRepository(appContext).requireExact(projectId)
+        val root = read(); val jobs = root.getJSONArray("jobs"); val old = jobs.objects().single { it.optString("jobId") == jobId && it.optString("projectId") == projectId }
+        require(old.optString("status") == "needs_user") { "原任务已变化，不重复授权" }
+        require(jobs.objects().none { it.optString("projectId") == projectId && it.optString("status") in ACTIVE }) { "项目已有运行中的消化任务" }
+        require(jobs.objects().count { it.optString("projectId") == projectId && it.optString("status") == "needs_user" } == 1) { "项目有多项未知任务，请逐项核对" }
+        val studentId = old.optString("studentId")
+        require(studentId.isNotBlank() && studentId in project.studentIds) { "原任务学生范围已变化" }
+        StudentIndexRepository(appContext).requireExact(studentId)
+        val frozen = JSONArray(old.getJSONArray("frozenMaterials").toString()); require(frozen.length() in 1..50)
+        val materials = LocalProjectMaterialService(appContext)
+        for (i in 0 until frozen.length()) {
+            val item = frozen.getJSONObject(i)
+            materials.readFrozenVersionBytes(projectId, item.getString("materialId"), item.getInt("version"), item.getString("sha256"))
+        }
+        val newId = "project-digest-${UUID.randomUUID()}"; val now = Timestamp.now()
+        val ticket = JSONObject().put("state", "authorized").put("jobId", newId).put("projectId", projectId)
+            .put("studentId", studentId).put("originalJobId", jobId).put("authorizedAt", now)
+            .put("frozenFingerprint", ScopedContentPolicy.fingerprint(JSONObject().put("frozen", frozen)))
+        BusinessDatabase.get(appContext).tasks().metadata(BusinessMetadataEntity("project-digest-retry:$newId", ticket.toString()))
+        old.put("status", "cancelled").put("message", "用户授权固定资料单次重试；原结果仍为未知")
+            .put("retryJobId", newId).put("updatedAt", now)
+        val job = JSONObject().put("jobId", newId).put("projectId", projectId).put("studentId", studentId)
+            .put("status", "queued").put("attempt", 0).put("frozenMaterials", frozen).put("retryOriginalJobId", jobId)
+            .put("createdAt", now).put("updatedAt", now).put("message", "用户授权单次重试，等待系统执行")
+        jobs.put(job); trim(jobs); write(root); schedule(job); JSONObject(job.toString())
+    } }
+
     private fun schedule(job: JSONObject) {
         val request = OneTimeWorkRequestBuilder<ProjectDigestWorker>()
             .setInputData(Data.Builder().putString("jobId", job.getString("jobId")).build())
@@ -191,8 +220,9 @@ class ProjectDigestWorker(context: Context, parameters: WorkerParameters) : Work
         return@synchronized runCatching {
             require(LicenseManager(applicationContext).status().active) { "产品尚未激活" }
             requireNotNull(AgentConfigurationStore(applicationContext).load()) { "尚未配置任务 Agent" }
-            if (job.optString("studentId").isBlank()) LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"))
-            else LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"), job.getString("studentId"))
+            val retryJobId = if (job.optString("retryOriginalJobId").isNotBlank()) jobId else ""
+            if (job.optString("studentId").isBlank()) LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"), retryJobId = retryJobId)
+            else LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"), job.getString("studentId"), retryJobId = retryJobId)
         }.fold(onSuccess = {
             queue.complete(jobId, it)
             runCatching { queue.enqueueAutomatic(job.getString("projectId")) }

@@ -51,18 +51,35 @@ class LocalProjectDigestService(private val context: Context) {
         require(project.materialStorageMode == "workspace-v1" && project.materialMigrationState != "running") { "项目资料尚未统一或正在迁移" }
         val fixed = (0 until frozen.length()).map { frozen.getJSONObject(it) }
         require(fixed.map { it.getString("materialId") }.distinct().size == fixed.size) { "固定资料批次包含重复项" }
+        val db = BusinessDatabase.get(context); BusinessRestoreRecovery.recover(context, db)
         val inputs = fixed.map { item ->
             val bytes = materials.readFrozenVersionBytes(projectId, item.getString("materialId"), item.getInt("version"), item.getString("sha256"))
             require(bytes.size <= MAX_SOURCE_BYTES) { "单份资料超过本机消化上限：${item.optString("title")}" }
-            item to bytes.toString(Charsets.UTF_8).take(MAX_SOURCE_CHARS)
+            val extension = item.optString("title").substringAfterLast('.', "").lowercase()
+            val content = if (extension in OCR_EXTENSIONS) {
+                val ocrKey = "project-ocr:$projectId:${item.getString("sha256")}:$extension:mlkit-v1"
+                val cachedOcr = db.tasks().metadata(ocrKey)?.let(::JSONObject)
+                val text = if (cachedOcr == null) OcrVisionService(context).extractProjectText(bytes, extension) else {
+                    require(cachedOcr.optString("sourceSha256") == item.getString("sha256"))
+                    cachedOcr.getString("text").also { require(ScopedContentPolicy.hash(it.toByteArray()) == cachedOcr.getString("textSha256")) }
+                }
+                if (cachedOcr == null) db.tasks().metadata(BusinessMetadataEntity(ocrKey, JSONObject()
+                    .put("sourceSha256", item.getString("sha256")).put("textSha256", ScopedContentPolicy.hash(text.toByteArray()))
+                    .put("text", text).put("engine", "mlkit-v1").toString()))
+                text
+            } else bytes.toString(Charsets.UTF_8)
+            item to content.take(MAX_SOURCE_CHARS)
         }
         val rules = SafWorkspaceStore(context, Uri.parse(project.projectRootUri)).readBytes(project.paths.agentPath).toString(Charsets.UTF_8)
         val config = requireNotNull(AgentConfigurationStore(context).load()) { "尚未配置任务 Agent" }
         val scope = studentId.ifBlank { project.studentIds.singleOrNull().orEmpty() }
         if (scope.isNotBlank()) { require(scope in project.studentIds); StudentIndexRepository(context).requireExact(scope) }
-        val key = ScopedContentPolicy.fingerprint(JSONObject().put("projectId", projectId).put("frozen", frozen)
-            .put("rules", ScopedContentPolicy.hash(rules.toByteArray())).put("endpoint", config.endpoint).put("model", config.model).put("strategy", "project-digest-v2"))
-        val db = BusinessDatabase.get(context); BusinessRestoreRecovery.recover(context, db)
+        val keyInput = JSONObject().put("projectId", projectId).put("frozen", frozen)
+            .put("rules", ScopedContentPolicy.hash(rules.toByteArray())).put("endpoint", config.endpoint).put("model", config.model)
+        if (fixed.any { it.optString("title").substringAfterLast('.', "").lowercase() in OCR_EXTENSIONS }) {
+            keyInput.put("strategy", "project-digest-ocr-v1").put("inputTextHashes", JSONArray(inputs.map { ScopedContentPolicy.hash(it.second.toByteArray()) }))
+        } else keyInput.put("strategy", "project-digest-v2")
+        val key = ScopedContentPolicy.fingerprint(keyInput)
         val cacheKey = "project-digest-cache:$projectId:$key"
         val saved = db.tasks().metadata(cacheKey)?.let(::JSONObject)
         val operationId = "project-digest-${key.take(32)}"
@@ -75,7 +92,7 @@ class LocalProjectDigestService(private val context: Context) {
                 prompt(project, rules, inputs),
             )
             val parsed = parse(response)
-            val payload = JSONObject().put("result", parsed).put("markdown", markdown(project, parsed, fixed)).put("key", key)
+            val payload = JSONObject().put("result", parsed).put("markdown", markdown(project, parsed, inputs)).put("key", key)
             require(payload.toString().toByteArray().size <= 500_000) { "项目结果超过缓存上限" }
             db.runInTransaction { db.tasks().metadata(BusinessMetadataEntity(cacheKey, payload.toString())) }
             payload
@@ -110,7 +127,7 @@ class LocalProjectDigestService(private val context: Context) {
         """.trimIndent())
     }
 
-    private fun markdown(project: ProjectRecord, parsed: JSONObject, sources: List<JSONObject>) = """
+    private fun markdown(project: ProjectRecord, parsed: JSONObject, sources: List<Pair<JSONObject, String>>) = """
         # ${project.name} 项目资料消化
 
         生成时间：${Timestamp.now()}
@@ -121,7 +138,11 @@ class LocalProjectDigestService(private val context: Context) {
 
         ## 固定来源
 
-        ${sources.joinToString("\n") { "- ${it.optString("title")} · ${it.optString("materialId")} v${it.optInt("version")} · ${it.optString("sha256")}" }}
+        ${sources.joinToString("\n") { (item, text) ->
+            val ocr = item.optString("title").substringAfterLast('.', "").lowercase() in OCR_EXTENSIONS
+            "- ${item.optString("title")} · ${item.optString("materialId")} v${item.optInt("version")} · ${item.optString("sha256")}" +
+                if (ocr) " · 本机 OCR mlkit-v1 · 识别文本 SHA-256 ${ScopedContentPolicy.hash(text.toByteArray())}" else ""
+        }}
 
         本文是项目知识候选；资料分类不等于学生贡献确认。
     """.trimIndent() + "\n"
@@ -146,7 +167,8 @@ class LocalProjectDigestService(private val context: Context) {
 
     companion object {
         private val LOCK = Any()
-        private val TEXT_EXTENSIONS = setOf("txt", "md", "markdown", "csv", "json")
+        private val OCR_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "pdf")
+        private val TEXT_EXTENSIONS = setOf("txt", "md", "markdown", "csv", "json") + OCR_EXTENSIONS
         private const val MAX_SOURCE_BYTES = 4 * 1024 * 1024
         private const val MAX_SOURCE_CHARS = 100_000
     }

@@ -15,7 +15,7 @@ import java.io.FileNotFoundException
 import java.util.UUID
 
 object ProjectAutoDigestPolicy {
-    private val textExtensions = setOf("txt", "md", "markdown", "csv", "json")
+    private val textExtensions = setOf("txt", "md", "markdown", "csv", "json", "jpg", "jpeg", "png", "webp", "pdf")
     fun eligibleMaterial(row: JSONObject): Boolean = row.optString("adoption") == "accepted" &&
         row.optString("availability") == "available" && row.optJSONObject("processing")?.optString("state") == "pending" &&
         row.optString("title").substringAfterLast('.', "").lowercase() in textExtensions

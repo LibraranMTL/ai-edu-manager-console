@@ -20,6 +20,22 @@ class OcrVisionService(private val context: Context) {
     private val tasks = TaskRepository(context)
     private val tools = ControlledFileTools(context)
 
+    /** Local ML Kit only; callers bind and verify the frozen project source separately. */
+    fun extractProjectText(bytes: ByteArray, extension: String): String {
+        require(bytes.size <= 4_000_000) { "项目 OCR 原件超过 4 MB，请拆分" }
+        var hasRecognizedText = false
+        val process: (Int, Bitmap, () -> String) -> String = { _, _, recognize ->
+            recognize().also { if (it.isNotBlank()) hasRecognizedText = true }
+        }
+        val extracted = when (extension.lowercase()) {
+            "jpg", "jpeg", "png", "webp", "bmp" -> extractBitmap(decodeBounded(bytes), process)
+            "pdf" -> extractPdf(bytes, process)
+            else -> error("不支持此项目资料格式")
+        }
+        require(hasRecognizedText) { "项目 OCR 未识别到正文，原件保留" }
+        return extracted.text.trim().take(100_000)
+    }
+
     fun extract(studentId: String, materialId: String, includeVision: Boolean): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         val material = files.materials(studentId).singleOrNull { it.optString("id") == materialId } ?: error("未找到指定资料")

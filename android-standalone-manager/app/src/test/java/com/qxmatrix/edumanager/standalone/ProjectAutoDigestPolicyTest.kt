@@ -33,7 +33,9 @@ class ProjectAutoDigestPolicyTest {
         assertTrue(ProjectAutoDigestPolicy.eligibleMaterial(row))
         assertFalse(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("availability", "missing")))
         assertFalse(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("adoption", "pending")))
-        assertFalse(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("title", "image.png")))
+        assertTrue(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("title", "image.png")))
+        assertTrue(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("title", "document.pdf")))
+        assertFalse(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("title", "script.html")))
         assertFalse(ProjectAutoDigestPolicy.eligibleMaterial(JSONObject(row.toString()).put("processing", JSONObject().put("state", "completed"))))
     }
 }

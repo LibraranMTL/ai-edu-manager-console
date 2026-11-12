@@ -2,9 +2,11 @@ package com.qxmatrix.edumanager.standalone
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Bundle
 import android.webkit.WebView
 import android.widget.Toast
 
@@ -66,6 +68,16 @@ object MentorDialogs {
         }
         val dialog = AlertDialog.Builder(activity).setTitle(title).setView(web)
             .setPositiveButton("复制正文", null).setNegativeButton("关闭", null).create()
+        val lifecycle = object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityPaused(target: Activity) { if (target === activity) dialog.dismiss() }
+            override fun onActivityCreated(target: Activity, state: Bundle?) {}
+            override fun onActivityStarted(target: Activity) {}
+            override fun onActivityResumed(target: Activity) {}
+            override fun onActivityStopped(target: Activity) {}
+            override fun onActivitySaveInstanceState(target: Activity, state: Bundle) {}
+            override fun onActivityDestroyed(target: Activity) {}
+        }
+        activity.application.registerActivityLifecycleCallbacks(lifecycle)
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(android.graphics.Color.WHITE)
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(android.graphics.Color.WHITE)
@@ -77,7 +89,7 @@ object MentorDialogs {
                 }
             }
         }
-        dialog.setOnDismissListener { web.destroy() }
+        dialog.setOnDismissListener { activity.application.unregisterActivityLifecycleCallbacks(lifecycle); web.destroy() }
         dialog.show()
     }
 }

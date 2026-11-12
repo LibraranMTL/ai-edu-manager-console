@@ -254,6 +254,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!::uiState.isInitialized || !::sectionContent.isInitialized) return
+        val currentId = getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        if (currentId.isNotBlank() && currentId != uiState.studentId) {
+            uiState.studentId = currentId
+            renderSection(activeSection)
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         if (!licenseManager.status().active || !::sectionContent.isInitialized || offlineMigrationReceiverRegistered) return

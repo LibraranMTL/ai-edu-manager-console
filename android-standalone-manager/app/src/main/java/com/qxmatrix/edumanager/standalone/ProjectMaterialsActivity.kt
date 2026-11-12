@@ -28,11 +28,16 @@ class ProjectMaterialsActivity : Activity() {
     private var pendingRelinkMaterialId: String? = null
     private var actualCategories: Map<String, String> = emptyMap()
     private var searchText = ""
+    private var initialStudentId = ""
+    private var initiallyStudentScoped = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val preferences = UiPreferences(this); preferences.applyOrientation(this); palette = preferences.palette()
+        initialStudentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
         project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))
+        initiallyStudentScoped = initialStudentId in project.studentIds
         view = intent.getStringExtra(EXTRA_INITIAL_TAB)?.takeIf { it in setOf("dashboard", "materials", "knowledge", "outcomes", "pending", "contributions") } ?: "dashboard"
         service = LocalProjectMaterialService(this)
         window.statusBarColor = palette.page; window.navigationBarColor = palette.page
@@ -105,7 +110,16 @@ class ProjectMaterialsActivity : Activity() {
         }
     }
 
-    override fun onResume() { super.onResume(); if (::list.isInitialized) refresh() }
+    override fun onResume() {
+        super.onResume()
+        val currentStudentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        if (currentStudentId != initialStudentId) { finish(); return }
+        if (initiallyStudentScoped && runCatching {
+                currentStudentId in ProjectRepository(this).requireExact(project.id).studentIds
+            }.getOrDefault(false).not()) { finish(); return }
+        if (::list.isInitialized) refresh()
+    }
 
     @Deprecated("Classic picker result is retained for minSdk 23 compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

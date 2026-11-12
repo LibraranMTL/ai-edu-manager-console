@@ -1162,7 +1162,7 @@ class MainActivity : ComponentActivity() {
             YouthAction("↻", "同步云端课程与卡片", "核验并更新公共课程及学习卡模板") { refreshPublicCourses(showResult = true) },
             YouthAction("▤", "学习卡片", "查看卡片、作答反馈和公共模板") { openLearningStudio("today") },
             YouthAction("✎", "填写学习状态", "记录自己的目标、状态和学习过程") { showLearningSelfReport() },
-            YouthAction("✦", "学习导师", "就学习问题获取参考建议") { showLearningMentor() },
+            YouthAction("✦", "学习导师", "选择学习任务并预览、复制提示词") { showLearningMentor() },
             YouthAction("◎", "学习分析", "查看知识点掌握、学习时间线和维度变化") { openLearningInsights(LearningInsightsActivity.TAB_MASTERY) },
             YouthAction("◷", "学习历史", "查看作答、进展、已留存内容和历史建议") { openLearningStudio("history") },
         ), preferredColumns = 3, colorful = false)
@@ -1217,40 +1217,8 @@ class MainActivity : ComponentActivity() {
 
     private fun showLearningMentor() {
         withCurrentStudent { student ->
-            val question = EditText(this).apply { hint = "例如：如何把这道问题拆成几个步骤？"; minLines = 3; setPadding(dp(20), dp(10), dp(20), dp(10)) }
-            AlertDialog.Builder(this).setTitle("学习导师").setMessage("将你填写的问题发送给本机已配置的处理服务；不会自动附带学生档案。请避免输入不希望分享的个人信息。")
-                .setView(question).setNegativeButton("取消", null).setPositiveButton("发送问题") { _, _ ->
-                    val prompt = question.text.toString().trim()
-                    if (prompt.isBlank()) { showMessage("请填写问题", "输入一个学习问题后再试。") ; return@setPositiveButton }
-                    val progress = showProgress("学习导师", "正在生成参考建议…")
-                    Thread {
-                        val result = runCatching {
-                            val config = requireNotNull(AgentConfigurationStore(this).load()) { "尚未配置学习处理服务，请先到设置中配置。" }
-                            require(!ModelEndpointPolicy.isOpenAiService(config.endpoint)) { "当前设置使用的服务不在本次允许范围内，请更换处理服务。" }
-                            OpenAiCompatibleAgentAdapter(config, this, student.id, "learning-mentor-${java.util.UUID.randomUUID()}")
-                                .execute("你是学习导师。帮助学生拆解问题、提示下一步并鼓励独立思考；不要替学生虚构事实或推断掌握程度。", prompt)
-                        }
-                        runOnUiThread {
-                            progress.dismiss()
-                            if (isFinishing || isDestroyed || selectedStudent()?.id != student.id) return@runOnUiThread
-                            result.onSuccess(::showRenderedMentorAnswer).onFailure { showMessage("导师暂不可用", it.message ?: "请稍后重试") }
-                        }
-                    }.start()
-                }.show()
+            MentorDialogs.learning(this, student)
         }
-    }
-
-    private fun showRenderedMentorAnswer(answer: String) {
-        val web = android.webkit.WebView(this).apply {
-            settings.javaScriptEnabled = false; settings.allowFileAccess = false; settings.allowContentAccess = false
-            settings.blockNetworkLoads = true
-            webViewClient = object : android.webkit.WebViewClient() {
-                @Suppress("DEPRECATION") override fun shouldOverrideUrlLoading(view: android.webkit.WebView?, url: String?) = true
-                override fun shouldOverrideUrlLoading(view: android.webkit.WebView?, request: android.webkit.WebResourceRequest?) = true
-            }
-            loadDataWithBaseURL(null, MarkdownRenderer.html(answer), "text/html", "UTF-8", null)
-        }
-        AlertDialog.Builder(this).setTitle("学习导师 · 参考建议").setView(web).setPositiveButton("关闭") { _, _ -> web.destroy() }.show()
     }
 
     private fun addGrowthModelActions() {
@@ -1355,7 +1323,7 @@ class MainActivity : ComponentActivity() {
             YouthAction("☰", "项目报告与成果", "选择项目查看进展报告与成果") { chooseProjectTab("outcomes") },
             YouthAction("▤", "项目资料", "选择项目浏览原始资料") { chooseProjectTab("materials") },
             YouthAction("◇", "项目知识", "选择项目查看知识内容") { chooseProjectTab("knowledge") },
-            YouthAction("✦", "项目导师", "基于项目证据查看导师建议") { chooseProjectTab("outcomes", openMentor = true) },
+            YouthAction("✦", "项目导师", "选择项目阶段并预览、复制提示词") { chooseProjectTab("outcomes", openMentor = true) },
         ), preferredColumns = 2, colorful = false)
         sectionHeading("已有学习项目")
         projectList = GridLayout(this).apply { columnCount = actionGridColumns(3); alignmentMode = GridLayout.ALIGN_BOUNDS }

@@ -320,7 +320,7 @@ class ProjectMaterialsActivity : Activity() {
         actions.addView(button("查看报告原文") { openProjectKnowledge() }, weighted())
         list.addView(actions, matchWrap())
         list.addView(TextView(this).apply {
-            text = "项目报告只汇总本机固定证据；成果文件存在不代表成果质量或个人贡献已确认。项目导师建议也必须引用同一证据快照。"
+            text = "项目报告只汇总本机固定证据；成果文件存在不代表成果质量或个人贡献已确认。项目导师提供任务提示词；复制不会自动读取、发送或修改项目资料。"
             textSize = 14f; setTextColor(palette.muted); setPadding(dp(10), dp(10), dp(10), dp(12))
         }, matchWrap())
         val entries = runCatching { outcomes.listOutcomes(project.id) }.getOrElse { empty("成果库读取失败：${it.message}"); return }
@@ -335,18 +335,14 @@ class ProjectMaterialsActivity : Activity() {
     }
 
     private fun mentorDialog() {
-        val input = EditText(this).apply {
-            hint = "例如：下一步优先做什么？（可留空）"; setTextColor(palette.text); minLines = 2
+        val studentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        val student = runCatching { StudentIndexRepository(this).requireExact(studentId) }.getOrNull()
+        if (student == null) {
+            android.widget.Toast.makeText(this, "请先选择当前学生", android.widget.Toast.LENGTH_LONG).show()
+            return
         }
-        AlertDialog.Builder(this).setTitle("项目导师")
-            .setMessage("导师只读取当前项目报告和固定证据。没有配置Agent时使用本机保守建议；不会确认成果质量或个人贡献。")
-            .setView(input).setNegativeButton("取消", null).setPositiveButton("生成建议") { _, _ ->
-                val question = input.text.toString()
-                background("正在生成证据约束的项目导师建议") {
-                    val result = ProjectOutcomeService(this).mentorAdvice(project.id, question)
-                    if (result.optBoolean("reused")) "相同问题和证据已存在，未重复调用" else "项目导师建议候选已生成"
-                }
-            }.show()
+        MentorDialogs.project(this, student, project)
     }
 
     private fun organizationMenu() {

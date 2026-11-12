@@ -100,6 +100,7 @@ class FileAssetService(private val context: Context) {
         val indexed = assets.upsertBySha1(asset)
         IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, now)
         require(db.ledger().compareAndSetIntent(operationId, studentId, "prepared", "committed", System.currentTimeMillis()) == 1) { "导入登记状态已变化，原件保留" }
+        FaultInjection.hit(context, "import_committed")
         runCatching { AutomationEventEmitter.imported(context, studentId, material) }
         JSONObject().put("ok", true).put("material", material).put("asset", indexed)
     }

@@ -5,12 +5,26 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LlmWikiKnowledgeEngineTest {
     private val subjectId = "student-synthetic-a"
+
+    @Test fun equalContentFromDifferentRecordsKeepsDistinctStableSources() {
+        val engine = LlmWikiKnowledgeEngine(subjectId, InMemoryKnowledgeDocumentStore())
+        val first = source()
+        val legacy = first.getString("id")
+        engine.importAsset(first)
+        assertEquals(legacy, engine.sourceIdForRecord(legacy, first.getString("uri")))
+        val otherUri = "fixture://education/student-a/observation-002"
+        val otherId = engine.sourceIdForRecord(legacy, otherUri)
+        assertNotEquals(legacy, otherId)
+        engine.importAsset(JSONObject(first.toString()).put("id", otherId).put("uri", otherUri))
+        assertEquals(otherId, engine.sourceIdForRecord(legacy, otherUri))
+    }
 
     @Test
     fun reportsTheWindowsKnowledgeEngineV1ContractAndLayout() {
@@ -34,6 +48,42 @@ class LlmWikiKnowledgeEngineTest {
             engine.importAsset(JSONObject(source.toString()).put("content", "changed"))
         }
         assertEquals("IMMUTABLE_SOURCE_CONFLICT", error.code)
+    }
+
+    @Test fun claimProjectionRepairDoesNotReplaceConfirmedClaim() {
+        val base = InMemoryKnowledgeDocumentStore()
+        var failOnce = true
+        val interrupted = object : KnowledgeDocumentStore by base {
+            override fun writeTextSafely(relativePath: String, content: String, mimeType: String) {
+                if (relativePath.endsWith("claim-diagram-001.md") && failOnce) {
+                    failOnce = false; throw IllegalStateException("simulated interruption")
+                }
+                base.writeTextSafely(relativePath, content, mimeType)
+            }
+        }
+        val engine = LlmWikiKnowledgeEngine(subjectId, interrupted)
+        assertThrows(IllegalStateException::class.java) { engine.upsertClaim(claim()) }
+        val before = engine.getClaim("claim-diagram-001")!!.toString()
+        engine.ensureClaimProjection("claim-diagram-001")
+        assertEquals(before, engine.getClaim("claim-diagram-001")!!.toString())
+        assertTrue(base.exists(".edu-manager/knowledge-engine-v1/claims/claim-diagram-001.md"))
+    }
+
+    @Test fun sourceReplayRepairsInterruptedMarkdownWriteWithoutChangingMetadata() {
+        val base = InMemoryKnowledgeDocumentStore()
+        var failOnce = true
+        val interrupted = object : KnowledgeDocumentStore by base {
+            override fun writeTextSafely(relativePath: String, content: String, mimeType: String) {
+                if (relativePath.endsWith("source-observation-001.md") && failOnce) {
+                    failOnce = false; throw IllegalStateException("simulated interruption")
+                }
+                base.writeTextSafely(relativePath, content, mimeType)
+            }
+        }
+        val engine = LlmWikiKnowledgeEngine(subjectId, interrupted)
+        assertThrows(IllegalStateException::class.java) { engine.importAsset(source()) }
+        assertTrue(engine.importAsset(source()).getBoolean("duplicate"))
+        assertTrue(base.exists(".edu-manager/knowledge-engine-v1/sources/source-observation-001.md"))
     }
 
     @Test

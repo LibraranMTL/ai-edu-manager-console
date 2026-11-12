@@ -64,7 +64,9 @@ class GrowthModelService(private val context: Context) {
         ensure(studentId)
         val review = readReview(student)
         val evidenceId = GrowthEvidencePolicy.automaticId(studentId, sourceUri, title, content)
-        review.getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }?.let { return it }
+        review.getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }?.let {
+            appendDraftCandidate(student, it); rebuildIndex(studentId); return it
+        }
         val now = Timestamp.now()
         val candidate = JSONObject().put("schema", "edu-manager.growth-evidence.v1").put("protocolVersion", ProtocolBaseline.EDUCATION_DOMAIN_PROTOCOL_VERSION)
             .put("id", evidenceId).put("studentId", student.id).put("studentName", student.name)
@@ -123,6 +125,17 @@ class GrowthModelService(private val context: Context) {
         }
         if (changed) writeReview(student, review)
         return review.getJSONArray("candidates").toObjects()
+    }
+
+    /** Reads the last committed growth projection without creating directories, applying decisions or rebuilding data. */
+    fun readPublishedIndex(studentId: String): JSONObject? {
+        val student = students.requireExact(studentId)
+        val workspace = store(student)
+        val path = "${growthRoot(student)}/growth-index.json"
+        if (!workspace.exists(path)) return null
+        return JSONObject(workspace.readBytes(path).toString(Charsets.UTF_8)).also {
+            require(it.optString("schema") == "edu-manager.growth-model.v2" && it.optString("studentId") == student.id) { "成长模型投影学生范围不匹配" }
+        }
     }
 
     fun attentionCandidates(studentId: String): List<JSONObject> = candidates(studentId)
@@ -226,6 +239,7 @@ class GrowthModelService(private val context: Context) {
             }
             LearningInsightsStore(context).archiveReportSet(student.id, publicationId,
                 prepared.mapIndexed { index, (definition, _) -> definition to readBack[index] }, evidenceFingerprint)
+            FaultInjection.hit(context, "report_before_activation")
             store(student).writeBytesSafely(activeReportSetPath(student), (pointer.toString(2) + "\n").toByteArray(), "application/json")
             prepared.forEach { (definition, _) -> published.put(paths.getValue(definition.id)) }
             runCatching { sync.commitPublication(student.id, publicationId, readBack) }
@@ -381,7 +395,7 @@ class GrowthModelService(private val context: Context) {
         return review.optString("status") == "approved" && review.optString("reviewerRole") in setOf("student", "parent", "teacher", "administrator")
             && review.optString("reviewerId").isNotBlank() && review.optString("reviewedAt").isNotBlank()
     }
-    private fun appendDraftCandidate(student: StudentRecord, item: JSONObject) { val s = store(student); val p = "${growthRoot(student)}/成长证据草稿.md"; s.writeBytesSafely(p, (s.readBytes(p).toString(Charsets.UTF_8).trimEnd() + "\n\n- [${item.getString("id")}] ${item.getString("title")}（${item.getString("sourceUri")}）\n").toByteArray(), "text/markdown") }
+    private fun appendDraftCandidate(student: StudentRecord, item: JSONObject) { val s = store(student); val p = "${growthRoot(student)}/成长证据草稿.md"; val old = s.readBytes(p).toString(Charsets.UTF_8); val marker = "[${item.getString("id")}]"; if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n\n- $marker ${item.getString("title")}（${item.getString("sourceUri")}）\n").toByteArray(), "text/markdown") }
     private fun appendConfirmedEvidence(student: StudentRecord, item: JSONObject) { val sourceUri = item.optString("sourceUri").trim(); require(sourceUri.isNotBlank()) { "成长证据缺少来源，不能写入正式成长模型" }; val s = store(student); val p = "${growthRoot(student)}/成长证据.md"; val marker = "<!-- evidence:${item.getString("id")} -->"; val old = s.readBytes(p).toString(Charsets.UTF_8); if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n$marker\n| ${Timestamp.now().take(10)} | ${markdownCell(item.getString("title"))} | ${markdownCell(sourceUri)} | ${markdownCell(item.optString("ability", "待标注"))} | ${markdownCell(item.optString("confidence", "人工确认"))} |\n").toByteArray(), "text/markdown") }
     private fun reportTemplate(student: StudentRecord, d: LearningReportDefinition) = reportHeader(student, d, "draft") + d.sections.joinToString("\n\n") { "## $it\n\n${if (it == d.summaryHeading) "待生成。" else "- 待补充。"}" } + "\n"
     private fun reportPublished(student: StudentRecord, d: LearningReportDefinition, sections: JSONObject, evidence: List<JSONObject>): String {

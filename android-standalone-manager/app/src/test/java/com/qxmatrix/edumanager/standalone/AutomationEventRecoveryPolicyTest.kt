@@ -1,0 +1,50 @@
+package com.qxmatrix.edumanager.standalone
+
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.*
+import org.junit.Test
+
+class AutomationEventRecoveryPolicyTest {
+    private fun material(id: String, status: String, fingerprint: String = "batch-v1", ids: List<String> = listOf("a", "b")) =
+        JSONObject().put("id", id).put("status", status).put("automationDigestFingerprint", fingerprint)
+            .put("automationDigestSourceIds", JSONArray(ids))
+
+    @Test fun onlyCompleteMatchingBatchIsReplayedOnce() {
+        val a = material("a", "processed")
+        val b = material("b", "processed")
+        assertEquals(listOf(RecoverableDigestEvent("batch-v1", listOf("a", "b"))),
+            AutomationEventRecoveryPolicy.digestEvents(listOf(a, b)))
+        assertTrue(AutomationEventRecoveryPolicy.digestEvents(listOf(a)).isEmpty())
+        assertTrue(AutomationEventRecoveryPolicy.digestEvents(listOf(a, material("b", "digesting"))).isEmpty())
+        assertTrue(AutomationEventRecoveryPolicy.digestEvents(listOf(a, material("b", "processed", "batch-v2"))).isEmpty())
+        assertTrue(AutomationEventRecoveryPolicy.digestEvents(listOf(a, material("b", "processed", ids = listOf("b", "a")))).isEmpty())
+    }
+
+    @Test fun legacyAndInvalidRecordsAreNotInferredAsCompletedBatches() {
+        assertTrue(AutomationEventRecoveryPolicy.digestEvents(listOf(JSONObject().put("id", "a").put("status", "processed"))).isEmpty())
+        assertTrue(AutomationEventRecoveryPolicy.digestEvents(listOf(material("a", "processed", ids = listOf("a", "a")))).isEmpty())
+    }
+
+    @Test fun completionReceiptRequiresSameStudentTaskAndExecution() {
+        val task = JSONObject().put("id", "t1").put("executionId", "e1")
+            .put("input", JSONObject().put("studentId", "s1"))
+        val receipt = JSONObject().put("schema", "digest-completion-v1").put("state", "completed")
+            .put("studentId", "s1").put("automationTaskId", "t1").put("automationExecutionId", "e1")
+        assertTrue(DigestCompletionReceiptPolicy.matches(task, receipt))
+        assertFalse(DigestCompletionReceiptPolicy.matches(task, JSONObject(receipt.toString()).put("studentId", "s2")))
+        assertFalse(DigestCompletionReceiptPolicy.matches(task, JSONObject(receipt.toString()).put("automationExecutionId", "e2")))
+        assertFalse(DigestCompletionReceiptPolicy.matches(task, JSONObject(receipt.toString()).put("state", "ready")))
+    }
+
+    @Test fun interruptedSourceRequiresMatchingScopeExecutionAndBothHashes() {
+        val row = JSONObject().put("studentId", "s1").put("digestBatchId", "batch-1").put("status", "digesting")
+        val evidence = JSONObject().put("id", "a").put("sha256", "raw-hash").put("textSha256", "text-hash")
+        fun matches(student: String = "s1", batch: String = "batch-1", raw: String = "raw-hash", text: String = "text-hash") =
+            DigestCompletionReceiptPolicy.sourceMatches(student, batch, "a", row, evidence, raw, text)
+        assertTrue(matches())
+        assertFalse(matches(student = "s2")); assertFalse(matches(batch = "batch-2"))
+        assertFalse(matches(raw = "different")); assertFalse(matches(text = "different"))
+        row.put("status", "removed"); assertFalse(matches())
+    }
+}

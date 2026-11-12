@@ -105,12 +105,13 @@ object AutomationFailurePolicy {
     }
 }
 
-enum class AutomationReconciliationDecision { NONE, REQUEUE, PROBE_UNKNOWN, NEEDS_ATTENTION }
+enum class AutomationReconciliationDecision { NONE, RESCHEDULE, REQUEUE, PROBE_UNKNOWN, NEEDS_ATTENTION }
 
 object AutomationReconciliationPolicy {
     fun decide(task: JSONObject, now: String = Timestamp.now()): AutomationReconciliationDecision {
         if (!task.optString("kind").startsWith("automation_")) return AutomationReconciliationDecision.NONE
         if (task.optJSONObject("error")?.optBoolean("attentionRequired") == true) return AutomationReconciliationDecision.NONE
+        if (task.optString("status") == "queued") return AutomationReconciliationDecision.RESCHEDULE
         if (task.optString("status") == "waiting_result") {
             val expired = runCatching {
                 val started = Instant.parse(task.getString("startedAt")); val current = Instant.parse(now)
@@ -145,7 +146,7 @@ class AutomationOrchestrator(private val context: Context) {
                 .put("status", "queued").put("trigger", event.wireValue).put("idempotencyKey", key)
                 .put("completionPolicy", "automatic_validated").put("riskLevel", "low")
                 .put("maxAttempts", 4).put("input", input))
-            if (task.optString("status") == "queued") enqueue(context, task)
+            if (task.optString("status") == "queued") ensureScheduled(context, task)
             task
         }
     }
@@ -155,12 +156,22 @@ class AutomationOrchestrator(private val context: Context) {
             val action = AutomationAction.from(task.getJSONObject("input").getString("actionType"))
             val builder = OneTimeWorkRequestBuilder<AutomationActionWorker>()
                 .setInputData(workDataOf("taskId" to task.getString("id")))
+                .addTag("automation-task:${task.getString("id")}")
             if (action.remote) BackgroundWorkPolicy.applyRemote(builder) else builder.setConstraints(BackgroundWorkPolicy.localConstraints)
             val studentId = task.getJSONObject("input").optString("studentId")
             val workName = if (studentId.isNotBlank()) BackgroundWorkPolicy.uniqueName("automation-action", studentId)
                 else "automation-action-${task.getString("id")}"
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
                 workName, ExistingWorkPolicy.APPEND_OR_REPLACE, builder.build())
+        }
+
+        internal fun ensureScheduled(context: Context, task: JSONObject): Boolean {
+            val manager = WorkManager.getInstance(context.applicationContext)
+            val active = manager.getWorkInfosByTag("automation-task:${task.getString("id")}").get()
+                .any { !it.state.isFinished }
+            if (active) return false
+            enqueue(context, task)
+            return true
         }
     }
 }
@@ -176,7 +187,8 @@ class AutomationActionExecutor(private val context: Context) {
             AutomationAction.CLASSIFY_MATERIAL -> adapters.classify(studentId, sourceIds)
             AutomationAction.OCR_MATERIAL -> adapters.runOcrOrParser(studentId, sourceIds)
             AutomationAction.VALIDATE_FACTS -> validateMaterials(studentId, sourceIds)
-            AutomationAction.DIGEST_MATERIAL -> StudentDigestOrchestrator(context).digestSelected(studentId, sourceIds.toSet(), explicitUserAction = false)
+            AutomationAction.DIGEST_MATERIAL -> StudentDigestOrchestrator(context).digestSelected(studentId, sourceIds.toSet(),
+                explicitUserAction = false, automationTaskId = task.getString("id"), automationExecutionId = task.getString("executionId"))
             AutomationAction.GENERATE_LEARNING_OUTPUTS, AutomationAction.RECONCILE_LEARNING_CARD ->
                 JSONObject().put("message", StudioAutomation(context).check(studentId, requireEnabled = false))
             AutomationAction.GENERATE_REPORTS -> GrowthModelService(context).generateAndPublishReportsIfChanged(studentId)
@@ -210,16 +222,22 @@ class AutomationActionWorker(context: Context, parameters: WorkerParameters) : W
             if (studentId.isBlank()) AutomationActionExecutor(applicationContext).execute(running)
             else synchronized(StudentWorkLocks.forStudent(studentId)) { AutomationActionExecutor(applicationContext).execute(running) }
         }.fold(
-            onSuccess = { tasks.completeInternal(taskId, it); Result.success() },
+            onSuccess = {
+                tasks.recordInternalReceipt(taskId, running.getString("executionId"), it)
+                tasks.completeInternal(taskId, running.getString("executionId"), it)
+                Result.success()
+            },
             onFailure = { error ->
                 val decision = AutomationFailurePolicy.decide(error, running.optInt("attempt"), running.optInt("maxAttempts"))
                 val payload = JSONObject().put("code", decision.code).put("classification", decision.classification.wireValue)
                     .put("message", (error.message ?: "自动任务未完成").take(600)).put("attentionRequired", decision.attentionRequired)
-                tasks.failInternal(taskId, payload, decision.nextRetryAt, decision.autoRetry, decision.resultUnknown)
+                tasks.failInternal(taskId, payload, decision.nextRetryAt, decision.autoRetry, decision.resultUnknown,
+                    executionId = running.getString("executionId"))
                 if (decision.autoRetry) {
                     val delay = runCatching { Instant.parse(decision.nextRetryAt).toEpochMilli() - System.currentTimeMillis() }.getOrDefault(0L)
-                    AutomationReconciliationWorker.enqueueAfter(applicationContext, delay.coerceAtLeast(1_000L))
+                    AutomationReconciliationWorker.enqueueAfter(applicationContext, taskId, delay.coerceAtLeast(1_000L))
                 }
+                if (decision.resultUnknown) AutomationReconciliationWorker.enqueueAfter(applicationContext, taskId, 5_000L)
                 Result.success()
             },
         )
@@ -229,51 +247,65 @@ class AutomationActionWorker(context: Context, parameters: WorkerParameters) : W
 class AutomationReconciliationService(private val context: Context) {
     private val tasks = TaskRepository(context)
     fun reconcile(): JSONObject {
-        var requeued = 0; var recovered = 0; var attention = 0; var waiting = 0
-        tasks.list().filter { it.optString("kind").startsWith("automation_") }.take(500).forEach { task ->
+        var requeued = 0; var rescheduled = 0; var recovered = 0; var attention = 0; var waiting = 0; var errors = 0
+        val events = AutomationEventRecovery(context).recover()
+        errors += events.optInt("errors")
+        var cursor = ""
+        do {
+            val page = tasks.pageAfter(cursor, 500)
+            page.filter { it.optString("kind").startsWith("automation_") }.forEach { task ->
             when (AutomationReconciliationPolicy.decide(task)) {
+                AutomationReconciliationDecision.RESCHEDULE -> runCatching {
+                    if (AutomationOrchestrator.ensureScheduled(context, task)) rescheduled++
+                }.onFailure { errors++ }
                 AutomationReconciliationDecision.REQUEUE -> runCatching {
                     val queued = tasks.requeueInternal(task.getString("id")); AutomationOrchestrator.enqueue(context, queued); requeued++
-                }
+                }.onFailure { errors++ }
                 AutomationReconciliationDecision.PROBE_UNKNOWN -> {
                     val proof = probe(task)
-                    if (proof != null) { runCatching { tasks.recoverInternal(task.getString("id"), proof) }.onSuccess { recovered++ } }
+                    if (proof != null) { runCatching { tasks.recoverInternal(task.getString("id"), proof) }.onSuccess { recovered++ }.onFailure { errors++ } }
                     else waiting++
                 }
-                AutomationReconciliationDecision.NEEDS_ATTENTION -> runCatching {
-                    tasks.markInternalAttention(task.getString("id"), "达到自动重试上限，原资料和旧版本均已保留"); attention++
+                AutomationReconciliationDecision.NEEDS_ATTENTION -> {
+                    val proof = if (task.optString("status") == "waiting_result") probe(task) else null
+                    if (proof != null) runCatching { tasks.recoverInternal(task.getString("id"), proof) }.onSuccess { recovered++ }.onFailure { errors++ }
+                    else runCatching {
+                        tasks.markInternalAttention(task.getString("id"), "结果无法确认或达到自动重试上限，原资料和旧版本均已保留"); attention++
+                    }.onFailure { errors++ }
                 }
                 else -> Unit
             }
-        }
-        return JSONObject().put("requeued", requeued).put("recovered", recovered).put("waitingReceipt", waiting)
+            }
+            if (page.isNotEmpty()) cursor = page.last().getString("id")
+        } while (page.size == 500)
+        return JSONObject().put("requeued", requeued).put("rescheduled", rescheduled).put("errors", errors).put("recovered", recovered).put("waitingReceipt", waiting).put("eventRecovery", events)
             .put("needsAttention", attention).put("checkedAt", Timestamp.now())
     }
 
     private fun probe(task: JSONObject): JSONObject? {
-        val input = task.getJSONObject("input"); val studentId = input.optString("studentId")
-        val action = AutomationAction.from(input.getString("actionType"))
-        val sourceIds = input.optJSONArray("sourceIds")?.let { array -> (0 until array.length()).map(array::getString) }.orEmpty()
-        val proven = when (action) {
-            AutomationAction.DIGEST_MATERIAL, AutomationAction.VALIDATE_FACTS -> sourceIds.isNotEmpty() &&
-                FileAssetService(context).materials(studentId).filter { it.optString("id") in sourceIds }
-                    .let { it.size == sourceIds.size && it.all { row -> MaterialStatus.normalize(row.optString("status")) == MaterialStatus.PROCESSED } }
-            AutomationAction.GENERATE_LEARNING_OUTPUTS, AutomationAction.RECONCILE_LEARNING_CARD -> listOf("cards", "topics").any { module ->
-                BusinessDatabase.get(context).tasks().metadata("reference-update:$studentId:$module")?.let(::JSONObject)?.let { marker ->
-                    marker.optString("state") == "succeeded" && marker.optString("completedAt") >= task.optString("startedAt")
-                } == true
-            }
-            AutomationAction.GENERATE_REPORTS -> LearningInsightsStore(context).reportRevisions(studentId)
-                .any { it.optString("time") >= task.optString("startedAt") && it.optJSONArray("reports")?.length() == GrowthModelService.REPORTS.size }
-            else -> false
-        }
-        return if (proven) JSONObject().put("reconciled", true).put("checkedAt", Timestamp.now()).put("action", action.wireValue) else null
+        return AutomationReceiptPolicy.verifiedResult(task) ?: DigestBatchRecovery(context).receiptForTask(task)
+    }
+}
+
+object AutomationReceiptPolicy {
+    fun verifiedResult(task: JSONObject): JSONObject? {
+        val receipt = task.optJSONObject("result") ?: return null
+        if (receipt.optString("schema") != "automation-receipt-v1" ||
+            receipt.optString("taskId") != task.optString("id") ||
+            receipt.optString("executionId").isBlank() || receipt.optString("executionId") != task.optString("executionId") ||
+            receipt.optString("idempotencyKey") != task.optString("idempotencyKey") ||
+            receipt.optJSONObject("input")?.toString() != task.optJSONObject("input")?.toString()) return null
+        val result = receipt.optJSONObject("result") ?: return null
+        return JSONObject(result.toString()).put("recoveryTaskId", task.optString("id"))
+            .put("recoveryExecutionId", task.optString("executionId"))
     }
 }
 
 class AutomationReconciliationWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
     override fun doWork(): Result = runCatching { AutomationReconciliationService(applicationContext).reconcile() }
-        .fold(onSuccess = { Result.success() }, onFailure = { if (runAttemptCount < 3) Result.retry() else Result.failure() })
+        .fold(onSuccess = { summary ->
+            if (summary.optInt("errors") > 0 && runAttemptCount < 3) Result.retry() else Result.success()
+        }, onFailure = { if (runAttemptCount < 3) Result.retry() else Result.failure() })
 
     companion object {
         private const val IMMEDIATE = "android-automation-reconciliation-immediate-v1"
@@ -286,12 +318,16 @@ class AutomationReconciliationWorker(context: Context, parameters: WorkerParamet
                 PeriodicWorkRequestBuilder<AutomationReconciliationWorker>(24, TimeUnit.HOURS)
                     .setConstraints(BackgroundWorkPolicy.localConstraints).build())
         }
-        fun enqueueAfter(context: Context, delayMillis: Long) {
+        internal fun retryWorkName(taskId: String): String {
+            require(taskId.isNotBlank())
+            return "android-automation-reconciliation-retry-${ScopedContentPolicy.hash(taskId.toByteArray()).take(32)}"
+        }
+        fun enqueueAfter(context: Context, taskId: String, delayMillis: Long) {
             val request = OneTimeWorkRequestBuilder<AutomationReconciliationWorker>()
                 .setInitialDelay(delayMillis.coerceIn(1_000L, 2 * 60 * 60 * 1_000L), TimeUnit.MILLISECONDS)
                 .setConstraints(BackgroundWorkPolicy.localConstraints).build()
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                "android-automation-reconciliation-retry-v1", ExistingWorkPolicy.REPLACE, request)
+                retryWorkName(taskId), ExistingWorkPolicy.REPLACE, request)
         }
     }
 }

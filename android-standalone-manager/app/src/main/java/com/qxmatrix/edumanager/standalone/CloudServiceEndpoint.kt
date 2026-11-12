@@ -4,7 +4,12 @@ import java.net.URL
 
 /** Public endpoint contract for the Alibaba Cloud deployment. Internal loopback ports never reach clients. */
 object CloudServiceEndpoint {
-    const val OFFICIAL_BASE_URL = "https://www.greatbg.com/edu-cloud"
+    /**
+     * The release build points at the production endpoint by default. Signed candidate builds
+     * override the same validated BuildConfig value so private uploads and public content cannot
+     * accidentally be split across production and candidate environments.
+     */
+    val OFFICIAL_BASE_URL: String = BuildConfig.PUBLIC_CONTENT_BASE_URL
     const val HEALTH_SERVICE_ID = "edu-cloud-documents"
 
     fun normalize(value: String): String {

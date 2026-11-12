@@ -52,6 +52,15 @@ object ProjectOutcomePolicy {
         rejectUnsupportedClaims(report.toString())
     }
 
+    fun validateStoredReport(projectId: String, entry: JSONObject, payload: JSONObject, markdownBytes: ByteArray, legacyExpectedHash: String) {
+        require(payload.optString("schema") == "edu-manager.project-progress-report.v1" &&
+            payload.optString("projectId") == projectId && payload.optString("reportId") == entry.optString("id") &&
+            payload.optString("evidenceFingerprint") == entry.optString("fingerprint")) { "项目报告索引与元数据不一致，停止复用" }
+        validateReport(payload.getJSONObject("report"), evidenceIds(payload.getJSONArray("evidence")))
+        val expectedHash = payload.optString("markdownSha256").ifBlank { legacyExpectedHash }
+        require(expectedHash.isNotBlank() && ScopedContentPolicy.hash(markdownBytes) == expectedHash) { "项目报告与已记录内容不一致，停止复用" }
+    }
+
     fun validateMentor(result: JSONObject, evidenceIds: Set<String>) {
         ModelJsonSchema.validate(result, mentorSchema())
         validateEvidence(result.getJSONArray("suggestions"), evidenceIds)
@@ -132,8 +141,9 @@ class ProjectOutcomeService(private val context: Context) {
         val evidenceFingerprint = ScopedContentPolicy.fingerprint(snapshot)
         val id = "project-report-${evidenceFingerprint.take(28)}"
         findIndexEntry(project, id)?.let {
-            requireEntryFiles(project, it)
-            return@synchronized JSONObject().put("reused", true).put("entry", it)
+            requireEntryFiles(project, it, snapshot)
+            val published = publishExistingProgressReport(project, it)
+            return@synchronized JSONObject().put("reused", true).put("entry", published)
         }
         val metrics = snapshot.getJSONObject("metrics")
         val evidence = snapshot.getJSONArray("evidence")
@@ -141,18 +151,24 @@ class ProjectOutcomeService(private val context: Context) {
         val generatedAt = Timestamp.now()
         val reportRoot = project.paths.reportPath.ifBlank { project.paths.synthesisPath }
         require(reportRoot.isNotBlank()) { "项目没有可写的报告目录" }
-        val markdownPath = "$reportRoot/项目进展报告-${evidenceFingerprint.take(12)}.md"
+        val markdownPath = "$reportRoot/项目综合报告-${evidenceFingerprint.take(12)}.md"
         val payload = JSONObject().put("schema", "edu-manager.project-progress-report.v1")
             .put("reportId", id).put("projectId", project.id).put("projectName", project.name)
             .put("evidenceFingerprint", evidenceFingerprint).put("triggerFingerprint", triggerFingerprint)
-            .put("generatedAt", generatedAt).put("status", "candidate").put("report", report)
+            .put("generatedAt", generatedAt).put("status", "published").put("report", report)
             .put("evidence", evidenceWithoutExcerpts(evidence))
             .put("evidenceBoundary", "项目文件和知识产物存在只证明本机观察状态，不证明成果质量、学生掌握或个人贡献")
-        knowledgeStore(project).writeBytesSafely(markdownPath, reportMarkdown(project, payload).toByteArray(), "text/markdown")
+        val markdown = reportMarkdown(project, payload)
+        val markdownBytes = markdown.toByteArray(Charsets.UTF_8)
+        payload.put("markdownSha256", ScopedContentPolicy.hash(markdownBytes))
+        knowledgeStore(project).writeBytesSafely(markdownPath, markdownBytes, "text/markdown")
+        require(knowledgeStore(project).readBytes(markdownPath).contentEquals(markdownBytes)) { "项目报告写入后校验失败，未更新成果索引" }
         val jsonPath = "${project.paths.managerPath}/project-outcomes/reports/$id.json"
-        controlStore(project).writeBytesSafely(jsonPath, (payload.toString(2) + "\n").toByteArray(), "application/json")
-        val entry = JSONObject().put("id", id).put("kind", "progress_report").put("title", "${project.name}项目进展报告")
-            .put("status", "candidate").put("path", markdownPath).put("metadataPath", jsonPath)
+        val metadataBytes = (payload.toString(2) + "\n").toByteArray(Charsets.UTF_8)
+        controlStore(project).writeBytesSafely(jsonPath, metadataBytes, "application/json")
+        require(controlStore(project).readBytes(jsonPath).contentEquals(metadataBytes)) { "项目报告元数据写入后校验失败，未更新成果索引" }
+        val entry = JSONObject().put("id", id).put("kind", "progress_report").put("title", "${project.name}项目综合报告（含进展）")
+            .put("status", "published").put("path", markdownPath).put("metadataPath", jsonPath)
             .put("fingerprint", evidenceFingerprint).put("createdAt", generatedAt)
         upsertIndex(project, entry)
         JSONObject().put("reused", false).put("entry", entry).put("report", report)
@@ -225,7 +241,7 @@ class ProjectOutcomeService(private val context: Context) {
         val definition = JSONObject().put("name", project.name).put("type", project.type).put("description", project.description).put("objective", project.objective)
         evidence.put(JSONObject().put("id", "project-definition:${ScopedContentPolicy.fingerprint(definition).take(32)}")
             .put("kind", "definition").put("title", "项目定义").put("sha256", ScopedContentPolicy.fingerprint(definition)).put("path", "").put("excerpt", definition.toString()))
-        materials.knowledgeFiles(project.id).filterNot { file -> file.name.startsWith("项目进展报告-") || file.name.startsWith("项目导师建议-") ||
+        materials.knowledgeFiles(project.id).filterNot { file -> file.name.startsWith("项目进展报告-") || file.name.startsWith("项目综合报告-") || file.name.startsWith("项目导师建议-") ||
             (project.paths.reportPath.isNotBlank() && (file.relativePath == project.paths.reportPath || file.relativePath.startsWith("${project.paths.reportPath.trimEnd('/')}/"))) }
             .take(20).forEach { file ->
                 val bytes = runCatching { knowledgeStore(project).openInputStream(file.relativePath).use { it.readBytesBounded(128_000) } }.getOrNull() ?: return@forEach
@@ -251,14 +267,14 @@ class ProjectOutcomeService(private val context: Context) {
         .put("id", item.getString("id")).put("kind", item.getString("kind")).put("title", item.getString("title"))
         .put("sha256", item.getString("sha256")).put("excerpt", item.optString("excerpt").take(1_500))) } }
 
-    private fun reportMarkdown(project: ProjectRecord, payload: JSONObject): String {
+    private fun reportMarkdown(project: ProjectRecord, payload: JSONObject, legacyProgressFormat: Boolean = false): String {
         val report = payload.getJSONObject("report")
         fun evidence(ids: JSONArray) = (0 until ids.length()).joinToString("、") { ids.getString(it) }
         return buildString {
             appendLine("---"); appendLine("type: project_progress_report"); appendLine("project_id: ${project.id}")
-            appendLine("status: candidate"); appendLine("evidence_fingerprint: ${payload.getString("evidenceFingerprint")}")
+            appendLine("status: ${if (legacyProgressFormat) "candidate" else payload.optString("status", "published")}"); appendLine("evidence_fingerprint: ${payload.getString("evidenceFingerprint")}")
             appendLine("generated_at: ${payload.getString("generatedAt")}"); appendLine("---"); appendLine()
-            appendLine("# ${project.name}项目进展报告"); appendLine(); appendLine("> 本报告只汇总本机可核验项目状态，不证明成果质量、学习掌握或个人贡献。")
+            appendLine("# ${project.name}${if (legacyProgressFormat) "项目进展报告" else "项目综合报告（含进展）"}"); appendLine(); appendLine("> 本报告只汇总本机可核验项目状态，不证明成果质量、学习掌握或个人贡献。")
             appendLine(); appendLine("## 阶段摘要"); appendLine(); appendLine(report.getString("stageSummary"))
             appendLine(); appendLine("## 项目进展")
             report.getJSONArray("progress").objects().forEach { appendLine("- **${it.getString("title")}**（${it.getString("status")}）：${it.getString("detail")} [依据:${evidence(it.getJSONArray("evidenceIds"))}]") }
@@ -289,9 +305,45 @@ class ProjectOutcomeService(private val context: Context) {
     private fun parseJson(text: String): JSONObject { val clean = text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim(); val start = clean.indexOf('{'); val end = clean.lastIndexOf('}'); require(start >= 0 && end > start) { "项目导师未返回有效JSON" }; return JSONObject(clean.substring(start, end + 1)) }
     private fun readIndex(project: ProjectRecord): JSONObject { val store = controlStore(project); val path = indexPath(project); if (!store.exists(path)) return JSONObject().put("schema", INDEX_SCHEMA).put("projectId", project.id).put("entries", JSONArray()); return JSONObject(store.readBytes(path).toString(Charsets.UTF_8)).also { require(it.optString("schema") == INDEX_SCHEMA && it.optString("projectId") == project.id) { "项目成果索引身份不匹配" } } }
     private fun findIndexEntry(project: ProjectRecord, id: String) = readIndex(project).getJSONArray("entries").objects().singleOrNull { it.optString("id") == id }?.let { JSONObject(it.toString()) }
-    private fun requireEntryFiles(project: ProjectRecord, entry: JSONObject) {
-        require(knowledgeStore(project).exists(entry.getString("path"))) { "项目成果索引对应文档缺失，停止复用并等待人工核对" }
+    private fun publishExistingProgressReport(project: ProjectRecord, entry: JSONObject): JSONObject {
+        if (entry.optString("status") == "published") return entry
+        val metadataPath = entry.getString("metadataPath")
+        val payload = JSONObject(controlStore(project).readBytes(metadataPath).toString(Charsets.UTF_8)).put("status", "published")
+        val markdown = reportMarkdown(project.copy(name = payload.getString("projectName")), payload).toByteArray(Charsets.UTF_8)
+        payload.put("markdownSha256", ScopedContentPolicy.hash(markdown))
+        knowledgeStore(project).writeBytesSafely(entry.getString("path"), markdown, "text/markdown")
+        controlStore(project).writeBytesSafely(metadataPath, (payload.toString(2) + "\n").toByteArray(Charsets.UTF_8), "application/json")
+        val published = JSONObject(entry.toString()).put("status", "published").put("publishedAt", Timestamp.now())
+        val index = readIndex(project); val entries = index.getJSONArray("entries")
+        val replaced = JSONArray(entries.objects().map { if (it.optString("id") == entry.optString("id")) published else it })
+        index.put("entries", replaced).put("updatedAt", Timestamp.now())
+        controlStore(project).writeBytesSafely(indexPath(project), (index.toString(2) + "\n").toByteArray(Charsets.UTF_8), "application/json")
+        requireEntryFiles(project, published, evidenceSnapshot(project))
+        return published
+    }
+    private fun requireEntryFiles(project: ProjectRecord, entry: JSONObject, currentSnapshot: JSONObject? = null) {
         require(controlStore(project).exists(entry.getString("metadataPath"))) { "项目成果索引对应元数据缺失，停止复用并等待人工核对" }
+        if (entry.optString("kind") == "progress_report") {
+            val payload = JSONObject(controlStore(project).readBytes(entry.getString("metadataPath")).toString(Charsets.UTF_8))
+            require(currentSnapshot != null && payload.getJSONArray("evidence").toString() ==
+                evidenceWithoutExcerpts(currentSnapshot.getJSONArray("evidence")).toString()) { "项目报告来源与当前固定快照不一致，停止复用" }
+            val reportPath = entry.getString("path")
+            val knowledge = knowledgeStore(project)
+            if (!knowledge.exists(reportPath)) {
+                // A report is deterministic from its recorded snapshot. Rebuild only a missing file;
+                // never overwrite a changed file or trust metadata outside the selected project.
+                val reconstructed = reportMarkdown(project.copy(name = payload.getString("projectName")), payload).toByteArray(Charsets.UTF_8)
+                val reconstructedHash = ScopedContentPolicy.hash(reconstructed)
+                ProjectOutcomePolicy.validateStoredReport(project.id, entry, payload, reconstructed, reconstructedHash)
+                knowledge.writeStreamNewSafely(reportPath, "text/markdown") { it.write(reconstructed) }
+            }
+            val actual = knowledge.readBytes(reportPath)
+            val legacyExpectedHash = if (payload.optString("markdownSha256").isBlank()) {
+                val originalName = payload.getString("projectName")
+                ScopedContentPolicy.hash(reportMarkdown(project.copy(name = originalName), payload, legacyProgressFormat = true).toByteArray(Charsets.UTF_8))
+            } else ""
+            ProjectOutcomePolicy.validateStoredReport(project.id, entry, payload, actual, legacyExpectedHash)
+        } else require(knowledgeStore(project).exists(entry.getString("path"))) { "项目成果索引对应文档缺失，停止复用并等待人工核对" }
     }
     private fun upsertIndex(project: ProjectRecord, entry: JSONObject) { val index = readIndex(project); val entries = index.getJSONArray("entries"); val all = entries.objects(); val old = all.singleOrNull { it.optString("id") == entry.getString("id") }; if (old != null) { require(old.optString("fingerprint") == entry.optString("fingerprint") && old.optString("path") == entry.optString("path")) { "同一项目成果ID内容冲突" }; return }; entries.put(entry); index.put("updatedAt", Timestamp.now()); controlStore(project).writeBytesSafely(indexPath(project), (index.toString(2) + "\n").toByteArray(), "application/json") }
     private fun indexPath(project: ProjectRecord) = "${project.paths.managerPath}/project-outcomes/index.json"

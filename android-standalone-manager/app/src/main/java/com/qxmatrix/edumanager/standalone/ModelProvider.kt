@@ -18,6 +18,11 @@ object ModelEndpointPolicy {
         return host == "dashscope.aliyuncs.com" || host == "dashscope-intl.aliyuncs.com" ||
             host.endsWith(".maas.aliyuncs.com")
     }
+    fun isOpenAiService(endpoint: String): Boolean {
+        val host = URI(normalize(endpoint)).host.lowercase()
+        return host == "openai.com" || host.endsWith(".openai.com") ||
+            host == "openai.azure.com" || host.endsWith(".openai.azure.com")
+    }
     fun mayReuseCredential(previous: String, next: String): Boolean = normalize(previous) == normalize(next)
 }
 
@@ -37,6 +42,7 @@ data class ModelRequest(
     val jsonSchema: JSONObject? = null, val webResearch: Boolean = false,
     val cancellation: ModelCancellation = ModelCancellation(),
     val maxOutputTokens: Int = 4096,
+    val commitValidatedResponse: ((String) -> Unit)? = null,
 )
 data class ModelUsage(val inputTokens: Long?, val outputTokens: Long?, val totalTokens: Long?)
 data class ResearchSource(val title: String, val url: String)
@@ -79,6 +85,7 @@ class CompatibleModelProvider(
 ) : ModelProvider {
     override fun generate(request: ModelRequest): ModelResponse {
         val normalized = ModelEndpointPolicy.normalize(endpoint)
+        require(!ModelEndpointPolicy.isOpenAiService(normalized)) { "已停用 OpenAI 服务，请配置其他模型服务。" }
         require(request.model.isNotBlank() && apiKey.isNotBlank()) { "模型和凭据尚未配置" }
         require(request.maxOutputTokens in 1..16384) { "输出额度无效" }
         val bailian = ModelEndpointPolicy.isBailian(normalized)
@@ -139,6 +146,7 @@ class CompatibleModelProvider(
             }
             require(!request.webResearch || sources.isNotEmpty()) { "供应商未返回真实搜索来源；不能把模型回答标为联网研究" }
             request.cancellation.check()
+            request.commitValidatedResponse?.invoke(content)
             receipt = receipt.copy(state = "succeeded", requestId = receipt.requestId.ifBlank { safeId(json.optString("request_id")) },
                 sourceCount = sources.distinctBy { it.url }.size,
                 elapsedMs = (System.nanoTime() - clock) / 1_000_000)

@@ -20,6 +20,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
 import java.security.KeyPairGenerator
+import java.security.SecureRandom
 import java.security.Signature
 import java.security.PrivateKey
 import java.security.spec.ECGenParameterSpec
@@ -160,6 +161,51 @@ class CloudReportSync(private val context: Context) {
 
     fun enrollOfficial(studentId: String, code: String): CloudReportStatus =
         enroll(studentId, CloudServiceEndpoint.OFFICIAL_BASE_URL, code)
+
+    /** Establishes cloud identity from an active Android product license. Upload remains disabled
+     * until the user separately confirms fields, categories, purpose and expiry. */
+    fun autoEnrollOfficial(studentId: String): CloudReportStatus {
+        val student = StudentIndexRepository(context).requireExact(studentId)
+        val license = LicenseManager(context)
+        license.requireActive()
+        val base = checkedBase(CloudServiceEndpoint.OFFICIAL_BASE_URL)
+        val currentBase = prefs.getString("server", "").orEmpty()
+        require(currentBase.isBlank() || currentBase == base) { "本机已绑定另一云端服务地址" }
+        val bindingPreference = "bindingKey:$studentId"
+        val existingBinding = prefs.getString(bindingPreference, "").orEmpty()
+        val bindingKey = if (existingBinding.isBlank()) {
+            Base64.encodeToString(ByteArray(32).also(SecureRandom()::nextBytes), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+                .also { prefs.edit().putString(bindingPreference, encrypt(it)).commit() }
+        } else decrypt(existingBinding)
+        val existingToken = token().takeIf { it.isNotBlank() && prefs.getString("deviceId", "").orEmpty().isNotBlank() }
+        val body = JSONObject().put("licenseToken", license.gatewayLicenseToken()).put("deviceId", license.deviceId())
+            .put("bindingKey", bindingKey).put("displayName", student.name).put("publicKey", sourcePublicKey())
+            .put("contractVersion", 2).put("profileFields", JSONArray(listOf("displayName")))
+            .put("materialCategories", JSONArray())
+        val result = try { post(base, "/v2/source-auto-enroll", existingToken, body) }
+            catch (error: CloudHttpException) {
+                if (error.status != 401 || existingToken == null) throw error
+                post(base, "/v2/source-auto-enroll", null, body)
+            }
+        persistEnrollment(studentId, base, result, setOf("displayName"), emptySet())
+        CloudSyncReceiptStore(context).append(studentId, "configured", "auto-enroll:$studentId",
+            "已用本机产品授权建立云端身份；尚未授权上传任何资料")
+        return status(studentId)
+    }
+
+    private fun persistEnrollment(studentId: String, base: String, result: JSONObject,
+        profileFields: Set<String>, categories: Set<String>) {
+        val cloudStudentId = result.getString("cloudStudentId")
+        val deviceToken = result.getString("deviceToken")
+        require(Regex("^cs_[a-f0-9]{32}$").matches(cloudStudentId)) { "云端学生标识无效" }
+        prefs.edit().putString("server", base).putString("token", encrypt(deviceToken))
+            .putString("deviceId", result.getString("deviceId")).putString("bindingDevice:$studentId", result.getString("deviceId"))
+            .putString("cloud:$studentId", cloudStudentId).putBoolean("enabled:$studentId", false)
+            .putInt("contractVersion:$studentId", 2).putStringSet("categories:$studentId", categories)
+            .putStringSet("profileFields:$studentId", profileFields).putString("authorizationPurpose:$studentId", "document_sync")
+            .putLong("authorizationExpiresAt:$studentId", 0L).putString("pending:$studentId", "")
+            .putString("lastError:$studentId", "").apply { GrowthModelService.REPORTS.forEach { remove("hash:$studentId:${it.id}") } }.apply()
+    }
 
     fun setUpload(studentId: String, enabled: Boolean): CloudReportStatus {
         require(status(studentId).configured) { "请先为当前学生开通云端报告" }

@@ -22,7 +22,12 @@ function normalizedUploadScope(input = {}) {
   if (!profileFields.includes('displayName')) profileFields.unshift('displayName');
   const requestedMaterialCategories = Array.isArray(input.materialCategories) ? input.materialCategories : DEFAULT_MATERIAL_CATEGORIES;
   const materialCategories = MATERIAL_CATEGORIES.filter(category => requestedMaterialCategories.includes(category));
-  return { profileFields, materialCategories };
+  const authorizationPurpose = ['document_sync', 'expert_interpretation'].includes(input.authorizationPurpose)
+    ? input.authorizationPurpose : 'document_sync';
+  const requestedExpiry = Number(input.authorizationExpiresAt || 0);
+  const authorizationExpiresAt = Number.isSafeInteger(requestedExpiry) && requestedExpiry > Date.now() + 5 * 60 * 1000
+    ? requestedExpiry : Date.now() + 90 * 24 * 60 * 60 * 1000;
+  return { profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt };
 }
 
 async function request(base, route, token = '', options = {}) {
@@ -192,7 +197,12 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       contractVersion: v2ProfileEnabled ? 2 : 1, profileFields: selectedProfileFields, materialCategories: selectedMaterialCategories,
       pendingServerWriteState: null, lastSyncAt: 0, lastError: '' };
     await save();
-    if (v2ProfileEnabled) await syncStudentProfile(localStudentId, true);
+    if (v2ProfileEnabled) {
+      state.bindings[localStudentId].pendingUploadScope = selectedScope;
+      await save();
+      await reconcileUploadScope(localStudentId);
+      await syncStudentProfile(localStudentId, true);
+    }
     void ensureWatcher(localStudentId);
     schedule(localStudentId, 0);
     return { cloudStudentId: result.cloudStudentId, enabled: true };
@@ -235,9 +245,13 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
       cloudStudentId: binding.cloudStudentId,
       profileFields: pending.profileFields,
       materialCategories: pending.materialCategories,
+      authorizationPurpose: pending.authorizationPurpose,
+      authorizationExpiresAt: pending.authorizationExpiresAt,
     });
     binding.profileFields = result.profileFields;
     binding.materialCategories = result.materialCategories;
+    binding.authorizationPurpose = result.authorizationPurpose;
+    binding.authorizationExpiresAt = result.authorizationExpiresAt;
     binding.pendingUploadScope = null;
     binding.profileFingerprint = '';
     binding.lastError = '';
@@ -246,13 +260,13 @@ function createCloudReportRuntime({ dataDir, protect, unprotect, resolveReportDi
   async function setUploadScope(studentId, input = {}) {
     const binding = state.bindings[studentId];
     if (!binding && !(await resolveReportDir(studentId))) throw new Error('本机学生不存在');
-    const { profileFields, materialCategories } = normalizedUploadScope(input);
+    const { profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt } = normalizedUploadScope(input);
     state.uploadScopePreferences[studentId] = { profileFields, materialCategories };
     if (!binding || !usesV2UploadScope(binding)) {
       await save();
       return status(studentId);
     }
-    binding.pendingUploadScope = { profileFields, materialCategories };
+    binding.pendingUploadScope = { profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt };
     await save();
     try { await reconcileUploadScope(studentId); }
     catch (error) {

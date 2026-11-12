@@ -13,6 +13,49 @@ const { createService } = require('./service.cjs');
 const ADMIN = 'cloud-test-admin-token-keep-private-123456';
 const CONTENT = '---\ntype: learning_profile\nstatus: active\nupdated: 2026-09-25\n---\n\n# 整体画像\n\n有据可查。\n';
 
+function androidLicenseFixture(deviceId = 'ANDROID-TEST-DEVICE', maxActiveStudents = 2) {
+  const issuer = crypto.generateKeyPairSync('rsa', { modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+  const payload = { schema: 'edu-manager.license.v3', productId: 'ANDROID_STANDALONE', keyId: 'android-test-issuer',
+    licenseId: 'android_license_test', edition: 'FAMILY', deviceId, issuedAt: '2026-09-24T00:00:00.000Z',
+    expiresAt: '2027-09-24T00:00:00.000Z', maxActiveStudents, capabilities: ['course_learning'] };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return { token: `AIE3.${encoded}.${crypto.sign('RSA-SHA256', Buffer.from(`AIE3.${encoded}`), issuer.privateKey).toString('base64url')}`,
+    trust: { issuers: [{ keyId: 'android-test-issuer', maxEdition: 'PLATFORM', publicKey: issuer.publicKey }] } };
+}
+
+test('Android product activation auto-enrolls idempotently without granting material upload', async () => {
+  const license = androidLicenseFixture();
+  await fixture(async ({ call, app }) => {
+    const source = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1',
+      publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+    const request = { licenseToken: license.token, deviceId: 'ANDROID-TEST-DEVICE', bindingKey: crypto.randomBytes(32).toString('base64url'),
+      displayName: '免码学生', publicKey: source.publicKey, contractVersion: 2, profileFields: ['displayName'], materialCategories: [] };
+    const first = await call('POST', '/v2/source-auto-enroll', '', request);
+    const second = await call('POST', '/v2/source-auto-enroll', '', request);
+    assert.equal(first.status, 200); assert.equal(second.status, 200);
+    assert.equal(second.body.cloudStudentId, first.body.cloudStudentId);
+    assert.equal(second.body.deviceId, first.body.deviceId);
+    assert.equal(app.service.db.prepare('SELECT COUNT(*) AS count FROM students').get().count, 1);
+    assert.equal(app.service.db.prepare("SELECT enabled FROM grants WHERE device_id=? AND student_id=? AND scope='report.write'")
+      .get(first.body.deviceId, first.body.cloudStudentId).enabled, 0);
+    assert.equal(app.service.db.prepare("SELECT COUNT(*) AS count FROM v2_grants WHERE scope='student_profile.write'").get().count, 0);
+    assert.equal(app.service.db.prepare("SELECT COUNT(*) AS count FROM v2_grants WHERE scope='material.write'").get().count, 0);
+  }, { trustedLicenseIssuers: license.trust });
+});
+
+test('Android auto-enrollment rejects cross-device replay and enforces student capacity', async () => {
+  const license = androidLicenseFixture('ANDROID-CAPACITY', 1);
+  await fixture(async ({ call }) => {
+    const source = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1', publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const body = key => ({ licenseToken: license.token, deviceId: 'ANDROID-CAPACITY', bindingKey: key, displayName: '学生',
+      publicKey: source.publicKey, contractVersion: 2, profileFields: ['displayName'], materialCategories: [] });
+    assert.equal((await call('POST', '/v2/source-auto-enroll', '', body(crypto.randomBytes(32).toString('base64url')))).status, 200);
+    assert.equal((await call('POST', '/v2/source-auto-enroll', '', body(crypto.randomBytes(32).toString('base64url')))).status, 403);
+    assert.equal((await call('POST', '/v2/source-auto-enroll', '', { ...body(crypto.randomBytes(32).toString('base64url')), deviceId: 'OTHER' })).status, 403);
+  }, { trustedLicenseIssuers: license.trust });
+});
+
 test('admin browser sessions expire, logout revokes them, and login attempts are limited', async () => fixture(async ({ call, advance }) => {
   const invalid = await call('POST', '/v1/admin/sessions', '', { credential: 'wrong' });
   assert.equal(invalid.status, 401);
@@ -111,7 +154,7 @@ async function fixture(fn, serviceOptions = {}) {
       'x-cloud-signature': crypto.sign('sha256', Buffer.from(`${method}\n${route}\n${timestamp}\n${nonce}`),
         key.privateKey).toString('base64url') };
   }
-  try { await fn({ call, base, proofHeaders, advance: ms => { clock += ms; } }); }
+  try { await fn({ call, base, app, proofHeaders, advance: ms => { clock += ms; } }); }
   finally { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 

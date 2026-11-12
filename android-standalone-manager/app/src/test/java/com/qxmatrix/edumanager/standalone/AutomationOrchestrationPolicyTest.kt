@@ -6,6 +6,10 @@ import org.junit.Test
 import java.io.IOException
 
 class AutomationOrchestrationPolicyTest {
+    @Test fun separateTasksNeverReplaceEachOthersRecoverySchedule() {
+        assertNotEquals(AutomationReconciliationWorker.retryWorkName("task-a"), AutomationReconciliationWorker.retryWorkName("task-b"))
+        assertEquals(AutomationReconciliationWorker.retryWorkName("task-a"), AutomationReconciliationWorker.retryWorkName("task-a"))
+    }
     @Test fun triggerMatrixSeparatesOffConservativeAndFullModes() {
         assertTrue(AutomationTriggerPolicy.actions(AutomationEventType.DIGEST_COMPLETED, AutomationMode.OFF).isEmpty())
         assertEquals(
@@ -46,6 +50,8 @@ class AutomationOrchestrationPolicyTest {
     }
 
     @Test fun onlyExhaustedOrUnrecoverableFailuresNeedAttention() {
+        assertEquals(AutomationReconciliationDecision.RESCHEDULE,
+            AutomationReconciliationPolicy.decide(automationTask("queued", false, 0, 4, "")))
         val inputFirst = AutomationFailurePolicy.decide(IllegalArgumentException("文件损坏"), 1, 4)
         val inputSecond = AutomationFailurePolicy.decide(IllegalArgumentException("文件损坏"), 2, 4)
         assertTrue(inputFirst.autoRetry); assertFalse(inputFirst.attentionRequired)

@@ -49,6 +49,7 @@ function setup(root) {
     publicOrigin: 'https://www.greatbg.com/edu-cloud' });
   const student = service.createStudent(ADMIN, 'C4合成学生');
   const source = service.registerSource(ADMIN);
+  service.allowWrite(ADMIN, source.deviceId, student.id);
   const viewer = service.createPairing('', crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1',
     publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } }).publicKey);
   for (const category of ['learning_material']) {

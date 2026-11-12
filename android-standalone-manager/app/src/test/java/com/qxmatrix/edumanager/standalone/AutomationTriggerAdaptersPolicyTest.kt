@@ -50,5 +50,6 @@ class AutomationTriggerAdaptersPolicyTest {
         val changed = AutomationMaterialPolicy.projectFingerprint(registry(100, "2026-11-06T00:01:00Z", "completed"))
         assertEquals(first, replay)
         assertNotEquals(first, changed)
+        assertNotEquals(first, AutomationMaterialPolicy.projectFingerprint(registry(1, "2026-01-01T00:00:00Z", "pending").put("projectId", "project-2")))
     }
 }

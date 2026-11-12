@@ -39,6 +39,8 @@ object LegacyTaskCodec {
 internal interface TaskLedgerStore {
     fun <T> transaction(block: () -> T): T
     fun all(): List<JSONObject>
+    fun pageAfter(afterId: String, limit: Int): List<JSONObject> = all().filter { it.getString("id") > afterId }
+        .sortedBy { it.getString("id") }.take(limit)
     fun scoped(studentId: String, projectIds: List<String>, limit: Int): List<JSONObject>
     fun hasActive(studentId: String, projectIds: List<String>): Boolean
     fun exact(id: String): JSONObject?
@@ -93,6 +95,7 @@ internal class RoomTaskLedgerStore(context: Context, private val db: BusinessDat
         LegacyTaskCodec.projectId(task), task.getString("status"), task.optString("updatedAt"), 0,
         BusinessDatabase.processSession, task.toString())
     override fun all() = dao.all().map { JSONObject(it.payload) }
+    override fun pageAfter(afterId: String, limit: Int) = dao.pageAfter(afterId, limit.coerceIn(1, 500)).map { JSONObject(it.payload) }
     override fun scoped(studentId: String, projectIds: List<String>, limit: Int) = dao.scoped(studentId, projectIds, limit.coerceIn(1, 200)).map { JSONObject(it.payload) }
     override fun hasActive(studentId: String, projectIds: List<String>) = dao.hasActive(studentId, projectIds)
     override fun exact(id: String) = dao.exact(id)?.let { JSONObject(it.payload) }

@@ -96,6 +96,7 @@ function bearer(req) {
 }
 
 function createHttpServer(options) {
+  const serviceVersion = String(options.version || '2.3.0');
   const gateway = options.modelGateway;
   if (gateway && (typeof gateway.issue !== 'function' || typeof gateway.generate !== 'function' || typeof gateway.close !== 'function')) {
     throw new Error('Model gateway requires an explicitly configured authenticated adapter');
@@ -231,7 +232,7 @@ function createHttpServer(options) {
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: serviceVersion, contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
           'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations',
           'public-course-sync-receipts', 'public-course-operations', 'public-learning-card-packs'] });
@@ -695,6 +696,7 @@ if (require.main === module) {
   const trustedLicenseIssuers = JSON.parse(fs.readFileSync(licenseTrustPath, 'utf8'));
   const materialOcrArgs = process.env.CLOUD_MATERIAL_OCR_ARGS_JSON ? JSON.parse(process.env.CLOUD_MATERIAL_OCR_ARGS_JSON) : [];
   const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs, modelGateway: gateway, publicOrigin, trustedLicenseIssuers,
+    version: process.env.CLOUD_REPORT_VERSION || '2.3.0',
     publicContentKeyId: process.env.CLOUD_PUBLIC_CONTENT_KEY_ID || 'course-catalog-primary-2026',
     publicContentPrivateKey: publicContentPrivateKeyPath ? fs.readFileSync(publicContentPrivateKeyPath, 'utf8') : '',
     publicContentPublicKey: publicContentPublicKeyPath ? fs.readFileSync(publicContentPublicKeyPath, 'utf8') : '',

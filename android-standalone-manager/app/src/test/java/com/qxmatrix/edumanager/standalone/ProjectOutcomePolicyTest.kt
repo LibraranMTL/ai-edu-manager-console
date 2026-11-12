@@ -39,6 +39,23 @@ class ProjectOutcomePolicyTest {
         }
     }
 
+    @Test fun reportReuseRequiresMatchingProjectFingerprintEvidenceAndContent() {
+        val evidence = JSONArray().put(evidence("project-registry:abc", "registry", "资料登记"))
+        val report = ProjectOutcomePolicy.deterministicReport(project(),
+            JSONObject().put("materials", 0).put("pendingMaterials", 0).put("pendingDigest", 0).put("unavailable", 0), evidence)
+        val bytes = "合成报告".toByteArray(Charsets.UTF_8)
+        val entry = JSONObject().put("id", "report-a").put("fingerprint", "snapshot-a")
+        val payload = JSONObject().put("schema", "edu-manager.project-progress-report.v1").put("projectId", "project-test")
+            .put("reportId", "report-a").put("evidenceFingerprint", "snapshot-a").put("report", report).put("evidence", evidence)
+            .put("markdownSha256", ScopedContentPolicy.hash(bytes))
+        ProjectOutcomePolicy.validateStoredReport("project-test", entry, payload, bytes, "")
+        assertThrows(IllegalArgumentException::class.java) { ProjectOutcomePolicy.validateStoredReport("other-project", entry, payload, bytes, "") }
+        assertThrows(IllegalArgumentException::class.java) { ProjectOutcomePolicy.validateStoredReport("project-test", entry, payload, "被修改".toByteArray(), "") }
+        payload.remove("markdownSha256")
+        ProjectOutcomePolicy.validateStoredReport("project-test", entry, payload, bytes, ScopedContentPolicy.hash(bytes))
+        assertThrows(IllegalArgumentException::class.java) { ProjectOutcomePolicy.validateStoredReport("project-test", entry, payload, bytes, "") }
+    }
+
     private fun evidence(id: String, kind: String, title: String) = JSONObject().put("id", id).put("kind", kind)
         .put("title", title).put("path", "").put("sha256", "hash-$id").put("excerpt", "摘要")
 

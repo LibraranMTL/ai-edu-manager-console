@@ -160,7 +160,11 @@ class AutomationTriggerAdapters(private val context: Context) {
     fun generateProjectSnapshot(projectId: String, triggerFingerprint: String): JSONObject {
         val project = projects.requireExact(projectId)
         require(project.studentIds.isNotEmpty()) { "项目未绑定学生，不能发布学生范围快照" }
-        val status = LocalProjectMaterialService(context).status(projectId)
+        val materialService = LocalProjectMaterialService(context)
+        if (materialService.persistedSnapshotFingerprint(projectId) != triggerFingerprint)
+            return JSONObject().put("projectId", projectId).put("status", "superseded")
+                .put("message", "项目资料已变化，等待最新快照事件")
+        val status = materialService.status(projectId)
         val metrics = JSONObject().put("materials", status.optInt("materials"))
             .put("pendingMaterials", status.optInt("pending"))
             .put("pendingDigest", status.optInt("digestPending"))

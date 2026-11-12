@@ -33,6 +33,7 @@ class ProjectMaterialsActivity : Activity() {
         super.onCreate(savedInstanceState)
         val preferences = UiPreferences(this); preferences.applyOrientation(this); palette = preferences.palette()
         project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))
+        view = intent.getStringExtra(EXTRA_INITIAL_TAB)?.takeIf { it in setOf("dashboard", "materials", "knowledge", "outcomes", "pending", "contributions") } ?: "dashboard"
         service = LocalProjectMaterialService(this)
         window.statusBarColor = palette.page; window.navigationBarColor = palette.page
 
@@ -86,6 +87,9 @@ class ProjectMaterialsActivity : Activity() {
         root.addView(ScrollView(this).apply { isFillViewport = true; addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(button("返回学习项目") { finish() }, matchWrap())
         setContentView(root); refresh()
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_MENTOR, false)) root.post {
+            if (!isFinishing && !isDestroyed) mentorDialog()
+        }
     }
 
     override fun onResume() { super.onResume(); if (::list.isInitialized) refresh() }
@@ -295,9 +299,9 @@ class ProjectMaterialsActivity : Activity() {
     private fun renderOutcomes() {
         val outcomes = ProjectOutcomeService(this)
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(button("生成最新报告") { background("正在根据固定项目证据生成报告") {
+        actions.addView(button("生成/更新综合报告") { background("正在根据固定项目证据生成项目综合报告") {
             val result = outcomes.generateProgressReport(project.id)
-            if (result.optBoolean("reused")) "当前证据未变化，已保留原报告版本" else "新的项目进展报告候选已生成"
+            if (result.optBoolean("reused")) "当前证据未变化，已核对并沿用已发布综合报告" else "新的项目综合报告已校验并发布"
         } }, weighted())
         actions.addView(button("项目导师") { mentorDialog() }, weighted())
         actions.addView(button("查看报告原文") { openProjectKnowledge() }, weighted())
@@ -307,9 +311,9 @@ class ProjectMaterialsActivity : Activity() {
             textSize = 14f; setTextColor(palette.muted); setPadding(dp(10), dp(10), dp(10), dp(12))
         }, matchWrap())
         val entries = runCatching { outcomes.listOutcomes(project.id) }.getOrElse { empty("成果库读取失败：${it.message}"); return }
-        if (entries.isEmpty()) { empty("当前没有项目报告或成果文件。资料完成消化后，完整自动模式会生成项目进展报告候选。") ; return }
+        if (entries.isEmpty()) { empty("当前没有项目报告或成果文件。资料完成消化后，完整自动模式会生成并发布项目进展报告。") ; return }
         entries.forEach { entry ->
-            val kind = when (entry.optString("kind")) { "progress_report" -> "进展报告"; "mentor_advice" -> "导师建议"; else -> "成果文件" }
+            val kind = when (entry.optString("kind")) { "progress_report" -> "项目综合报告"; "mentor_advice" -> "导师建议"; else -> "成果文件" }
             val card = button("${entry.optString("title")}\n$kind · ${entry.optString("status")}\n${entry.optString("path")}") {
                 if (entry.optString("kind") == "output_file") openProjectOutput(entry.optString("path")) else openProjectKnowledge()
             }
@@ -483,6 +487,8 @@ class ProjectMaterialsActivity : Activity() {
 
     companion object {
         const val EXTRA_PROJECT_ID = "projectId"
+        const val EXTRA_INITIAL_TAB = "initialTab"
+        const val EXTRA_OPEN_MENTOR = "openMentor"
         private const val REQUEST_IMPORT = 3401
         private const val REQUEST_EXPORT_PACKAGE = 3402
         private const val REQUEST_REBIND_CONTROL = 3403

@@ -15,26 +15,26 @@ import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 data class AutoDigestSettings(
-    val enabled: Boolean = false,
+    val enabled: Boolean = true,
     val hour: Int = 21,
     val minute: Int = 30,
     val wifiOnly: Boolean = true,
     val chargingOnly: Boolean = false,
     val maximumPerStudent: Int = 20,
-    val automationMode: String = AutomationMode.OFF.wireValue,
+    val automationMode: String = AutomationMode.FULL.wireValue,
 )
 
 class AutoDigestSettingsStore(private val context: Context) {
     private val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun load() = AutoDigestSettings(
-        enabled = preferences.getBoolean("enabled", false),
+        enabled = preferences.getBoolean("enabled", true),
         hour = preferences.getInt("hour", 21).coerceIn(0, 23),
         minute = preferences.getInt("minute", 30).coerceIn(0, 59),
         wifiOnly = preferences.getBoolean("wifi_only", true),
         chargingOnly = preferences.getBoolean("charging_only", false),
         maximumPerStudent = preferences.getInt("maximum", 20).coerceIn(1, 100),
-        automationMode = AutomationMode.from(preferences.getString("automation_mode", AutomationMode.OFF.wireValue).orEmpty()).wireValue,
+        automationMode = AutomationMode.from(preferences.getString("automation_mode", AutomationMode.FULL.wireValue).orEmpty()).wireValue,
     )
 
     fun save(value: AutoDigestSettings) {
@@ -54,6 +54,8 @@ class AutoDigestSettingsStore(private val context: Context) {
             if (last.isBlank()) "" else "\n最近：$last",
         )
     }
+
+    fun ensureScheduled() = schedule(context, load())
 
     internal fun record(summary: String) {
         preferences.edit().putString("last_summary", "${Timestamp.now()} · ${summary.take(500)}").apply()

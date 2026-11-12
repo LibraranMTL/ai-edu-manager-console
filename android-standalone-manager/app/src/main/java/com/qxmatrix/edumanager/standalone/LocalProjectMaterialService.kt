@@ -660,6 +660,13 @@ class LocalProjectMaterialService(private val context: Context) {
         }
     }
 
+    /** Returns only a persisted registry, never an invented empty snapshot. */
+    @Synchronized fun persistedSnapshotFingerprint(projectId: String): String? {
+        val project = projects.requireExact(projectId)
+        if (!controlStore(project).exists(registryPath(project))) return null
+        return AutomationMaterialPolicy.projectFingerprint(readRegistry(project))
+    }
+
     private fun writeRegistry(project: ProjectRecord, registry: JSONObject) {
         synchronized(LOCK) {
             val store = controlStore(project); val path = registryPath(project)

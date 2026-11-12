@@ -141,6 +141,7 @@ test('inbox is target-host isolated and an unsafe late result can be quarantined
     service.issueV2Grant(ADMIN, { deviceId: target.deviceId, cloudStudentId: student.id,
       scope: 'material.read', category: 'learning_material' });
     const source = service.registerSource(ADMIN);
+    service.allowWrite(ADMIN, source.deviceId, student.id);
     service.issueV2Grant(ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id,
       scope: 'material.write', category: 'learning_material' });
     const prepared = service.prepareV2Material(source.deviceToken, student.id, { category: 'learning_material',
@@ -186,6 +187,7 @@ test('one project session freezes a sorted multi-student cloud scope and exposes
       publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } }).publicKey;
     const viewer = service.createPairing('', viewerKey);
     for (const student of [first, second]) {
+      service.allowWrite(ADMIN, source.deviceId, student.id);
       service.issueV2Grant(ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id,
         scope: 'material.write', category: 'learning_material' });
       service.issueV2Grant(ADMIN, { deviceId: viewer.deviceId, cloudStudentId: student.id,

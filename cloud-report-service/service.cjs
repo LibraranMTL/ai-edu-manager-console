@@ -9,7 +9,7 @@ const {
   normalizeProfile, profileRevisionId, sha256, stableJson,
 } = require('./v2-contract.cjs');
 const { normalizeRemoteProjectResult } = require('./remote-result-contract.cjs');
-const { verifyWindowsProductLicense } = require('./product-license.cjs');
+const { verifyCloudSourceProductLicense } = require('./product-license.cjs');
 
 const REPORT_TYPES = new Set(['learning_profile', 'learning_change', 'weekly_action', 'stage_summary']);
 const MAX_REPORT_BYTES = 2 * 1024 * 1024;
@@ -652,7 +652,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         for (const category of checkedCategories(options.materialCategories)) {
           grantV2(deviceId, record.student_id, 'material.write', { category, actorId: deviceId });
         }
-        // Contract v2 enrollment establishes identity only. Upload starts after a bounded scope is confirmed.
+        // V2 redemption establishes identity first; a bounded upload-scope confirmation enables writes.
         db.prepare(`UPDATE grants SET enabled=0 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
           .run(deviceId, record.student_id);
       }
@@ -666,12 +666,12 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const productDeviceId = String(input.deviceId || '').trim();
     const displayName = String(input.displayName || '').trim();
     if (!/^[A-Za-z0-9_-]{43,128}$/.test(bindingKey)) fail(400, '本机学生绑定凭据无效');
-    if (!productDeviceId || productDeviceId.length > 160) fail(400, 'Windows 主机设备码无效');
+    if (!productDeviceId || productDeviceId.length > 160) fail(400, '来源端设备码无效');
     if (!displayName || displayName.length > 120 || /[\\/\x00-\x1f]/.test(displayName)) fail(400, '学生显示名无效');
-    const verified = verifyWindowsProductLicense(input.licenseToken, {
+    const verified = verifyCloudSourceProductLicense(input.licenseToken, {
       trustedIssuers: trustedLicenseIssuers, deviceId: productDeviceId, now: now(),
     });
-    if (!verified.ok) fail(403, verified.message || 'Windows 主机许可证无效');
+    if (!verified.ok) fail(403, verified.message || '来源端产品许可证无效');
     const selectedFields = checkedFields(input.profileFields);
     const selectedCategories = checkedCategories(input.materialCategories);
     const bindingHash = digest(`${verified.license.licenseId}\n${productDeviceId.toLowerCase()}\n${bindingKey}`);
@@ -702,9 +702,17 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         (binding_hash,license_id,product_device_id,source_device_id,student_id,created_at,updated_at,revoked_at)
         VALUES(?,?,?,?,?,?,?,NULL)`).run(bindingHash, verified.license.licenseId, productDeviceId, deviceId, studentId, now(), now());
       else db.prepare('UPDATE source_auto_bindings SET updated_at=? WHERE binding_hash=?').run(now(), bindingHash);
-      grant(deviceId, studentId, 'report.write', deviceId);
-      grantV2(deviceId, studentId, 'student_profile.write', { fields: selectedFields, actorId: deviceId });
-      for (const category of selectedCategories) grantV2(deviceId, studentId, 'material.write', { category, actorId: deviceId });
+      if (!prior || verified.license.productId !== 'ANDROID_STANDALONE') {
+        grant(deviceId, studentId, 'report.write', deviceId);
+        if (verified.license.productId === 'ANDROID_STANDALONE') {
+          // Product activation creates identity only. The separate, explicit scope request enables upload.
+          db.prepare(`UPDATE grants SET enabled=0 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
+            .run(deviceId, studentId);
+        } else {
+          grantV2(deviceId, studentId, 'student_profile.write', { fields: selectedFields, actorId: deviceId });
+          for (const category of selectedCategories) grantV2(deviceId, studentId, 'material.write', { category, actorId: deviceId });
+        }
+      }
       audit(deviceId, prior ? 'source.auto-enrollment.reuse' : 'source.auto-enrollment.create', studentId, verified.license.licenseId);
     });
     return { deviceId, deviceToken, cloudStudentId: studentId, created: !prior,

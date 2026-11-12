@@ -45,7 +45,8 @@ class CloudSyncActivity : Activity() {
                 addView(text("请求真人专家解读咨询", 20f).apply { setTextColor(android.graphics.Color.rgb(25, 50, 74)) })
                 val reportContext = if (reportType.isBlank()) "" else "\n报告：$reportType · 修订：${reportRevision.ifBlank { "尚未生成" }}"
                 val suggested = if (suggestedCategories.isEmpty()) "" else "\n建议资料范围：${suggestedCategories.joinToString("、", transform = ::categoryLabel)}"
-                addView(text("来自${if (sourcePage == "android_report") "学情报告页" else "学情工作台首页"}。请核对当前学生和五类资料范围；平台会在用户授权后派遣专家一对一解读咨询。本页不会自动创建咨询单。$reportContext$suggested", 14f).apply { setTextColor(android.graphics.Color.rgb(55, 65, 81)) })
+                val origin = when (sourcePage) { "android_report" -> "教育档案"; "android_project" -> "项目成果"; else -> "学情工作台首页" }
+                addView(text("来自$origin。请核对当前学生和五类资料范围；平台会在用户授权后派遣专家一对一解读咨询。本页不会自动创建咨询单。$reportContext$suggested", 14f).apply { setTextColor(android.graphics.Color.rgb(55, 65, 81)) })
             })
         }
         root.addView(text("五类资料分别授权；默认仅学情报告。原始照片、录音、视频和本地知识库不会自动镜像。", 13f))

@@ -16,6 +16,22 @@ import java.util.concurrent.Executors
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class TaskLedgerRoomTest {
+    @Test fun supersededDigestRetainsFailureAndExactReplacementReceipt() = database { context, db ->
+        val repo = TaskRepository(RoomTaskLedgerStore(context, db))
+        repo.createOrGet(JSONObject().put("id", "old-digest").put("kind", "automation_digest_material")
+            .put("sourceType", "student").put("sourceId", "student-a").put("status", "queued")
+            .put("idempotencyKey", "old-digest-key").put("input", JSONObject().put("studentId", "student-a")))
+        val run = repo.start("old-digest").getString("executionId")
+        repo.failInternal("old-digest", JSONObject().put("message", "original failure").put("attentionRequired", true), executionId = run)
+        val receipt = JSONObject().put("studentId", "student-a").put("replacementFingerprint", "verified-batch")
+        assertThrows(IllegalArgumentException::class.java) { repo.supersedeFailedDigest("old-digest", "student-b", run, receipt) }
+        assertThrows(IllegalArgumentException::class.java) { repo.supersedeFailedDigest("old-digest", "student-a", "wrong", receipt) }
+        val archived = repo.supersedeFailedDigest("old-digest", "student-a", run, receipt)
+        assertEquals("superseded", TaskCenterPolicy.viewState(archived))
+        assertEquals("original failure", archived.getJSONObject("error").getString("message"))
+        assertEquals("verified-batch", repo.requireExact("old-digest").getJSONObject("result").getJSONObject("supersededReceipt").getString("replacementFingerprint"))
+        Unit
+    }
     @Test fun interruptedProcessRecoversPersistedReceiptAndNeverReexecutes() = database { context, db ->
         PrivateStateStore(context).writeBytes(RoomTaskLedgerStore.TASKS,
             JSONObject().put("protocolVersion", "1.2").put("tasks", JSONArray()).toString().toByteArray())

@@ -125,6 +125,16 @@ class TaskRepository internal constructor(private val store: TaskLedgerStore) {
         }
     }
     fun requireExact(taskId: String): JSONObject = store.transaction { store.exact(taskId) ?: throw NoSuchElementException("未找到指定任务 ID：$taskId") }
+    /** Archive an obsolete failed attempt, retaining its original error and a verified replacement receipt. */
+    internal fun supersedeFailedDigest(taskId: String, studentId: String, executionId: String, receipt: JSONObject): JSONObject = store.transaction {
+        val task = requireExact(taskId)
+        require(task.optString("kind") == "automation_digest_material" && LegacyTaskCodec.studentId(task) == studentId)
+        require(task.optString("status") in setOf("failed", "blocked", "timed_out") && !task.optBoolean("autoRetry"))
+        require(executionId.isNotBlank() && task.optString("executionId") == executionId)
+        require(receipt.optString("replacementFingerprint").isNotBlank() && receipt.optString("studentId") == studentId)
+        val result = JSONObject(task.optJSONObject("result")?.toString() ?: "{}").put("supersededReceipt", receipt)
+        transition(taskId, "archived", JSONObject().put("result", result).put("autoRetry", false))
+    }
     fun authorize(taskId: String, executionId: String, operation: String, logicalPath: String, write: Boolean): JSONObject = store.transaction {
         val task = requireExact(taskId)
         require(task.optString("executionId") == executionId) { "任务执行上下文无效或已过期" }

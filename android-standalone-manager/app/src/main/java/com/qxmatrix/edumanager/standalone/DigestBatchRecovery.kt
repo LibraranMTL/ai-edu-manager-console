@@ -77,6 +77,9 @@ class DigestBatchRecovery(private val context: Context) {
                 val stage = runCatching { JSONObject(entry.payload) }.getOrNull()
                 if (stage == null) { stageErrors++; return@forEach }
                 if (stage.optString("state") !in setOf("initial", "prepared")) return@forEach
+                if (stage.optString("state") == "initial" && runCatching { reconcileReplacedMissingModel(studentId, stage) }.getOrDefault(false)) {
+                    resumed++; return@forEach
+                }
                 if (stage.optString("state") == "initial" && runCatching { recoverMissingModel(studentId, stage) }.getOrDefault(false)) {
                     resumed++; return@forEach
                 }
@@ -160,6 +163,60 @@ class DigestBatchRecovery(private val context: Context) {
         } while (page.size == 100)
         JSONObject().put("completedBatches", completed).put("needsAttention", attention + stageErrors)
             .put("resumedCheckpoints", resumed).put("waitingCheckpoint", waitingCheckpoint)
+    }
+
+    /** Close the old failure only after an independently completed batch proves every original source and artifact. */
+    private fun reconcileReplacedMissingModel(studentId: String, stage: JSONObject): Boolean {
+        if (stage.optString("studentId") != studentId || stage.optInt("notDispatchedProofVersion") != 1 ||
+            !stage.optBoolean("allowAutoNoDispatch")) return false
+        val tasks = TaskRepository(context)
+        val childId = stage.optString("childTaskId")
+        val child = tasks.requireExact(childId)
+        if (child.optString("status") != "failed" || child.optString("executionId") != stage.optString("executionId") ||
+            child.optJSONObject("input")?.optString("studentId") != studentId ||
+            BusinessDatabase.get(context).ledger().hasAnyCall(studentId, childId)) return false
+        val parentId = stage.optString("automationTaskId")
+        val parent = tasks.requireExact(parentId)
+        if (!MissingModelParentPolicy.matches(parent, studentId, stage.optString("automationExecutionId"), tasks.events(parentId, 100)) ||
+            parent.optString("status") !in setOf("failed", "blocked", "timed_out") || parent.optBoolean("autoRetry")) return false
+        val sources = stage.getJSONArray("sources")
+        val expected = (0 until sources.length()).map { sources.getJSONObject(it).getString("id") }
+        val parentIds = parent.getJSONObject("input").getJSONArray("sourceIds")
+        if (expected.isEmpty() || expected.distinct().size != expected.size ||
+            expected.toSet() != (0 until parentIds.length()).map { parentIds.getString(it) }.toSet()) return false
+        val files = FileAssetService(context)
+        val rows = files.materials(studentId).associateBy { it.optString("id") }
+        val fingerprints = expected.map { rows[it]?.optString("automationDigestFingerprint").orEmpty() }.distinct()
+        if (fingerprints.size != 1 || fingerprints.single().isBlank()) return false
+        val fingerprint = fingerprints.single()
+        val dao = BusinessDatabase.get(context).tasks()
+        val receipt = JSONObject(dao.metadata("digest-completion:$studentId:$fingerprint") ?: return false)
+        if (receipt.optString("state") != "completed" || receipt.optString("studentId") != studentId ||
+            receipt.optString("fingerprint") != fingerprint) return false
+        val completedIds = receipt.getJSONArray("sourceIds")
+        if (expected.toSet() != (0 until completedIds.length()).map { completedIds.getString(it) }.toSet()) return false
+        val checkpoint = ScopedContentRepository(context).checkpoint(studentId, "digest_result", fingerprint) ?: return false
+        val artifact = files.readLogicalBytes(studentId, receipt.getString("artifactPath"))
+        if (checkpoint.optString("sourceFingerprint") != fingerprint || !artifact.contentEquals(checkpoint.getString("markdown").toByteArray()) ||
+            ScopedContentPolicy.hash(artifact) != receipt.getString("artifactSha256")) return false
+        val replacementSources = receipt.getJSONArray("sources")
+        val resolver = MaterialDigestSourceResolver(context, files)
+        for (i in 0 until sources.length()) {
+            val original = sources.getJSONObject(i); val id = original.getString("id"); val row = rows[id] ?: return false
+            val replacement = (0 until replacementSources.length()).map { replacementSources.getJSONObject(it) }
+                .singleOrNull { it.optString("id") == id } ?: return false
+            val rawHash = ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id))
+            val textHash = ScopedContentPolicy.hash(resolver.resolve(studentId, row).toByteArray())
+            if (original.optString("sha256") != rawHash || replacement.optString("sha256") != rawHash ||
+                replacement.optString("textSha256") != textHash || row.optString("studentId") != studentId ||
+                row.optString("digestRecoveryState") != "completed" || MaterialStatus.normalize(row.optString("status")) != MaterialStatus.PROCESSED ||
+                row.optString("digestBatchId") != receipt.optString("executionId")) return false
+        }
+        tasks.supersedeFailedDigest(parentId, studentId, parent.optString("executionId"), JSONObject()
+            .put("studentId", studentId).put("originalExecutionId", stage.optString("automationExecutionId"))
+            .put("replacementFingerprint", fingerprint).put("replacementExecutionId", receipt.optString("executionId"))
+            .put("artifactSha256", receipt.optString("artifactSha256")).put("checkedAt", Timestamp.now()))
+        return true
     }
 
     /** Only the exact pre-dispatch configuration failure is eligible for automatic repair. */

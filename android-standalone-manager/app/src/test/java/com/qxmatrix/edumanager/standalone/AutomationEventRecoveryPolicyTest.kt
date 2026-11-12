@@ -6,6 +6,31 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AutomationEventRecoveryPolicyTest {
+    @Test fun supersededFailureKeepsHistoryAndLeavesAttentionQueue() {
+        val task = TaskProtocol.envelope(JSONObject().put("status", "archived")
+            .put("error", JSONObject().put("attentionRequired", true).put("message", "old failure"))
+            .put("result", JSONObject().put("supersededReceipt", JSONObject().put("replacementFingerprint", "batch"))))
+        assertEquals("superseded", TaskCenterPolicy.viewState(task))
+        assertEquals("old failure", task.getJSONObject("error").getString("message"))
+    }
+    @Test fun observationDraftRequiresSameStudentOriginalHashAndVerbatimExcerpt() {
+        val evidence = JSONObject().put("studentId", "s1").put("status", "watching")
+            .put("sourceUri", "edu://student/s1/raw/m1").put("content", "观察\n\n原文摘录：2/4 equals 1/2")
+        val row = JSONObject().put("id", "m1").put("studentId", "s1").put("sourceSha256", "hash1")
+        fun checked(e: JSONObject = evidence, r: JSONObject = row, hash: String = "hash1", text: String = "student said 2/4 equals 1/2") =
+            ObservationDraftPolicy.verifiedExcerpt("s1", e, r, hash, text)
+        assertEquals("2/4 equals 1/2", checked())
+        assertNull(checked(hash = "changed"))
+        assertNull(checked(text = "different source"))
+        assertNull(checked(e = JSONObject(evidence.toString()).put("studentId", "s2")))
+        assertNull(checked(e = JSONObject(evidence.toString()).put("status", "rejected")))
+        assertNull(checked(r = JSONObject(row.toString()).put("studentId", "s2")))
+        assertNull(checked(r = JSONObject(row.toString()).put("attributionConflict", true)))
+        assertThrows(IllegalArgumentException::class.java) {
+            EducationPublicationPolicy.validatePublishedReport("s1", "整体画像",
+                "---\nstatus: draft\nstudent_id: s1\n---\n\n# 整体画像\n\n观察草稿：2/4 equals 1/2")
+        }
+    }
     @Test fun missingModelRecoveryRequiresExactHistoricalParentRun() {
         val parent = JSONObject().put("id", "parent").put("kind", "automation_digest_material")
             .put("input", JSONObject().put("studentId", "s1")).put("executionId", "later")

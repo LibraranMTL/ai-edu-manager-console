@@ -5,6 +5,7 @@ import org.json.JSONObject
 /** View states do not rename the shared Task Protocol 1.2 wire states. */
 object TaskCenterPolicy {
     fun viewState(task: JSONObject): String {
+        if (task.optString("status") == "archived" && task.optJSONObject("result")?.optJSONObject("supersededReceipt") != null) return "superseded"
         if (requiresAttributionResolution(task)) return "needs_user"
         if (task.optJSONObject("error")?.optBoolean("attentionRequired") == true) return "needs_user"
         val approval = task.optJSONObject("approval")

@@ -38,6 +38,7 @@ class AutomationEventRecovery(private val context: Context) {
         StudentIndexRepository(context).list().forEach { student ->
             runCatching { synchronized(StudentWorkLocks.forStudent(student.id)) {
                 val batchSummary = DigestBatchRecovery(context).recover(student.id)
+                runCatching { GrowthModelService(context).generateObservationDraftIfNeeded(student.id) }.onFailure { errors++ }
                 repairedBatches += batchSummary.optInt("completedBatches")
                 batchesNeedAttention += batchSummary.optInt("needsAttention")
                 val materials = files.materials(student.id)

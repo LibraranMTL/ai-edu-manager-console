@@ -6,6 +6,8 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.View
 import android.view.ViewGroup
@@ -30,6 +32,14 @@ class ProjectMaterialsActivity : Activity() {
     private var searchText = ""
     private var initialStudentId = ""
     private var initiallyStudentScoped = false
+    private val scopeHandler = Handler(Looper.getMainLooper())
+    private val scopeMonitor = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            if (!projectScopeStillValid()) { finish(); return }
+            scopeHandler.postDelayed(this, 1_000L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,13 +122,25 @@ class ProjectMaterialsActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (!projectScopeStillValid()) { finish(); return }
+        scopeHandler.removeCallbacks(scopeMonitor)
+        scopeHandler.postDelayed(scopeMonitor, 1_000L)
+        if (::list.isInitialized) refresh()
+    }
+
+    override fun onPause() {
+        scopeHandler.removeCallbacks(scopeMonitor)
+        super.onPause()
+    }
+
+    private fun projectScopeStillValid(): Boolean {
         val currentStudentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
             .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
-        if (currentStudentId != initialStudentId) { finish(); return }
+        if (currentStudentId != initialStudentId) return false
         if (initiallyStudentScoped && runCatching {
                 currentStudentId in ProjectRepository(this).requireExact(project.id).studentIds
-            }.getOrDefault(false).not()) { finish(); return }
-        if (::list.isInitialized) refresh()
+            }.getOrDefault(false).not()) return false
+        return true
     }
 
     @Deprecated("Classic picker result is retained for minSdk 23 compatibility")

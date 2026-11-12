@@ -1,8 +1,8 @@
 param(
-  [Parameter(Mandatory=$true)][string]$ToolsRoot,
-  [Parameter(Mandatory=$true)][string]$GradleRoot,
+  [string]$ToolsRoot = 'C:\Users\bxw00\android-build-deps',
+  [string]$GradleRoot = 'C:\Users\bxw00\android-build-deps\gradle\gradle-8.10.2',
   [string]$KeystorePath = 'D:\AndroidSigning\AI-Education-Manager\ai-education-manager-release.jks',
-  [string]$OutputDirectory = 'D:\AndroidCandidates\standalone-fault-harness-20261112'
+  [string]$OutputDirectory = 'D:\AndroidCandidates\standalone-fault-harness-r18-scope-20261112'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -19,8 +19,8 @@ try {
   & subst X: $repo
   & subst Y: $ToolsRoot
   & subst Z: $GradleRoot
-  $env:JAVA_HOME = 'Y:\jdk\jdk-21.0.11+10'
-  $env:ANDROID_HOME = 'Y:\sdk'
+  $env:JAVA_HOME = 'Y:\jdk17\jdk-17.0.19+10'
+  $env:ANDROID_HOME = 'Y:\android-sdk'
   $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
   & 'Z:\bin\gradle.bat' -p 'X:\android-standalone-manager' -PeduFaultHarness=true ':app:assembleFaultTest' ':app:assembleFaultTestAndroidTest' --no-daemon
   if ($LASTEXITCODE -ne 0) { throw 'Fault test build failed.' }
@@ -28,7 +28,7 @@ try {
   $test = 'X:\android-standalone-manager\app\build\outputs\apk\androidTest\faultTest\app-faultTest-androidTest.apk'
   if (-not (Test-Path -LiteralPath $app) -or -not (Test-Path -LiteralPath $test)) { throw 'Expected signed build outputs not found.' }
   New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
-  $signer = 'Y:\sdk\build-tools\34.0.0\apksigner.bat'
+  $signer = 'Y:\android-sdk\build-tools\34.0.0\apksigner.bat'
   foreach ($entry in @(@($app, 'fault-app.apk'), @($test, 'fault-instrumentation.apk'))) {
     $out = Join-Path $OutputDirectory $entry[1]
     $verification = & $signer verify --print-certs $entry[0] 2>$null

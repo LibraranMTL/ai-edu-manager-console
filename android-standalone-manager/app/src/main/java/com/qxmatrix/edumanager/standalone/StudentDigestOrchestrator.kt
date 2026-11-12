@@ -228,7 +228,8 @@ class StudentDigestOrchestrator(private val context: Context) {
                 BusinessDatabase.get(context).tasks().metadata(marker)?.let(::JSONObject)?.optString("state") == "unknown"
             } == true
             val retryableTransport = !explicitUserAction && !unknownOutcome &&
-                AutomationFailurePolicy.decide(error, 1, 4).classification == AutomationFailureClass.TRANSIENT
+                AutomationFailurePolicy.decide(error, 1, 4).classification in
+                setOf(AutomationFailureClass.TRANSIENT, AutomationFailureClass.CAPABILITY_MISSING)
             if (!completionReceiptReady && !checkpointAvailable) eligible.forEach { material -> runCatching {
                 files.patchMaterial(studentId, material.getString("id"), JSONObject()
                     .put("digestAttemptedAt", Timestamp.now()).put("digestBatchId", executionId)

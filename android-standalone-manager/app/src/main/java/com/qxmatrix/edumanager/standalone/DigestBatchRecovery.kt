@@ -61,6 +61,9 @@ class DigestBatchRecovery(private val context: Context) {
                 val stage = runCatching { JSONObject(entry.payload) }.getOrNull()
                 if (stage == null) { stageErrors++; return@forEach }
                 if (stage.optString("state") !in setOf("initial", "prepared")) return@forEach
+                if (stage.optString("state") == "initial" && runCatching { recoverMissingModel(studentId, stage) }.getOrDefault(false)) {
+                    resumed++; return@forEach
+                }
                 runCatching { StudentDigestOrchestrator(context).resumeCheckpointStage(studentId, entry.name, stage) }
                     .onSuccess { if (it) resumed++ else waitingCheckpoint++ }
                     .onFailure { stageErrors++ }
@@ -141,5 +144,48 @@ class DigestBatchRecovery(private val context: Context) {
         } while (page.size == 100)
         JSONObject().put("completedBatches", completed).put("needsAttention", attention + stageErrors)
             .put("resumedCheckpoints", resumed).put("waitingCheckpoint", waitingCheckpoint)
+    }
+
+    /** Only the exact pre-dispatch configuration failure is eligible for automatic repair. */
+    private fun recoverMissingModel(studentId: String, stage: JSONObject): Boolean {
+        if (AgentConfigurationStore(context).load() == null || stage.optString("studentId") != studentId ||
+            stage.optInt("notDispatchedProofVersion") != 1 || !stage.optBoolean("allowAutoNoDispatch")) return false
+        val executionId = stage.optString("executionId")
+        val childId = stage.optString("childTaskId")
+        val child = runCatching { TaskRepository(context).requireExact(childId) }.getOrNull() ?: return false
+        if (executionId.isBlank() || child.optString("executionId") != executionId || child.optString("status") != "failed" ||
+            child.optJSONObject("input")?.optString("studentId") != studentId ||
+            BusinessDatabase.get(context).ledger().hasAnyCall(studentId, childId)) return false
+        val parentId = stage.optString("automationTaskId")
+        if (parentId.isNotBlank()) {
+            val parent = runCatching { TaskRepository(context).requireExact(parentId) }.getOrNull() ?: return false
+            if (parent.optString("executionId") != stage.optString("automationExecutionId") ||
+                parent.optString("status") in setOf("cancelled", "archived")) return false
+        }
+        val sources = stage.optJSONArray("sources") ?: return false
+        if (sources.length() == 0) return false
+        val files = FileAssetService(context)
+        val indexed = files.materials(studentId).associateBy { it.optString("id") }
+        val selected = mutableListOf<JSONObject>()
+        for (index in 0 until sources.length()) {
+            val source = sources.optJSONObject(index) ?: return false
+            val id = source.optString("id")
+            val material = indexed[id] ?: return false
+            val expected = source.optString("sha256")
+            if (id.isBlank() || expected.isBlank() || material.optString("studentId") != studentId ||
+                material.optString("digestBatchId") != executionId ||
+                MaterialStatus.normalize(material.optString("status")) != MaterialStatus.FAILED ||
+                material.optString("digestRecoveryState") != "failed" ||
+                material.optString("digestError") != "尚未配置 Agent 模型" ||
+                ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id)) != expected) return false
+            selected.add(material)
+        }
+        if (selected.map { it.getString("id") }.distinct().size != selected.size) return false
+        AutomationEventEmitter.qualityFailure(context, studentId, selected, "model_configuration_restored:$executionId")
+        val fingerprint = ScopedContentPolicy.fingerprint(JSONObject().put("recovery", "model_configuration_restored")
+            .put("executionId", executionId).put("studentId", studentId))
+        AutomationOrchestrator(context).emit(AutomationEventType.OCR_COMPLETED, studentId, fingerprint,
+            selected.map { it.getString("id") })
+        return true
     }
 }

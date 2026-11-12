@@ -380,6 +380,21 @@ class GrowthModelService(private val context: Context) {
         return GeneratedReportSet(confirmed, reports, modelReports, fallbackSections, warnings)
     }
 
+    /** Resolve the active report-set identity only after validating all four files. */
+    fun activeReportPublicationId(studentId: String): String? = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val workspace = store(student)
+        val path = activeReportSetPath(student)
+        if (!workspace.exists(path)) return@synchronized null
+        val pointer = JSONObject(workspace.readBytes(path).toString(Charsets.UTF_8))
+        REPORTS.forEach { definition ->
+            val entry = LearningReportPublicationPolicy.requireEntry(pointer, student.id, definition.id)
+            val content = workspace.readBytes(entry.getString("path"))
+            require(ScopedContentPolicy.hash(content) == entry.getString("sha256")) { "学情报告活动版本哈希不一致" }
+        }
+        pointer.getString("publicationId").also { require(it.isNotBlank()) { "学情报告版本标识为空" } }
+    }
+
     fun readPublishedReport(studentId: String, reportId: String): String {
         val student = students.requireExact(studentId)
         val definition = REPORTS.singleOrNull { it.id == reportId } ?: error("未知学情报告")

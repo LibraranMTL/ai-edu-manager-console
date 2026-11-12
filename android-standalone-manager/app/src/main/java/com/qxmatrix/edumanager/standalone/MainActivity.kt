@@ -1251,9 +1251,6 @@ class MainActivity : ComponentActivity() {
         val needsHelp = queue.count(::materialNeedsHelp)
         student?.let { runCatching { ReportScheduleStore(this).ensureDefaults(it.id) } }
         sectionHeading("最新学情报告")
-        val reportRevision = student?.let { current -> runCatching {
-            LearningInsightsStore(this).reportRevisions(current.id).firstOrNull()?.optString("contentFingerprint").orEmpty()
-        }.getOrDefault("") }.orEmpty()
         sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
         sectionContent.addView(statusCard().apply {
             text = when {
@@ -1299,7 +1296,7 @@ class MainActivity : ComponentActivity() {
             YouthAction("◇", "专业探索", "查看已生成的专业参考") { openPlanningModule("majors") },
             YouthAction("◆", "职业发展", "查看已生成的职业参考") { openPlanningModule("careers") },
         ), preferredColumns = 3, colorful = false)
-        addExpertConsultationCard("android_report", "learning_report", reportRevision)
+        addExpertConsultationCard("android_report", "learning_report")
     }
 
     private fun openPublishedReport(student: StudentRecord, definition: LearningReportDefinition) {
@@ -3458,6 +3455,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchExpertAuthorization(student: StudentRecord, sourcePage: String, reportType: String, reportRevision: String) {
+        if (sourcePage == "android_report" && reportRevision.isBlank()) {
+            Thread {
+                val revision = runCatching { GrowthModelService(this).activeReportPublicationId(student.id) }
+                    .fold({ it ?: "暂无可校验的正式版本" }, { "版本读取或校验失败" })
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed &&
+                        getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE).getString(KEY_CURRENT_STUDENT_ID, "") == student.id) {
+                        startExpertAuthorization(student, sourcePage, reportType, revision)
+                    }
+                }
+            }.start()
+            return
+        }
+        startExpertAuthorization(student, sourcePage, reportType, reportRevision)
+    }
+
+    private fun startExpertAuthorization(student: StudentRecord, sourcePage: String, reportType: String, reportRevision: String) {
         startActivity(Intent(this, CloudSyncActivity::class.java)
             .putExtra(CloudSyncActivity.EXTRA_STUDENT_ID, student.id)
             .putExtra(CloudSyncActivity.EXTRA_EXPERT_INTENT, true)

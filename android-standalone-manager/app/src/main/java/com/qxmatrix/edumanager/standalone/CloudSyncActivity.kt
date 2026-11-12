@@ -49,7 +49,7 @@ class CloudSyncActivity : Activity() {
                 addView(text("来自$origin。请核对当前学生和五类资料范围；平台会在用户授权后派遣专家一对一解读咨询。本页不会自动创建咨询单。$reportContext$suggested", 14f).apply { setTextColor(android.graphics.Color.rgb(55, 65, 81)) })
             })
         }
-        root.addView(text("五类资料分别授权；默认仅学情报告。原始照片、录音、视频和本地知识库不会自动镜像。", 13f))
+        root.addView(text("五类资料分别选择并确认授权。原始照片、录音、视频和本地知识库不会自动镜像。", 13f))
         root.addView(button("学生基础信息字段预览") { showProfilePreview() })
         root.addView(button("选择五类同步范围") { showScopeDialog() })
         root.addView(button("逐项选择学习资料原件") { showMaterialDialog() })

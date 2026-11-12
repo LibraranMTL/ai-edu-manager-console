@@ -192,7 +192,10 @@ class MarkdownBrowserActivity : Activity() {
     private fun updateDisplay() {
         rawView.text = currentText; rawView.visibility = if (rendered) View.GONE else View.VISIBLE; webView.visibility = if (rendered) View.VISIBLE else View.GONE
         modeButton.text = if (rendered) "查看原文" else "阅读模式"
-        if (rendered) webView.loadDataWithBaseURL("https://local.edu-manager/", MarkdownRenderer.html(currentText), "text/html", "UTF-8", null)
+        if (rendered) {
+            val body = if (intent.getStringExtra(EXTRA_MODE) == MODE_REPORT) MarkdownRenderer.reportBody(currentText) else currentText
+            webView.loadDataWithBaseURL("https://local.edu-manager/", MarkdownRenderer.html(body), "text/html", "UTF-8", null)
+        }
     }
 
     private fun showFailure(message: String) { statusView.text = message; currentText = "# 无法显示\n\n$message"; modeButton.isEnabled = false; updateDisplay() }

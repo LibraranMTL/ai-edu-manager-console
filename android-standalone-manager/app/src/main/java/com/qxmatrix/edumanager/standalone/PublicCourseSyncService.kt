@@ -63,7 +63,8 @@ class PublicCourseSyncService(context: Context) {
         ))
         val active = when (manifestResponse.status) {
             200 -> adoptManifest(baseUrl, JSONObject(manifestResponse.body.toString(Charsets.UTF_8)), nowMillis)
-            304 -> verifiedActive(nowMillis, requireLease = false) ?: error("服务端返回304但本机没有可验证的公共课程缓存")
+            304 -> verifiedActive(nowMillis, requireLease = true)
+                ?: error("服务端清单未更新，但本机课程清单已过期、缺失或无法验证；请等待云端发布有效清单")
             else -> error("公共课程清单读取失败：HTTP ${manifestResponse.status}")
         }
         val acceptedManifestEtag = header(manifestResponse, "etag")?.takeIf(String::isNotBlank)

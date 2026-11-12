@@ -183,8 +183,9 @@ class AutomationTriggerAdapters(private val context: Context) {
             versions.put(JSONObject().put("studentId", studentId).put("versionId", row.id))
         }
         val report = ProjectOutcomeService(context).generateProgressReport(project.id, triggerFingerprint)
+        val digest = ProjectDigestQueue(context).enqueueAutomatic(project.id)
         return JSONObject().put("projectId", project.id).put("versions", versions).put("metrics", metrics)
-            .put("progressReport", report)
+            .put("progressReport", report).put("automaticDigestJobId", digest?.optString("jobId").orEmpty())
     }
 
     private fun selectedMaterials(studentId: String, sourceIds: List<String>): List<JSONObject> {

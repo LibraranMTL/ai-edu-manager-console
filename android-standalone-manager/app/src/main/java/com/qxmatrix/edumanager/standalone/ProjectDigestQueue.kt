@@ -14,12 +14,22 @@ import org.json.JSONObject
 import java.io.FileNotFoundException
 import java.util.UUID
 
+object ProjectAutoDigestPolicy {
+    private val textExtensions = setOf("txt", "md", "markdown", "csv", "json")
+    fun eligibleMaterial(row: JSONObject): Boolean = row.optString("adoption") == "accepted" &&
+        row.optString("availability") == "available" && row.optJSONObject("processing")?.optString("state") == "pending" &&
+        row.optString("title").substringAfterLast('.', "").lowercase() in textExtensions
+    fun permitted(fullMode: Boolean, licensed: Boolean, configured: Boolean, studentCount: Int,
+        projectStatus: String, lastStatus: String): Boolean = fullMode && licensed && configured && studentCount == 1 &&
+        projectStatus !in setOf("sealed", "archived") && lastStatus !in setOf("queued", "running", "failed", "needs_user")
+}
+
 /** Durable, bounded queue for project knowledge digestion. Original files never live in this queue. */
 class ProjectDigestQueue(context: Context) {
     private val appContext = context.applicationContext
     private val state = PrivateStateStore(appContext)
 
-    fun enqueue(projectId: String, maximum: Int = 20): JSONObject = synchronized(STATE_LOCK) {
+    fun enqueue(projectId: String, maximum: Int = 20, automatic: Boolean = false): JSONObject = synchronized(STATE_LOCK) {
         val project = ProjectRepository(appContext).requireExact(projectId)
         val selectedStudent = appContext.getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, Context.MODE_PRIVATE).getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
         val scopeStudent = selectedStudent.takeIf { it in project.studentIds } ?: project.studentIds.singleOrNull().orEmpty()
@@ -29,7 +39,7 @@ class ProjectDigestQueue(context: Context) {
             it.optString("projectId") == projectId && it.optString("status") in ACTIVE
         }?.let { return@synchronized JSONObject(it.toString()) }
         require(root.getJSONArray("jobs").objects().none { it.optString("projectId") == projectId && it.optString("status") == "needs_user" }) { "上次消化结果未知，请先核对并结束未知任务，不能自动重试" }
-        val frozen = LocalProjectDigestService(appContext).freezePending(projectId, maximum)
+        val frozen = LocalProjectDigestService(appContext).freezePending(projectId, maximum, automatic)
         val job = JSONObject().put("jobId", "project-digest-${UUID.randomUUID()}").put("projectId", projectId)
             .put("studentId", scopeStudent)
             .put("status", "queued").put("attempt", 0).put("frozenMaterials", frozen)
@@ -40,6 +50,17 @@ class ProjectDigestQueue(context: Context) {
 
     fun latest(projectId: String): JSONObject? = synchronized(STATE_LOCK) { read().getJSONArray("jobs").objects()
         .lastOrNull { it.optString("projectId") == projectId }?.let { JSONObject(it.toString()) }
+    }
+
+    fun enqueueAutomatic(projectId: String): JSONObject? = synchronized(STATE_LOCK) {
+        val project = ProjectRepository(appContext).requireExact(projectId)
+        val mode = AutomationMode.from(AutoDigestSettingsStore(appContext).load().automationMode)
+        val last = latest(projectId)?.optString("status").orEmpty()
+        if (!ProjectAutoDigestPolicy.permitted(mode == AutomationMode.FULL, LicenseManager(appContext).status().active,
+                AgentConfigurationStore(appContext).load() != null, project.studentIds.size, project.status, last) ||
+            project.materialStorageMode != "workspace-v1" || project.materialMigrationState == "running") return@synchronized null
+        if (LocalProjectMaterialService(appContext).list(projectId, "materials").none(ProjectAutoDigestPolicy::eligibleMaterial)) return@synchronized null
+        enqueue(projectId, automatic = true)
     }
 
     fun resumePending() = synchronized(STATE_LOCK) {
@@ -95,7 +116,7 @@ class ProjectDigestQueue(context: Context) {
             .setConstraints(BackgroundWorkPolicy.remoteConstraints)
             .build()
         WorkManager.getInstance(appContext).enqueueUniqueWork(
-            if (job.optString("studentId").isNotBlank()) BackgroundWorkPolicy.uniqueName("project-digest", job.getString("studentId")) else workName(job.getString("jobId")),
+            workName(job.getString("jobId")),
             ExistingWorkPolicy.KEEP,
             request,
         )
@@ -142,7 +163,11 @@ class ProjectDigestWorker(context: Context, parameters: WorkerParameters) : Work
             requireNotNull(AgentConfigurationStore(applicationContext).load()) { "尚未配置任务 Agent" }
             if (job.optString("studentId").isBlank()) LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"))
             else LocalProjectDigestService(applicationContext).digestFrozen(job.getString("projectId"), job.getJSONArray("frozenMaterials"), job.getString("studentId"))
-        }.fold(onSuccess = { queue.complete(jobId, it); Result.success() }, onFailure = { queue.fail(jobId, it); Result.success() })
+        }.fold(onSuccess = {
+            queue.complete(jobId, it)
+            runCatching { queue.enqueueAutomatic(job.getString("projectId")) }
+            Result.success()
+        }, onFailure = { queue.fail(jobId, it); Result.success() })
     }
 
     companion object { private val EXECUTION_LOCK = Any() }

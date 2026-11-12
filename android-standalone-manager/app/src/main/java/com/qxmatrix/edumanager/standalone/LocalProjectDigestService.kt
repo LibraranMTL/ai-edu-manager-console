@@ -11,12 +11,12 @@ class LocalProjectDigestService(private val context: Context) {
     private val materials = LocalProjectMaterialService(context)
     private val projects = ProjectRepository(context)
 
-    fun freezePending(projectId: String, maximum: Int = 20): JSONArray = synchronized(LOCK) {
+    fun freezePending(projectId: String, maximum: Int = 20, automatic: Boolean = false): JSONArray = synchronized(LOCK) {
         require(maximum in 1..50)
         val project = projects.requireExact(projectId)
         require(project.materialStorageMode == "workspace-v1" && project.materialMigrationState != "running") { "项目资料尚未统一或正在迁移" }
         val selected = materials.list(projectId, "materials").filter {
-            it.optString("adoption") == "accepted" && it.optJSONObject("processing")?.optString("state") != "completed" &&
+            (!automatic || ProjectAutoDigestPolicy.eligibleMaterial(it)) && it.optString("adoption") == "accepted" && it.optJSONObject("processing")?.optString("state") != "completed" &&
                 it.optString("title").substringAfterLast('.', "").lowercase() in TEXT_EXTENSIONS
         }.take(maximum)
         require(selected.isNotEmpty()) { "没有可直接消化的文本资料；图片和PDF须先完成OCR或解析" }

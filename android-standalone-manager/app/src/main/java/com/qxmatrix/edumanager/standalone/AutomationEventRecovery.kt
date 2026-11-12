@@ -108,6 +108,7 @@ class AutomationEventRecovery(private val context: Context) {
             val projectMaterials = LocalProjectMaterialService(context)
             ProjectRepository(context).list().filter { it.studentIds.isNotEmpty() && it.status !in setOf("sealed", "archived") }.forEach { project ->
                 runCatching {
+                    ProjectDigestQueue(context).enqueueAutomatic(project.id)
                     val fingerprint = projectMaterials.persistedSnapshotFingerprint(project.id) ?: return@runCatching
                     AutomationOrchestrator(context).emit(AutomationEventType.PROJECT_SNAPSHOT_CHANGED, "", fingerprint, projectId = project.id)
                     projects++

@@ -67,6 +67,8 @@ object MentorDialogs {
         val dialog = AlertDialog.Builder(activity).setTitle(title).setView(web)
             .setPositiveButton("复制正文", null).setNegativeButton("关闭", null).create()
         dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(android.graphics.Color.WHITE)
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(android.graphics.Color.WHITE)
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 if (check(activity, student, project)) {
                     (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)

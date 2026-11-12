@@ -114,9 +114,8 @@ class CloudSyncActivity : Activity() {
             id.startsWith("profile:") -> id.removePrefix("profile:") in cloud.profileFields
             else -> id.removePrefix("category:") in cloud.materialCategories
         } }
-        AlertDialog.Builder(this).setTitle("选择本次授权范围")
+        AlertDialog.Builder(this).setTitle("选择本次授权范围（学习资料原件须另行逐项选择）")
             .setMultiChoiceItems(ids.map { id -> if (id.startsWith("profile:")) "基础信息 · ${profileFieldLabel(id.removePrefix("profile:"))}" else "资料 · ${categoryLabel(id.removePrefix("category:"))}" }.toTypedArray(), checked) { _, which, value -> checked[which] = value }
-            .setMessage("仅发送勾选范围。学习资料原件还需逐项选择；缩小范围只停止后续发送，不自动删除云端既有版本。")
             .setNegativeButton("取消", null).setPositiveButton("确认许可") { _, _ ->
                 val selectedFields = ids.filterIndexed { index, id -> checked[index] && id.startsWith("profile:") }
                     .map { it.removePrefix("profile:") }.toMutableSet().apply { if (isNotEmpty()) add("displayName") }
@@ -128,9 +127,8 @@ class CloudSyncActivity : Activity() {
 
     private fun chooseAuthorizationExpiry(sync: CloudReportSync, fields: Set<String>, categories: Set<String>) {
         val days = listOf(7L, 30L, 90L)
-        AlertDialog.Builder(this).setTitle("选择授权有效期")
+        AlertDialog.Builder(this).setTitle("选择授权有效期（到期停止后续上传）")
             .setSingleChoiceItems(arrayOf("7天", "30天（推荐）", "90天"), 1, null)
-            .setMessage(if (expertIntent) "用户授权后，平台将派遣专家一对一解读咨询。本期不展示专家分配、进度或结果回传。" else "到期后本机和云端都会拒绝继续上传；需要继续时须重新确认范围。")
             .setNegativeButton("取消", null).setPositiveButton("授权并开始上传") { dialog, _ ->
                 val selected = (dialog as AlertDialog).listView.checkedItemPosition.takeIf { it in days.indices } ?: 1
                 val expiresAt = System.currentTimeMillis() + days[selected] * 24 * 60 * 60 * 1_000

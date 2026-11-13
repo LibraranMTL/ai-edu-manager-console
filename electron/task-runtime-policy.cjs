@@ -137,8 +137,10 @@ function candidateRuntimeDecision(current, candidate) {
     && currentCycle && candidateCycle && currentCycle === candidateCycle);
   const active = PROTECTED_TASK_STATUSES.has(currentStatus)
     || PROTECTED_SETTLEMENT_STATES.has(String(current?.settlementState || ''));
+  const manualPacket = taskExecutionClass(current) === 'manual'
+    && current?.result?.packet && typeof current.result.packet === 'object';
   const orphan = ['running', 'waiting_result'].includes(currentStatus)
-    && (!current?.executionId || !current?.startedAt);
+    && (!current?.executionId || !current?.startedAt) && !manualPacket;
   const preserveExecution = active && !orphan;
   // A failed run can already be prepared for its next adapter while the
   // candidate builder still describes the generic pending card. Keep that
@@ -227,6 +229,21 @@ function repairTaskRuntimeStore(store, now = new Date().toISOString()) {
     }
     if (task.recoveryState === 'unknown') continue;
     const executionClass = taskExecutionClass(task);
+    const manualPacket = executionClass === 'manual' && task.result?.packet
+      && typeof task.result.packet === 'object';
+    if (manualPacket && ['draft', 'pending', 'approved', 'queued', 'running', 'waiting_result'].includes(String(task.status || ''))
+      && (task.status !== 'waiting_result' || !task.executionId || !task.startedAt)) {
+      // A legacy handoff may already be outside the host even when old metadata
+      // is incomplete. Preserve the packet and require reconciliation.
+      task.status = 'waiting_result';
+      task.recoveryState = 'unknown';
+      task.recoveryReason = 'legacy_manual_packet_incomplete';
+      task.autoRetry = false;
+      task.nextRetryAt = '';
+      task.updatedAt = now;
+      repairs.push({ taskId: task.id, type: 'legacy_manual_packet_quarantined' });
+      continue;
+    }
     const maxAttempts = Math.max(1, Number(task.maxAttempts || 1));
     const attempt = Math.max(0, Number(task.attempt || 0));
     if (attempt > maxAttempts) {

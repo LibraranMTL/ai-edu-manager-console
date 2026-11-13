@@ -156,6 +156,31 @@ test('candidate refresh cannot replace active or prepared execution runtime', ()
   assert.equal(prepared.nextStatus, 'approved');
 });
 
+test('legacy exported manual packets with missing timestamps stay quarantined across refresh and repair', () => {
+  for (const executionMode of ['manual', 'agent_handoff']) {
+    for (const executionId of ['', 'manual-legacy']) {
+      const current = { id: 'manual-legacy', status: 'waiting_result', executionMode, executor: 'manual',
+        executionId, startedAt: '', workKey: 'synthetic-work', autoRetry: true,
+        result: { status: 'manual_required', packet: { id: 'synthetic-packet' } } };
+      const decision = candidateRuntimeDecision(current, { ...current, status: 'queued', result: null });
+      assert.equal(decision.preserveRuntime, true);
+      assert.equal(decision.nextStatus, 'waiting_result');
+      assert.equal(decision.resetExecution, false);
+      const store = { tasks: [structuredClone(current)] };
+      repairTaskRuntimeStore(store, '2026-11-13T00:00:00Z');
+      assert.equal(store.tasks[0].status, 'waiting_result');
+      assert.equal(store.tasks[0].result.packet.id, 'synthetic-packet');
+      assert.equal(store.tasks[0].autoRetry, false);
+      assert.equal(store.tasks[0].executionId, executionId);
+      const previouslyQueued = { tasks: [{ ...structuredClone(current), status: 'queued' }] };
+      repairTaskRuntimeStore(previouslyQueued, '2026-11-13T00:00:00Z');
+      assert.equal(previouslyQueued.tasks[0].status, 'waiting_result');
+      assert.equal(previouslyQueued.tasks[0].recoveryState, 'unknown');
+      assert.equal(previouslyQueued.tasks[0].result.packet.id, 'synthetic-packet');
+    }
+  }
+});
+
 test('runtime repair restores manual waits, recovers orphans and clamps retry storms', () => {
   const store = {
     tasks: [

@@ -94,6 +94,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   getMaterialImportRecords(studentId) {
     return invokeLegacy('bridge:getMaterialImportRecords', studentId);
   },
+  getProjectManualImportRecords(studentId, projectId) {
+    return ipcRenderer.invoke('bridge:getProjectManualImportRecords', studentId, projectId);
+  },
   removeMaterialImportRecords(studentId, recordIdsJson) {
     return invokeLegacy('bridge:removeMaterialImportRecords', studentId, recordIdsJson);
   },

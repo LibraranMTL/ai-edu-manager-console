@@ -1082,7 +1082,10 @@ function getSmartInbox() {
         const context = downloadInboxTarget(item.target);
         if (context.project && isWorkspaceMaterialProject(context.project)) {
           const store = createProjectMaterialHost(context.project).store;
-          const material = (await store.read()).materials.find(m => m.sha256 === item.fingerprint.sha256 && m.adoption.state === 'accepted');
+          const index = await store.read();
+          const material = index.materials.find(m => m.sha256 === item.fingerprint.sha256 && m.adoption.state === 'accepted'
+            && (m.sources || []).some(source => source.intakeAssociation?.itemId === item.id
+              && source.intakeAssociation?.operationId === item.operationId && String(source.studentId) === String(item.target.studentId)));
           if (material) { const found = await store.resolve(material.materialId); return { ok: true, path: found.path, recordId: material.materialId }; }
         }
         if (['history', 'session'].includes(item.sourceType)) {
@@ -8346,6 +8349,21 @@ function getMaterialImportRecords(studentId) {
   return JSON.stringify({ ok: true, records });
 }
 
+async function getProjectManualImportRecords(studentId, projectId) {
+  try {
+    const project = readProjects().map(normalizeProject).find((item) => String(item.id) === String(projectId));
+    if (!project || !(project.studentIds || []).map(String).includes(String(studentId))) return JSON.stringify({ ok: false, message: '项目未绑定当前学生。' });
+    if (!isWorkspaceMaterialProject(project)) return JSON.stringify({ ok: true, records: [] });
+    const index = await createProjectMaterialHost(project).store.read();
+    const records = index.materials.filter((item) => (item.sources || []).some((source) => source.type === 'host_manual_import' && String(source.studentId) === String(studentId)))
+      .map((item) => ({ id: item.materialId, studentId: String(studentId), sourceName: '主机手动导入',
+        targetPath: path.join(project.workspacePath, item.location?.relativePath || ''), fileName: path.basename(item.location?.relativePath || ''),
+        fileSize: item.size || 0, importedAt: item.createdAt || '', status: item.processing?.state || 'pending' }))
+      .sort((a, b) => String(b.importedAt).localeCompare(String(a.importedAt))).slice(0, 100);
+    return JSON.stringify({ ok: true, records });
+  } catch (error) { return JSON.stringify({ ok: false, message: `读取项目导入记录失败：${error.message}` }); }
+}
+
 function removeMaterialImportRecords(studentId, recordIdsJson) {
   const student = readStudentsIndex().find((item) => String(item.id) === String(studentId));
   if (!student) return JSON.stringify({ ok: false, removed: 0, message: '未找到学生档案。' });
@@ -10898,6 +10916,7 @@ function openProjectSpace(projectId, space) {
     const targets = {
       root: { path: ensured.projectRootPath, label: '项目根目录' },
       workspace: { path: ensured.workspacePath, label: '项目工作空间' },
+      importTarget: { path: isWorkspaceMaterialProject(ensured) ? path.join(ensured.workspacePath, ensured.inboxRelativePath || '收件箱') : ensured.rawPath, label: '项目导入位置' },
       raw: { path: ensured.rawPath, label: '项目原始资料库' },
       knowledge: { path: ensured.knowledgeRootPath, label: '项目知识空间' },
     };
@@ -12584,6 +12603,12 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  // Native UI acceptance uses a separately specified data directory.  The
+  // launch helper remains hidden; only the explicitly requested QA window is
+  // revealed once its isolated renderer is ready.
+  if (qaIsolated && isolatedUserData && process.argv.includes('--qa-reveal-isolated-window')) {
+    mainWindow.once('ready-to-show', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show(); });
+  }
   mainWindow.webContents.on('before-input-event', handleCourseFullscreenEscape);
   mainWindow.on('resize', () => {
     if (courseView) courseView.setBounds(courseViewBounds());
@@ -25855,6 +25880,7 @@ function finalizeStoredLifecycleSession(student, session, options = {}) {
     sourceNodeId: session.sourceNodeId,
     sessionId: session.sessionId,
     title: session.title || `${session.agentId} 授权会话`,
+    workspacePath: session.workspacePath || '', repositoryPath: session.repositoryPath || '',
     scopeType: 'student',
     scopeId: String(student.id),
     studentHint: String(student.id),
@@ -25910,6 +25936,7 @@ function startLifecycleSession(store, scope, event, sourceNodeId) {
     origin: 'authorized_agent',
     sourceNodeId,
     title: continuation ? `${event.title || `${event.sourceAgent} 授权会话`}（继续）` : event.title,
+    workspacePath: event.workspacePath || '', repositoryPath: event.repositoryPath || '',
   }).session;
 }
 
@@ -30703,7 +30730,7 @@ function writeBacklogConvergenceCheckpoint(checkpoint) {
 }
 
 async function runTaskBacklogConvergenceSlice() {
-  if (!AUTOMATION_FEATURES.backlogConvergence || backlogConvergenceRunning || taskReadMaintenanceStopped || !taskStoreGuard.ready()
+  if (!AUTOMATION_FEATURES.backlogConvergence || readSettings().backlogConvergencePaused === true || !taskAutomationEnabled() || backlogConvergenceRunning || taskReadMaintenanceStopped || !taskStoreGuard.ready()
     || !projectArchiveRuntime.status().ready || taskStoreGuard.status()) return { ok: true, skipped: true };
   backlogConvergenceRunning = true;
   try {
@@ -30712,6 +30739,9 @@ async function runTaskBacklogConvergenceSlice() {
     const plan = planConvergenceSlice(preview, checkpoint);
     const results = [];
     for (const row of plan.safeRows) {
+      // The user can pause automation while a preview is being prepared or a
+      // previous item is being reconciled. Do not start another historical row.
+      if (readSettings().backlogConvergencePaused === true || !taskAutomationEnabled()) return { ok: true, skipped: true, reason: 'automation_paused' };
       try {
         const result = await taskStoreGuard.applyTaskRecovery({
           taskId: row.taskId,
@@ -34316,6 +34346,8 @@ function conversationSubmissionContent(submission) {
     title: submission.title,
     sourceAgent: submission.sourceAgent,
     sessionId: submission.sessionId,
+    workspacePath: submission.workspacePath || '', repositoryPath: submission.repositoryPath || '',
+    scopeType: submission.scopeType || '', scopeId: submission.scopeId || '',
     submittedAt: submission.submittedAt,
     messages: submission.messages.map((message) => ({
       role: message.role,
@@ -43455,6 +43487,7 @@ ipcMain.on('bridge:pickMaterialSourceDir', (event) => { licensedIpc(event, '资�
 ipcMain.handle('bridge:scanMaterialSources', (_event, studentId, sourcesJson) => licensedInvoke('资料来源目录扫描', () => scanMaterialSources(studentId, sourcesJson)));
 ipcMain.handle('bridge:importMaterialSourceFiles', (_event, studentId, pathsJson, targetJson) => licensedInvoke('导入资料', () => importMaterialSourceFiles(studentId, pathsJson, targetJson)));
 ipcMain.on('bridge:getMaterialImportRecords', (event, studentId) => { event.returnValue = getMaterialImportRecords(studentId); });
+ipcMain.handle('bridge:getProjectManualImportRecords', (_event, studentId, projectId) => licensedInvoke('读取项目导入记录', () => getProjectManualImportRecords(studentId, projectId)));
 ipcMain.on('bridge:removeMaterialImportRecords', (event, studentId, recordIdsJson) => { licensedIpc(event, '移除资料记录', () => removeMaterialImportRecords(studentId, recordIdsJson)); });
 ipcMain.handle('bridge:getAssetIndex', () => deferredInvoke(() => {
   const page = assetStore().listAssets({ pageSize: 100 });
@@ -43822,6 +43855,12 @@ ipcMain.handle('bridge:smartInboxAction', (event, action, input = {}) => license
       }
     }
   }
+  else if (action === 'rules') data = await engine.listUserRules(input);
+  else if (action === 'saveRule') data = await engine.saveUserRule(input);
+  else if (action === 'ruleSuggestions') data = await engine.listRuleSuggestions(input);
+  else if (action === 'previewRule') data = await engine.previewBacklog({ itemIds: input.itemIds, rule: input.rule, page: input.page, studentId: input.studentId });
+  else if (action === 'trial') data = await engine.previewBacklog(input);
+  else if (action === 'applyTrial') data = await engine.applyPreview(input);
   else if (action === 'saveSource') data = await engine.updateSource(input);
   else if (action === 'pause') data = await engine.pause(input.id);
   else if (action === 'detach') data = await engine.detach(input.id);

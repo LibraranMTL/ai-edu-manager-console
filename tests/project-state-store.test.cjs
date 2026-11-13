@@ -57,6 +57,82 @@ test('project initialization worker releases SQLite before announcing completion
   }
 });
 
+test('concurrent project migration never replaces an opened winning database', async () => {
+  const paths = setup(), workers = [];
+  try {
+    const jobs = Array.from({ length: 4 }, () => {
+      const worker = new Worker(path.join(__dirname, '../electron/project-state-worker.cjs'), { workerData: paths });
+      workers.push(worker);
+      return new Promise((resolve, reject) => { worker.once('message', resolve); worker.once('error', reject); });
+    });
+    const results = await Promise.all(jobs);
+    assert.ok(results.every(result => result.ok && result.projectCount === 1), JSON.stringify(results));
+    const store = createProjectStateStore(paths); store.initialize();
+    assert.equal(store.get('project-alpha').stagingItems.length, 3);
+    assert.equal(store.integrityCheck().ok, true); store.close();
+    assert.equal(JSON.parse(fs.readFileSync(paths.legacyJsonPath, 'utf8')).projects.length, 1);
+  } finally {
+    await Promise.all(workers.map(worker => worker.terminate().catch(() => {})));
+    fs.rmSync(paths.root, { recursive: true, force: true });
+  }
+});
+
+test('migration collision preserves an existing database with different source provenance', () => {
+  const paths = setup();
+  try {
+    migrateLegacyProjects(paths);
+    const oldSource = fs.readFileSync(paths.legacyJsonPath, 'utf8');
+    fs.writeFileSync(paths.legacyJsonPath, JSON.stringify({ version: 1, projects: [{ id: 'other', name: 'other' }] }));
+    assert.throws(() => migrateLegacyProjects(paths), { code: 'project_migration_conflict' });
+    const store = createProjectStateStore(paths); store.initialize();
+    assert.equal(store.get('project-alpha').stagingItems.length, 3); assert.equal(store.get('other'), null);
+    assert.equal(store.integrityCheck().ok, true); store.close();
+    assert.notEqual(fs.readFileSync(paths.legacyJsonPath, 'utf8'), oldSource);
+  } finally { fs.rmSync(paths.root, { recursive: true, force: true }); }
+});
+
+test('unsupported hard links fail closed with source backup and allow a later retry', () => {
+  const paths = setup(), originalLink = fs.linkSync;
+  try {
+    const source = fs.readFileSync(paths.legacyJsonPath);
+    fs.linkSync = () => { throw Object.assign(new Error('hard links unavailable'), { code: 'ENOTSUP' }); };
+    let failure;
+    try { migrateLegacyProjects(paths); } catch (error) { failure = error; }
+    assert.equal(failure?.code, 'project_migration_hardlink_unsupported'); assert.match(failure.message, /原始项目索引和备份已保留/); assert.ok(failure.backupPath);
+    assert.deepEqual(fs.readFileSync(paths.legacyJsonPath), source);
+    assert.deepEqual(fs.readFileSync(failure.backupPath), source);
+    assert.equal(fs.existsSync(paths.dbPath), false);
+    assert.equal(fs.readdirSync(paths.root).some(name => name.includes('.migrating-')), false);
+    fs.linkSync = originalLink;
+    const result = migrateLegacyProjects(paths); assert.equal(result.projectCount, 1);
+    const store = createProjectStateStore(paths); store.initialize();
+    assert.equal(store.get('project-alpha').stagingItems.length, 3); assert.equal(store.integrityCheck().ok, true); store.close();
+  } finally { fs.linkSync = originalLink; fs.rmSync(paths.root, { recursive: true, force: true }); }
+});
+
+for (const oldVersion of [1, 2]) test(`synthetic schema v${oldVersion} upgrade backs up and can restore the old database`, () => {
+  const paths = setup();
+  try {
+    const initial = createProjectStateStore(paths); initial.initialize(); initial.close();
+    const db = new DatabaseSync(paths.dbPath);
+    db.exec(`DROP TABLE IF EXISTS project_staging_search_rows;
+      ${oldVersion === 1 ? `DROP TRIGGER IF EXISTS project_staging_counts_ai; DROP TRIGGER IF EXISTS project_staging_counts_ad;
+        DROP TRIGGER IF EXISTS project_staging_counts_au; DROP TABLE IF EXISTS project_staging_counts;` : ''}
+      PRAGMA user_version=${oldVersion};`);
+    db.close();
+    const upgraded = createProjectStateStore(paths); upgraded.initialize();
+    assert.equal(upgraded.get('project-alpha').stagingItems.length, 3); assert.equal(upgraded.integrityCheck().ok, true); upgraded.close();
+    const backup = fs.readdirSync(paths.root).find(name => name.includes(`.pre-schema-v${oldVersion + 1}-`));
+    assert.ok(backup); const saved = new DatabaseSync(path.join(paths.root, backup), { readOnly: true });
+    assert.equal(saved.prepare('PRAGMA user_version').get().user_version, oldVersion);
+    assert.equal(saved.prepare('SELECT COUNT(*) AS n FROM project_staging_items').get().n, 3); saved.close();
+    const restoredPath = path.join(paths.root, `restored-v${oldVersion}.sqlite3`);
+    fs.copyFileSync(path.join(paths.root, backup), restoredPath);
+    const restored = createProjectStateStore({ dbPath: restoredPath, legacyJsonPath: paths.legacyJsonPath }); restored.initialize();
+    assert.equal(restored.get('project-alpha').stagingItems.length, 3); assert.equal(restored.integrityCheck().ok, true); restored.close();
+  } finally { fs.rmSync(paths.root, { recursive: true, force: true }); }
+});
+
 test('migrates project json without modifying the source and preserves detached collections', () => {
   const paths = setup();
   try {

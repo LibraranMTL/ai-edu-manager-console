@@ -3,6 +3,8 @@ const os = require('os');
 const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
+const { withExclusiveWorkBuddyProfile, recordWorkBuddyProfileAuthFailure,
+  clearWorkBuddyProfileAuthFailure } = require('./workbuddy-profile-gate.cjs');
 const WORKBUDDY_AUTH_PROBE_TIMEOUT_MS = 30000;
 const WORKBUDDY_CONNECTION_TIMEOUT_MS = 10000;
 
@@ -258,7 +260,7 @@ function createWorkBuddyProbeCache({ probe = probeWorkBuddyAuthorization, now = 
   };
 }
 
-function probeWorkBuddyAuthorization(runtime, options = {}) {
+function probeWorkBuddyAuthorizationProcess(runtime, options = {}) {
   if (!runtime?.available || !runtime.cliPath) {
     return Promise.resolve({ available: false, authorized: false, code: -1, output: '', errorOutput: '', message: 'WorkBuddy CLI 不可用。' });
   }
@@ -328,6 +330,15 @@ function probeWorkBuddyAuthorization(runtime, options = {}) {
     } catch (error) {
       finish({ available: false, authorized: false, code: -1, output: stdout, errorOutput: error.message, message: `WorkBuddy CLI 启动失败：${error.message}` });
     }
+  });
+}
+
+async function probeWorkBuddyAuthorization(runtime, options = {}) {
+  return withExclusiveWorkBuddyProfile(runtime, options.signal, async () => {
+    const result = await probeWorkBuddyAuthorizationProcess(runtime, options);
+    if (result.authorized) clearWorkBuddyProfileAuthFailure(runtime);
+    else if (result.authRequired) recordWorkBuddyProfileAuthFailure(runtime);
+    return result;
   });
 }
 

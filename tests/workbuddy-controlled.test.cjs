@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises'), path = require('node:path'), os = require('node:os');
 const { EventEmitter } = require('node:events');
 const { parseFixedResult, runFixedWorkBuddy, createWorkBuddyQualification, createWorkBuddyStructuredAdapter, executeMaterialWorkBuddy } = require('../electron/workbuddy-controlled.cjs');
+const { probeWorkBuddyAuthorization } = require('../electron/workbuddy-runtime.cjs');
 const { RESULT_SCHEMA } = require('../electron/project-material-digest.cjs');
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-wb-controlled-test-'));
@@ -17,10 +18,13 @@ function resultFor(prompt) {
 }
 test('final JSON is required; authentication, tool activity and successful error exits fail closed',()=>{
   assert.deepEqual(parseFixedResult('{"result":"{\\"ready\\":true}"}','',0),{ready:true});
+  assert.deepEqual(parseFixedResult(JSON.stringify({ result: JSON.stringify({ reason: '用户原话：请登录后查看资料' }) }), '', 0), { reason: '用户原话：请登录后查看资料' });
   assert.throws(() => parseFixedResult('输出在上一条消息被截断','',0), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
   assert.throws(() => parseFixedResult('{"result":"输出在上一条消息被截断"}','',0), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
   for(const stdout of ['READY','{"result":"{}","is_error":true}','{"result":"{}","permission_denials":[{}]}','{"type":"tool_use","result":"{}"}']) assert.throws(()=>parseFixedResult(stdout,'',0));
   assert.throws(()=>parseFixedResult('{"result":"{}"}','authentication required',0),{code:'AUTHENTICATION_REQUIRED'});
+  assert.throws(()=>parseFixedResult('{"result":"{}"}','authentication required',0),{diagnosticOrigin:'stderr'});
+  assert.throws(()=>parseFixedResult('authentication required','',1),{diagnosticOrigin:'failed_stdout'});
   assert.throws(()=>parseFixedResult('','429 too many requests',1),{code:'429'});
 });
 
@@ -175,6 +179,116 @@ test('actual runner exposes no tools/MCP/plugins; uses empty cwd and only provid
   assert.equal(captured.options.env.CODEBUDDY_IS_SANDBOX, '0');
   assert.equal(captured.options.windowsHide,true);assert.equal(captured.options.shell,false);
   assert.notEqual(captured.options.cwd,f.root);assert.equal(captured.options.env.CODEBUDDY_CONFIG_DIR,f.runtime.configDir);
+});
+test('controlled runs sharing one authentication profile are serialized', async t => {
+  const f = await fixture(t); let active = 0, maxActive = 0, launches = 0;
+  const releases = [];
+  const spawnProcess = () => {
+    launches++; active++; maxActive = Math.max(maxActive, active);
+    const child = new EventEmitter(); child.pid = 100 + launches;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => {};
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    releases.push(() => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"{\\"ready\\":true}"}'));
+      active--; child.emit('close', 0);
+    });
+    return child;
+  };
+  const first = runFixedWorkBuddy(f.runtime, 'first synthetic task', { spawnProcess });
+  while (launches < 1) await new Promise(resolve => setImmediate(resolve));
+  const second = runFixedWorkBuddy(f.runtime, 'second synthetic task', { spawnProcess });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(launches, 1, 'second process must wait for the shared profile');
+  releases.shift()();
+  assert.deepEqual(await first, { ready: true });
+  while (launches < 2) await new Promise(resolve => setImmediate(resolve));
+  releases.shift()();
+  assert.deepEqual(await second, { ready: true });
+  assert.equal(maxActive, 1);
+});
+test('authorization probes share the same profile queue as controlled work', async t => {
+  const f = await fixture(t); let controlledLaunches = 0, probeLaunches = 0, releaseControlled;
+  const controlled = runFixedWorkBuddy(f.runtime, 'controlled synthetic task', { spawnProcess: () => {
+    controlledLaunches++;
+    const child = new EventEmitter(); child.pid = 180;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => {};
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    releaseControlled = () => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"{\\"ready\\":true}"}'));
+      child.emit('close', 0);
+    };
+    return child;
+  } });
+  while (controlledLaunches < 1) await new Promise(resolve => setImmediate(resolve));
+  const probe = probeWorkBuddyAuthorization(f.runtime, { spawnProcess: () => {
+    probeLaunches++;
+    const child = new EventEmitter(); child.pid = 181;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"READY"}'));
+      child.emit('close', 0);
+    });
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(probeLaunches, 0, 'probe must wait for controlled work using the same profile');
+  releaseControlled();
+  assert.deepEqual(await controlled, { ready: true });
+  const probeResult = await probe;
+  assert.equal(probeLaunches, 1);
+  assert.equal(probeResult.authorized, true);
+});
+test('a cancelled queued WorkBuddy run never starts after the profile becomes available', async t => {
+  const f = await fixture(t); let launches = 0, releaseFirst;
+  const spawnProcess = () => {
+    launches++;
+    const child = new EventEmitter(); child.pid = 200 + launches;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => {};
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    releaseFirst = () => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"{\\"ready\\":true}"}'));
+      child.emit('close', 0);
+    };
+    return child;
+  };
+  const first = runFixedWorkBuddy(f.runtime, 'first synthetic task', { spawnProcess });
+  while (launches < 1) await new Promise(resolve => setImmediate(resolve));
+  const controller = new AbortController();
+  const second = runFixedWorkBuddy(f.runtime, 'cancelled queued task', { spawnProcess, signal: controller.signal });
+  controller.abort(); releaseFirst();
+  assert.deepEqual(await first, { ready: true });
+  await assert.rejects(second, { code: 'cancelled', stage: 'not_sent', stopConfirmed: true });
+  assert.equal(launches, 1);
+});
+test('one confirmed profile authentication failure opens a pre-send circuit for queued work', async t => {
+  const f = await fixture(t); let launches = 0;
+  const spawnProcess = () => {
+    launches++;
+    const child = new EventEmitter(); child.pid = 300 + launches;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => {
+      child.stderr.emit('data', Buffer.from('Authentication required. Please use /login command'));
+      child.emit('close', 0);
+    });
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  };
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'first synthetic task', { spawnProcess }), error => {
+    assert.equal(error.code, 'AUTHENTICATION_REQUIRED');
+    assert.equal(error.stopConfirmed, true);
+    return true;
+  });
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'second synthetic task', { spawnProcess }), error => {
+    assert.equal(error.code, 'AUTHENTICATION_REQUIRED');
+    assert.equal(error.stage, 'not_sent');
+    assert.equal(error.diagnosticOrigin, 'profile_circuit');
+    return true;
+  });
+  assert.equal(launches, 1, 'the known-bad profile must not receive another prompt');
 });
 test('qualification traverses host schema/staging, caches, coalesces and expires',async t=>{
   const f=await fixture(t);let calls=0,now=0;

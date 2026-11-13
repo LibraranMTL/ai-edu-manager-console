@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { buildControlledWorkBuddyResearchInvocation, workBuddyAuthenticationRequired, parseWorkBuddyJsonPayload } = require('./workbuddy-runtime.cjs');
+const { withExclusiveWorkBuddyProfile, workBuddyProfileAuthFailure,
+  recordWorkBuddyProfileAuthFailure, clearWorkBuddyProfileAuthFailure } = require('./workbuddy-profile-gate.cjs');
 const { hashStableFile } = require('./project-materials.cjs');
 const { check } = require('./structured-contract-check.cjs');
 const { outputSchema, verifiedOutput, publicUrl } = require('./planning-research.cjs');
@@ -142,9 +144,20 @@ function workBuddyResearchEvidence(value) {
 }
 
 async function parseWorkBuddyResearchResult(stdout, stderr, code, schema, options = {}) {
-  if (workBuddyAuthenticationRequired(stdout, stderr)) throw Object.assign(Error('WorkBuddy 联网通道未取得有效认证'), { code: 'AUTHENTICATION_REQUIRED', stage: 'not_sent' });
-  if (code !== 0) throw Object.assign(Error('WorkBuddy 联网研究执行失败'), { code: 'AGENT_FAILED', stage: 'completed' });
-  const evidence = workBuddyResearchEvidence(JSON.parse(String(stdout || '').trim()));
+  const authError = origin => Object.assign(Error('WorkBuddy 联网通道未取得有效认证'), {
+    code: 'AUTHENTICATION_REQUIRED', stage: 'possibly_sent', diagnosticOrigin: origin,
+  });
+  if (workBuddyAuthenticationRequired('', stderr)) throw authError('stderr');
+  if (code !== 0) {
+    if (workBuddyAuthenticationRequired(stdout, '')) throw authError('failed_stdout');
+    throw Object.assign(Error('WorkBuddy 联网研究执行失败'), { code: 'AGENT_FAILED', stage: 'completed' });
+  }
+  let decoded;
+  try { decoded = JSON.parse(String(stdout || '').trim()); }
+  catch (error) { if (workBuddyAuthenticationRequired(stdout, '')) throw authError('invalid_stdout'); throw error; }
+  let evidence;
+  try { evidence = workBuddyResearchEvidence(decoded); }
+  catch (error) { if (workBuddyAuthenticationRequired(stdout, '')) throw authError('rejected_envelope'); throw error; }
   // Some official CLI versions add this explanatory field outside the requested
   // contract. Only discard this known, bounded string; never relax the schema or
   // use it as evidence of WebSearch, a source URL, or authorization.
@@ -163,7 +176,7 @@ async function parseWorkBuddyResearchResult(stdout, stderr, code, schema, option
   return verifiedOutput(output, events, options.fetchedAt || new Date().toISOString());
 }
 
-async function runWorkBuddyResearch(runtime, { prompt, schema, signal, timeoutMs = 300000, spawnProcess = spawn, fetchSource,beforeExecute,onStarted } = {}) {
+async function runWorkBuddyResearchProcess(runtime, { prompt, schema, signal, timeoutMs = 300000, spawnProcess = spawn, fetchSource,beforeExecute,onStarted } = {}) {
   if (signal?.aborted) throw Object.assign(Error('研究已取消'), { code: 'RESEARCH_CANCELLED', stage: 'not_sent' });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-workbuddy-research-'));
   const invocation = buildControlledWorkBuddyResearchInvocation(runtime, { cwd: root, command: prompt, maxTurns: 8 });
@@ -201,6 +214,23 @@ async function runWorkBuddyResearch(runtime, { prompt, schema, signal, timeoutMs
       if(onStarted){if(!child.pid)throw Object.assign(Error('未取得进程启动确认'),{stage:'not_sent'});await onStarted({processId:child.pid});if(settled||failure||signal?.aborted)return;}
       child.stdin.end(invocation.stdinText);
     } catch (error) {if(child?.pid)stop(error);else finish(Object.assign(error, { stopConfirmed: true }));}};void start();
+  });
+}
+
+async function runWorkBuddyResearch(runtime, options = {}) {
+  return withExclusiveWorkBuddyProfile(runtime, options.signal, async () => {
+    const blocked = workBuddyProfileAuthFailure(runtime);
+    if (blocked) throw blocked;
+    try {
+      const result = await runWorkBuddyResearchProcess(runtime, options);
+      clearWorkBuddyProfileAuthFailure(runtime);
+      return result;
+    } catch (error) {
+      if (error?.code === 'AUTHENTICATION_REQUIRED' && error?.stage !== 'not_sent') {
+        recordWorkBuddyProfileAuthFailure(runtime);
+      }
+      throw error;
+    }
   });
 }
 

@@ -8,29 +8,37 @@ const { buildControlledWorkBuddyInvocation, workBuddyAuthenticationRequired, wor
 const { hashStableFile } = require('./project-materials.cjs');
 const { outputSchema, stageMaterialResponse } = require('./project-material-agent.cjs');
 const { check: checkStructuredContract } = require('./structured-contract-check.cjs');
+const { withExclusiveWorkBuddyProfile, workBuddyProfileAuthFailure,
+  recordWorkBuddyProfileAuthFailure, clearWorkBuddyProfileAuthFailure } = require('./workbuddy-profile-gate.cjs');
 const SENSITIVE_REJECTION = /\bsensitive_(?:approval_timeout|access_denied|protection_failed)\b|Sensitive content (?:approval timed out|protection failed)|\[SENSITIVE_APPROVAL=TIMED_OUT/i;
 const DIGEST_PROFILE = 'digest_host_mediated.v1';
 const LEARNING_CARD_PROFILE = 'learning_card_generation.v1';
-
 function parseFixedResult(stdout, stderr, code) {
   // Use vendor failure markers, not generic topic words such as "medical".
   // Never translate a protected-content refusal into a successful AI result.
   if (SENSITIVE_REJECTION.test(`${stdout}\n${stderr}`)) {
     throw Object.assign(new Error('WorkBuddy 未取得敏感内容授权或保护未完成；资料保留待人工确认，不自动重试。'), { code: 'SENSITIVE_REVIEW_REQUIRED' });
   }
-  if (workBuddyAuthenticationRequired(stdout, stderr)) throw Object.assign(new Error('WorkBuddy 后台通道未取得有效认证；桌面登录正常也不代表后台已获授权'), { code: 'AUTHENTICATION_REQUIRED' });
+  const authError = origin => Object.assign(new Error('WorkBuddy 后台通道未取得有效认证；桌面登录正常也不代表后台已获授权'), { code: 'AUTHENTICATION_REQUIRED', diagnosticOrigin: origin });
+  // A successful structured result may quote a user's words such as “请登录”.
+  // Treat stderr and failed envelopes as diagnostics, not successful result text.
+  if (workBuddyAuthenticationRequired('', stderr)) throw authError('stderr');
   if (code !== 0) {
+    if (workBuddyAuthenticationRequired(stdout, '')) throw authError('failed_stdout');
     const category = require('./task-recovery-policy.cjs').classifyTaskFailure({ message: stderr });
     throw Object.assign(new Error('WorkBuddy 后台执行失败，原资料已保留'), { code: { network: 'ECONNRESET', busy: '503', rate_limit: '429' }[category] || 'AGENT_FAILED' });
   }
   let decoded;
   try { decoded = JSON.parse(stdout.trim()); }
   catch (error) {
+    if (workBuddyAuthenticationRequired(stdout, '')) throw authError('invalid_stdout');
     throw Object.assign(new Error(`WorkBuddy 返回内容不是有效 JSON：${error.message}`), {
       code: 'AGENT_RESULT_INVALID', stage: 'completed', stopConfirmed: true,
     });
   }
-  const envelope = workBuddyResultEnvelope(decoded);
+  let envelope;
+  try { envelope = workBuddyResultEnvelope(decoded); }
+  catch (error) { if (workBuddyAuthenticationRequired(stdout, '')) throw authError('rejected_envelope'); throw error; }
   if (envelope.is_error || envelope.error || (envelope.type && envelope.type !== 'result')
     || (envelope.subtype && envelope.subtype !== 'success') || envelope.tool_calls?.length || envelope.permission_denials?.length
     || typeof envelope.result !== 'string') throw new Error('WorkBuddy 没有返回有效最终结果');
@@ -42,11 +50,14 @@ function parseFixedResult(stdout, stderr, code) {
   }
 }
 async function runFixedWorkBuddy(runtime, prompt, { signal, timeoutMs = 900000, maxOutputBytes = 24 * 1024 * 1024, spawnProcess = spawn, onStarted } = {}) {
-  if (signal?.aborted) throw Object.assign(new Error('任务已取消'), { code: 'cancelled' });
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-workbuddy-fixed-'));
-  const invocation = buildControlledWorkBuddyInvocation(runtime, { cwd: root, command: prompt });
-  if (!invocation) { await fs.rmdir(root); throw new Error('WorkBuddy CLI 不可用'); }
-  return new Promise((resolve, reject) => {
+  return withExclusiveWorkBuddyProfile(runtime, signal, async () => {
+    const blocked = workBuddyProfileAuthFailure(runtime);
+    if (blocked) throw blocked;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-workbuddy-fixed-'));
+    const invocation = buildControlledWorkBuddyInvocation(runtime, { cwd: root, command: prompt });
+    if (!invocation) { await fs.rmdir(root); throw new Error('WorkBuddy CLI 不可用'); }
+    try {
+      const result = await new Promise((resolve, reject) => {
       let child, stdout = '', stderr = '', size = 0, settled = false, failure = null, stopTimer, sensitiveBlocked = false;
       let startReceipt=Promise.resolve();
     const finish = (error, output) => {
@@ -94,6 +105,15 @@ async function runFixedWorkBuddy(runtime, prompt, { signal, timeoutMs = 900000, 
       });
       child.stdin.end(invocation.stdinText);
     } catch (error) { finish(Object.assign(error, { stopConfirmed: true })); void fs.rmdir(root).catch(() => {}); }
+      });
+      clearWorkBuddyProfileAuthFailure(runtime);
+      return result;
+    } catch (error) {
+      if (error?.code === 'AUTHENTICATION_REQUIRED' && error?.stage !== 'not_sent') {
+        recordWorkBuddyProfileAuthFailure(runtime);
+      }
+      throw error;
+    }
   });
 }
 function createWorkBuddyQualification({ run = runFixedWorkBuddy, now = Date.now } = {}) {

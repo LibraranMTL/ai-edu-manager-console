@@ -287,7 +287,7 @@ function migrateLegacyProjects({ dbPath, legacyJsonPath, now = Date.now }) {
   const migrationStamp = stamp(now);
   let backupPath = '';
   if (fs.existsSync(legacyJsonPath)) {
-    backupPath = path.join(directory, `projects.pre-sqlite-${migrationStamp}.json`);
+    backupPath = path.join(directory, `projects.pre-sqlite-${migrationStamp}-${crypto.randomBytes(4).toString('hex')}.json`);
     fs.copyFileSync(legacyJsonPath, backupPath, fs.constants.COPYFILE_EXCL);
     try { fs.chmodSync(backupPath, 0o444); } catch { /* ACL may ignore POSIX mode */ }
   }
@@ -301,7 +301,29 @@ function migrateLegacyProjects({ dbPath, legacyJsonPath, now = Date.now }) {
     db.prepare('INSERT OR REPLACE INTO project_meta(key,value) VALUES(?,?)').run('migrated_at', new Date(now()).toISOString());
     db.prepare('INSERT OR REPLACE INTO project_meta(key,value) VALUES(?,?)').run('legacy_backup_path', backupPath);
     db.close(); db = null;
-    fs.renameSync(tempPath, dbPath);
+    // Publish without replacing a database another initializer may already
+    // have opened. A hard link is atomic and fails if the target exists.
+    try { fs.linkSync(tempPath, dbPath); }
+    catch (publishError) {
+      if (['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(publishError.code) && !fs.existsSync(dbPath)) {
+        throw Object.assign(new Error('项目数据库迁移无法安全发布：当前文件系统不支持所需的硬链接。原始项目索引和备份已保留；请将数据目录迁移至支持硬链接的本地文件系统后重试。'),
+          { code: 'project_migration_hardlink_unsupported', cause: publishError });
+      }
+      if (!['EEXIST', 'EPERM'].includes(publishError.code) || !fs.existsSync(dbPath)) throw publishError;
+      // Never adopt an unrelated or partially populated winner merely because
+      // a file exists. Verify its migration provenance and all imported rows.
+      let winner;
+      try {
+        winner = new DatabaseSync(dbPath, { readOnly: true });
+        winner.exec('PRAGMA busy_timeout=5000;');
+        const source = winner.prepare('SELECT value FROM project_meta WHERE key=?').get('migration_source_sha256');
+        if (source?.value !== sha256(raw)) throw Error('并发项目迁移来源不一致');
+        validateDatabase(winner, expected);
+      } catch (error) {
+        throw Object.assign(new Error(`并发项目迁移结果无法核验：${error.message}`), { code: 'project_migration_conflict' });
+      } finally { try { winner?.close(); } catch {} }
+    }
+    fs.unlinkSync(tempPath);
     const manifest = { version: 1, source: legacyJsonPath, sourceBytes: Buffer.byteLength(raw), sourceSha256: sha256(raw),
       backupPath, databasePath: dbPath, migratedAt: new Date(now()).toISOString(), ...expected };
     if (backupPath) fs.writeFileSync(`${backupPath}.manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
@@ -315,7 +337,7 @@ function migrateLegacyProjects({ dbPath, legacyJsonPath, now = Date.now }) {
 
 function openDatabase(dbPath, quickCheck = true) {
   const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+  db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
   let version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
   if (version === 1) {
     const backupPath = `${dbPath}.pre-schema-v2-${stamp()}.sqlite3`;

@@ -112,6 +112,20 @@ function createHttpServer(options) {
     publicKey: options.publicContentPublicKey,
   });
   const handleRemoteMcp = createRemoteMcpHandler(service);
+  let renewalRuntime = { status: 'not_checked', lastCheckedAt: null, lastError: null };
+  const renewPublicContent = () => {
+    const lastCheckedAt = new Date((options.now || Date.now)()).toISOString();
+    try {
+      const result = publicContent.renewIfDue();
+      renewalRuntime = { ...result, lastCheckedAt, lastError: null };
+    } catch (error) {
+      renewalRuntime = { status: 'error', lastCheckedAt, lastError: error.message };
+      console.error('public content renewal failed:', error.message);
+    }
+  };
+  const renewalTimer = setInterval(renewPublicContent, 60_000);
+  renewalTimer.unref();
+  renewPublicContent();
   let backupScheduler, materialIndexer;
   try {
     if (options.backupRoot) backupScheduler = startBackupScheduler({
@@ -265,6 +279,12 @@ function createHttpServer(options) {
       }
       if (req.method === 'GET' && route === '/v2/admin/public-content/operations') {
         return json(res, 200, publicContent.operations(token, url.searchParams.get('windowHours')));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/public-content/renewal') {
+        return json(res, 200, { ...publicContent.renewalStatus(token), runtime: renewalRuntime });
+      }
+      if (req.method === 'POST' && route === '/v2/admin/public-content/renewal') {
+        return json(res, 200, publicContent.configureRenewal(token, await readJson(req)));
       }
       if (req.method === 'POST' && route === '/v2/admin/releases/validate') {
         return json(res, 200, publicContent.validateRelease(token, await readJson(req)));
@@ -666,6 +686,7 @@ function createHttpServer(options) {
     }
   });
   return { server, service, publicContent, materialIndexer, close: async () => {
+    clearInterval(renewalTimer);
     await new Promise(resolve => server.close(resolve));
     await backupScheduler?.stop();
     await materialIndexer?.stop();

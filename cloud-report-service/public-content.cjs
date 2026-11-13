@@ -247,6 +247,11 @@ function createPublicContentService(options = {}) {
       channel TEXT PRIMARY KEY, active_manifest_revision TEXT NOT NULL DEFAULT '',
       revocation_revision TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS public_content_renewal_policy (
+      channel TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
+      active_revision TEXT NOT NULL DEFAULT '', content_sha256 TEXT NOT NULL DEFAULT '',
+      authorized_release_id TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0
+    );
     CREATE TABLE IF NOT EXISTS public_content_revocations (
       revocation_id TEXT PRIMARY KEY, release_id TEXT NOT NULL UNIQUE, course_id TEXT NOT NULL,
       withdrawn_at INTEGER NOT NULL, reason_code TEXT NOT NULL, severity TEXT NOT NULL,
@@ -269,12 +274,15 @@ function createPublicContentService(options = {}) {
     CREATE INDEX IF NOT EXISTS public_content_sync_receipts_time ON public_content_sync_receipts(received_at);
     CREATE INDEX IF NOT EXISTS public_content_sync_receipts_disposition ON public_content_sync_receipts(disposition,received_at);
     INSERT OR IGNORE INTO public_content_state(channel,updated_at) VALUES('stable',0);
+    INSERT OR IGNORE INTO public_content_renewal_policy(channel,updated_at) VALUES('stable',0);
     INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
       VALUES('cloud-public-content-v1',${Number(now())},'{"contractId":"${CONTRACT_ID}","separateObjectRoot":true}');
     INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
       VALUES('cloud-public-content-observability-v1',${Number(now())},'{"privacy":"hashed-client-id","studentData":false,"receiptAttestation":"unverified"}');
     INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
       VALUES('cloud-public-learning-card-v1',${Number(now())},'{"studentData":false,"releaseManifestField":"cardPacks"}');
+    INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json)
+      VALUES('cloud-public-content-renewal-v1',${Number(now())},'{"defaultEnabled":false}');
   `);
   let lastMetricsPruneAt = 0;
 
@@ -282,9 +290,9 @@ function createPublicContentService(options = {}) {
     if (!isAdmin(token)) fail(401, '管理员会话无效');
   }
 
-  function audit(action, targetId = '') {
+  function audit(action, targetId = '', actorId = 'admin_local') {
     db.prepare('INSERT INTO audit_events(occurred_at,actor_id,action,student_id,target_id) VALUES(?,?,?,?,?)')
-      .run(now(), 'admin_local', action, null, targetId || null);
+      .run(now(), actorId, action, null, targetId || null);
   }
 
   function schemaStatus() {
@@ -591,16 +599,22 @@ function createPublicContentService(options = {}) {
     if (expected !== row.manifest_sha256) fail(409, '候选清单已经变化，请重新校验');
     if (row.status === 'active') return { releaseId, status: 'active', manifestRevision: row.manifest_revision, duplicate: true };
     if (row.status !== 'validated') fail(409, '发布单状态不允许生效');
-    rejectRevokedCourses(JSON.parse(row.manifest_json).courses, '待发布清单');
+    const candidate = JSON.parse(row.manifest_json);
+    if (sha256(canonicalize(candidate)) !== row.manifest_sha256 || !verifySignedObject(candidate, publicKey)) fail(409, '候选清单签名或哈希不匹配');
+    if (!(Date.parse(candidate.expiresAt) > now())) fail(409, '候选清单已过期，请重新校验');
+    rejectRevokedCourses(candidate.courses, '待发布清单');
     db.exec('BEGIN IMMEDIATE');
     try {
+      const state = db.prepare("SELECT active_manifest_revision AS revision FROM public_content_state WHERE channel='stable'").get();
+      if (state.revision !== candidate.previousRevision) fail(409, '活动清单已变化，请重新校验候选');
       db.prepare("UPDATE public_content_releases SET status='superseded' WHERE status='active'").run();
       db.prepare("UPDATE public_content_releases SET status='active',activated_at=? WHERE release_id=?").run(now(), releaseId);
       db.prepare("UPDATE public_content_state SET active_manifest_revision=?,updated_at=? WHERE channel='stable'")
         .run(row.manifest_revision, now());
+      db.prepare("UPDATE public_content_renewal_policy SET enabled=0,updated_at=? WHERE channel='stable'").run(now());
+      audit('public_content.release.publish', releaseId);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
-    audit('public_content.release.publish', releaseId);
     return { releaseId, status: 'active', manifestRevision: row.manifest_revision, duplicate: false };
   }
 
@@ -609,6 +623,82 @@ function createPublicContentService(options = {}) {
       ON s.active_manifest_revision=r.manifest_revision WHERE s.channel='stable' AND r.status='active'`).get();
     if (!row) fail(404, '尚无已生效公共课程清单');
     return { manifest: JSON.parse(row.manifest_json), etag: `"${row.manifest_revision}"`, sha256: row.manifest_sha256 };
+  }
+
+  function renewalContentSha(manifest) {
+    const stable = { ...unsigned(manifest) };
+    for (const key of ['releaseId', 'manifestRevision', 'issuedAt', 'effectiveAt', 'expiresAt', 'previousRevision']) delete stable[key];
+    return sha256(canonicalize(stable));
+  }
+
+  function configureRenewal(token, input = {}) {
+    requireAdmin(token);
+    if (typeof input.enabled !== 'boolean') fail(400, '必须明确选择是否启用自动续期');
+    const current = activeManifest();
+    if (input.expectedManifestRevision !== current.manifest.manifestRevision || input.expectedManifestSha256 !== current.sha256) {
+      fail(409, '活动清单已变化，请重新核对版本和哈希');
+    }
+    if (input.enabled) {
+      if (!privateKey || !verifySignedObject(current.manifest, publicKey) || current.manifest.keyId !== keyId ||
+          sha256(canonicalize(current.manifest)) !== current.sha256) fail(409, '活动清单或签名密钥无法验证');
+      if (!(Date.parse(current.manifest.expiresAt) > now())) fail(409, '活动清单已过期，须先人工复核并发布有效清单');
+      if (!(Date.parse(current.manifest.effectiveAt) <= now())) fail(409, '活动清单尚未生效，不能启用自动续期');
+      rejectRevokedCourses(current.manifest.courses, '自动续期');
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const active = db.prepare("SELECT active_manifest_revision AS revision FROM public_content_state WHERE channel='stable'").get();
+      if (active.revision !== current.manifest.manifestRevision) fail(409, '活动清单已变化，请重新核对版本和哈希');
+      db.prepare(`UPDATE public_content_renewal_policy SET enabled=?,active_revision=?,content_sha256=?,
+        authorized_release_id=?,updated_at=? WHERE channel='stable'`).run(input.enabled ? 1 : 0,
+        current.manifest.manifestRevision, renewalContentSha(current.manifest), current.manifest.releaseId, now());
+      audit(input.enabled ? 'public_content.renewal.enable' : 'public_content.renewal.disable', current.manifest.releaseId);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    return { enabled: input.enabled, manifestRevision: current.manifest.manifestRevision, authorizedReleaseId: current.manifest.releaseId };
+  }
+
+  function renewalStatus(token) {
+    requireAdmin(token);
+    const row = db.prepare("SELECT enabled,active_revision AS activeRevision,authorized_release_id AS authorizedReleaseId,updated_at AS updatedAt FROM public_content_renewal_policy WHERE channel='stable'").get();
+    return { ...row, enabled: Boolean(row.enabled) };
+  }
+
+  function renewIfDue() {
+    const policy = db.prepare("SELECT * FROM public_content_renewal_policy WHERE channel='stable'").get();
+    if (!policy?.enabled) return { status: 'disabled' };
+    const current = activeManifest(); const manifest = current.manifest; const timestamp = now();
+    if (manifest.manifestRevision !== policy.active_revision || renewalContentSha(manifest) !== policy.content_sha256 ||
+        !privateKey || manifest.keyId !== keyId || !verifySignedObject(manifest, publicKey) ||
+        sha256(canonicalize(manifest)) !== current.sha256) fail(409, '自动续期的授权范围或签名不匹配');
+    rejectRevokedCourses(manifest.courses, '自动续期');
+    const expiry = Date.parse(manifest.expiresAt);
+    if (!Number.isFinite(expiry)) fail(409, '活动清单有效期无效');
+    if (timestamp < expiry - 6 * 60 * 60 * 1000) return { status: 'not_due', manifestRevision: manifest.manifestRevision };
+    for (const entry of manifest.assets || []) {
+      const stored = asset(entry.assetRevisionId);
+      if (stored.sha256 !== entry.sha256 || sha256(fs.readFileSync(stored.filePath)) !== entry.sha256) fail(409, '自动续期资源校验失败');
+    }
+    const issuedAt = new Date(timestamp).toISOString();
+    const releaseId = `release:auto-renew-${sha256(`${policy.authorized_release_id}:${manifest.manifestRevision}:${timestamp}`).slice(0, 32)}`;
+    const manifestRevision = `manifest-rev-${sha256(`${releaseId}:${issuedAt}`).slice(0, 32)}`;
+    const renewed = signObject({ ...unsigned(manifest), releaseId, manifestRevision, issuedAt, effectiveAt: issuedAt,
+      expiresAt: new Date(timestamp + 24 * 60 * 60 * 1000).toISOString(), previousRevision: manifest.manifestRevision }, privateKey, keyId);
+    const digest = sha256(canonicalize(renewed));
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const state = db.prepare("SELECT active_manifest_revision AS revision FROM public_content_state WHERE channel='stable'").get();
+      const latestPolicy = db.prepare("SELECT enabled,active_revision AS revision FROM public_content_renewal_policy WHERE channel='stable'").get();
+      if (state.revision !== manifest.manifestRevision || !latestPolicy.enabled || latestPolicy.revision !== manifest.manifestRevision) fail(409, '续期期间活动清单已变化');
+      db.prepare("UPDATE public_content_releases SET status='superseded' WHERE status='active'").run();
+      db.prepare(`INSERT INTO public_content_releases(release_id,manifest_revision,status,manifest_json,manifest_sha256,created_at,effective_at,activated_at,previous_revision)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(releaseId, manifestRevision, 'active', JSON.stringify(renewed), digest, timestamp, timestamp, timestamp, manifest.manifestRevision);
+      db.prepare("UPDATE public_content_state SET active_manifest_revision=?,updated_at=? WHERE channel='stable'").run(manifestRevision, timestamp);
+      db.prepare("UPDATE public_content_renewal_policy SET active_revision=?,updated_at=? WHERE channel='stable'").run(manifestRevision, timestamp);
+      audit('public_content.release.auto_renew', releaseId, 'system:public-content-renewal');
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    return { status: 'renewed', manifestRevision, expiresAt: renewed.expiresAt };
   }
 
   function releaseByRevision(revision) {
@@ -635,10 +725,11 @@ function createPublicContentService(options = {}) {
       severity,replacement_course_id AS replacementCourseId FROM public_content_revocations ORDER BY withdrawn_at,course_id`).all()
       .map(row => ({ ...row, withdrawnAt: new Date(row.withdrawnAt).toISOString() }));
     const state = db.prepare("SELECT revocation_revision AS revision FROM public_content_state WHERE channel='stable'").get();
-    if (!state?.revision) fail(404, '尚无紧急撤回增量');
+    if (!state?.revision && rows.length) fail(500, '撤回清单状态不一致');
+    const revision = state?.revision || `revocations-${sha256('empty-revocations-v1').slice(0, 32)}`;
     const payload = signObject({ contractId: CONTRACT_ID, schemaVersion: SCHEMA_VERSION,
-      revocationRevision: state.revision, issuedAt: rows.at(-1).withdrawnAt, tombstones: rows }, privateKey, keyId);
-    return { payload, etag: `"${state.revision}"` };
+      revocationRevision: revision, issuedAt: rows.at(-1)?.withdrawnAt || '1970-01-01T00:00:00.000Z', tombstones: rows }, privateKey, keyId);
+    return { payload, etag: `"${revision}"` };
   }
 
   function rollbackRelease(token, input = {}) {
@@ -670,6 +761,7 @@ function createPublicContentService(options = {}) {
         timestamp, timestamp, timestamp, current.manifestRevision);
       db.prepare("UPDATE public_content_state SET active_manifest_revision=?,updated_at=? WHERE channel='stable'")
         .run(manifestRevision, timestamp);
+      db.prepare("UPDATE public_content_renewal_policy SET enabled=0,updated_at=? WHERE channel='stable'").run(timestamp);
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     audit('public_content.release.rollback', releaseId);
@@ -709,6 +801,7 @@ function createPublicContentService(options = {}) {
         now(), withdrawnAt, now(), active.manifestRevision);
       db.prepare("UPDATE public_content_state SET active_manifest_revision=?,revocation_revision=?,updated_at=? WHERE channel='stable'")
         .run(manifestRevision, revocationRevision, now());
+      db.prepare("UPDATE public_content_renewal_policy SET enabled=0,updated_at=? WHERE channel='stable'").run(now());
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     audit('public_content.release.emergency_withdraw', courseId);
@@ -716,7 +809,7 @@ function createPublicContentService(options = {}) {
   }
 
   return { schemaStatus, recordDelivery, recordSyncReceipt, operations, putAsset, saveCourse, listAssets, listCourses, saveCardTemplate, listCardTemplates, saveCardPack, listCardPacks, listReleases, validateRelease, publishRelease, rollbackRelease, emergencyWithdraw,
-    activeManifest, releaseByRevision, asset, signedRevocations, verifySignedObject: value => verifySignedObject(value, publicKey),
+    activeManifest, releaseByRevision, asset, signedRevocations, configureRenewal, renewalStatus, renewIfDue, verifySignedObject: value => verifySignedObject(value, publicKey),
     publicKey: publicKey ? publicKey.export({ type: 'spki', format: 'pem' }).toString() : '' };
 }
 

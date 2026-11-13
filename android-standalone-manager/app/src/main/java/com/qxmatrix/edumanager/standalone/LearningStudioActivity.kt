@@ -202,7 +202,12 @@ class LearningStudioActivity : Activity() {
     private fun showDetails(row: ScopedContentEntity) {
         val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val payload = runCatching { JSONObject(row.payload) }.getOrNull()
-        actions.addView(text(if (row.kind in setOf("artifact", "favorite") && payload != null) readable(payload) else row.payload.take(60_000)))
+        val content = when {
+            row.kind == "attempt" && payload != null -> LearningStudioPolicy.readableAttempt(payload)
+            row.kind in setOf("artifact", "favorite") && payload != null -> readable(payload)
+            else -> row.payload.take(60_000)
+        }
+        actions.addView(text(content))
         val dialog = AlertDialog.Builder(this).setTitle(row.title)
             .setView(ScrollView(this).apply { addView(actions) }).setNegativeButton("关闭", null).create()
 
@@ -308,11 +313,11 @@ class LearningStudioActivity : Activity() {
                 if (!current()) return@runOnUiThread
                 result.onFailure { status.text = "暂时无法读取公共学习卡：${it.message}" }.onSuccess { choices ->
                     if (choices.isEmpty()) {
-                        status.text = "当前语言和年级暂无适用的公共学习卡"
+                        status.text = "当前年级暂无适用的公共学习卡"
                         return@onSuccess
                     }
                     AlertDialog.Builder(this).setTitle("选择公共学习卡")
-                        .setItems(choices.map { "${it.subject} · ${it.prompt}" }.toTypedArray()) { _, index ->
+                        .setItems(choices.map { "${it.subject} · ${it.locale} · ${it.prompt}" }.toTypedArray()) { _, index ->
                             val choice = choices[index]
                             mode = MODE_TODAY; offset = 0
                             background("正在创建学生专属学习卡…", refreshAfter = true) {

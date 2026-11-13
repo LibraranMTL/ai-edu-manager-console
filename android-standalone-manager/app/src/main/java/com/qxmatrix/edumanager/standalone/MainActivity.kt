@@ -3720,7 +3720,7 @@ class MainActivity : ComponentActivity() {
             if (bitmap != null) cover.setImageBitmap(bitmap)
             coverBox.addView(cover, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             if (bitmap == null) coverBox.addView(TextView(this).apply { text = "封面未载入\n请重新导入课程包"; gravity = Gravity.CENTER; setTextColor(palette.muted); textSize = 13f }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            card.addView(coverBox, LinearLayout.LayoutParams(dp(180), dp(112)))
+            card.addView(coverBox, LinearLayout.LayoutParams(dp(88), dp(76)))
             val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, 0, 0) }
             details.addView(TextView(this).apply { text = course.name; textSize = 19f; setTextColor(palette.heading) }, matchWrap())
             details.addView(TextView(this).apply { text = course.summary; textSize = 14f; setTextColor(palette.text); maxLines = 4; setPadding(0, dp(5), 0, dp(5)) }, matchWrap())

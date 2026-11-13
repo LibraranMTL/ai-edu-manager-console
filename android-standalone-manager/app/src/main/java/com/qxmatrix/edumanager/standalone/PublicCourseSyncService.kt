@@ -46,6 +46,51 @@ internal object PublicCourseContract {
         bytes.size >= 12 && bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" && bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WEBP" -> "image/webp"
         else -> ""
     }
+
+    fun requireRevocationResponse(status: Int, hasCachedRevocations: Boolean) {
+        when (status) {
+            200 -> Unit
+            304 -> require(hasCachedRevocations) { "服务端返回304但本机没有撤回清单缓存" }
+            else -> error("公共课程撤回清单读取失败：HTTP $status")
+        }
+    }
+
+    /** Never offer a pack whose course has been withdrawn or whose open lease expired. */
+    fun allowedCardPacks(packs: JSONArray?, allowedCourseIds: Set<String>): JSONArray {
+        val result = JSONArray()
+        if (packs == null) return result
+        for (index in 0 until packs.length()) {
+            val pack = packs.getJSONObject(index)
+            val references = pack.optJSONArray("courseIds") ?: JSONArray()
+            if ((0 until references.length()).all { references.getString(it) in allowedCourseIds }) {
+                result.put(JSONObject(pack.toString()))
+            }
+        }
+        return result
+    }
+
+    fun requireNonRegressingRevocations(previous: JSONObject?, incoming: JSONObject) {
+        fun ids(payload: JSONObject): Set<String> {
+            val rows = payload.getJSONArray("tombstones")
+            val values = (0 until rows.length()).map { rows.getJSONObject(it).getString("courseId") }
+            require(values.all(String::isNotBlank) && values.size == values.distinct().size) { "撤回清单包含无效或重复课程" }
+            return values.toSet()
+        }
+        require(incoming.optString("revocationRevision").isNotBlank()) { "撤回增量缺少修订号" }
+        val newIds = ids(incoming)
+        val incomingTime = java.time.Instant.parse(incoming.getString("issuedAt"))
+        if (previous != null) {
+            require(incomingTime >= java.time.Instant.parse(previous.getString("issuedAt")) && newIds.containsAll(ids(previous))) {
+                "撤回清单发生回退，已保留原有撤回状态"
+            }
+            if (previous.optString("revocationRevision") == incoming.optString("revocationRevision")) {
+                require(previous.optString("issuedAt") == incoming.optString("issuedAt") &&
+                    CourseCatalogCanonicalJson.canonicalize(previous.getJSONArray("tombstones")) == CourseCatalogCanonicalJson.canonicalize(incoming.getJSONArray("tombstones"))) {
+                    "相同撤回修订对应不同内容"
+                }
+            }
+        }
+    }
 }
 
 /** Signed public course synchronization. Student-private files never enter this cache. */
@@ -89,12 +134,15 @@ class PublicCourseSyncService(context: Context) {
 
     /** Public templates remain outside every student namespace until the user creates an instance. */
     fun cloudLearningCardManifest(nowMillis: Long = System.currentTimeMillis()): JSONObject? =
-        verifiedActive(nowMillis, requireLease = true)?.getJSONObject("manifest")?.let { manifest ->
+        verifiedActive(nowMillis, requireLease = true)?.let { active ->
+            val manifest = active.getJSONObject("manifest")
+            val available = catalogFromActive(active, nowMillis).getJSONArray("courses")
+            val courseIds = (0 until available.length()).map { available.getJSONObject(it).getString("courseId") }.toSet()
             JSONObject().put("manifestRevision", manifest.getString("manifestRevision"))
                 .put("issuedAt", manifest.getString("issuedAt"))
                 .put("expiresAt", manifest.getString("expiresAt"))
                 .put("courses", JSONArray(manifest.optJSONArray("courses")?.toString() ?: "[]"))
-                .put("cardPacks", JSONArray(manifest.optJSONArray("cardPacks")?.toString() ?: "[]"))
+                .put("cardPacks", PublicCourseContract.allowedCardPacks(manifest.optJSONArray("cardPacks"), courseIds))
         }
 
     fun hasCloudCache(): Boolean = state.readIfPresent(CLOUD_ACTIVE) != null
@@ -136,13 +184,18 @@ class PublicCourseSyncService(context: Context) {
         when (response.status) {
             200 -> {
                 val payload = JSONObject(response.body.toString(Charsets.UTF_8)); verifySigned(payload)
-                require(payload.optString("revocationRevision").isNotBlank()) { "撤回增量缺少修订号" }
+                val previous = state.readIfPresent(CLOUD_REVOCATIONS)?.let { JSONObject(it.toString(Charsets.UTF_8)).also(::verifySigned) }
+                PublicCourseContract.requireNonRegressingRevocations(previous, payload)
                 state.writeBytes(CLOUD_REVOCATIONS, payload.toString(2).toByteArray())
                 header(response, "etag")?.takeIf(String::isNotBlank)?.let { preferences.edit().putString(KEY_REVOCATIONS_ETAG, it).apply() }
             }
-            304 -> require(state.readIfPresent(CLOUD_REVOCATIONS) != null) { "服务端返回304但本机没有撤回清单缓存" }
-            404 -> Unit
-            else -> error("公共课程撤回清单读取失败：HTTP ${response.status}")
+            304 -> {
+                val cached = state.readIfPresent(CLOUD_REVOCATIONS)
+                PublicCourseContract.requireRevocationResponse(response.status, cached != null)
+                val payload = JSONObject(requireNotNull(cached).toString(Charsets.UTF_8)); verifySigned(payload)
+                PublicCourseContract.requireNonRegressingRevocations(null, payload)
+            }
+            else -> PublicCourseContract.requireRevocationResponse(response.status, false)
         }
         state.writeBytes(REVOCATION_CHECK, JSONObject().put("checkedAt", iso(nowMillis)).toString().toByteArray())
     }

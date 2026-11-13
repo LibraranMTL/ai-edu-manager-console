@@ -2,11 +2,12 @@ param(
   [Parameter(Mandatory=$true)][string]$Adb,
   [string]$Device = '88Y0219B28005238',
   [string]$PackageDirectory = 'D:\AndroidCandidates\standalone-fault-harness-20261112',
+  [string]$AppId = 'com.qxmatrix.edumanager.standalone.faulttest',
   [switch]$Resume,
   [switch]$ResumeReport
 )
 $ErrorActionPreference = 'Stop'
-$appId = 'com.qxmatrix.edumanager.standalone.faulttest'
+if ($AppId -notmatch '^com\.qxmatrix\.edumanager\.standalone(\.[a-z][a-z0-9]*)*\.faulttest$') { throw 'Invalid isolated fault-test application ID.' }
 $runner = "$appId.test/androidx.test.runner.AndroidJUnitRunner"
 $testClass = 'com.qxmatrix.edumanager.standalone.FaultRecoveryInstrumentationTest'
 $app = Join-Path $PackageDirectory 'fault-app.apk'

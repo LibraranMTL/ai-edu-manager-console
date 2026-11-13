@@ -7,6 +7,21 @@ import org.json.JSONObject
 object LearningReportPublicationPolicy {
     const val SCHEMA = "edu-manager.learning-report-set.v1"
 
+    fun pendingEvidenceFingerprint(evidence: List<JSONObject>, activeFingerprint: String?): String? {
+        if (evidence.isEmpty()) return null
+        val fingerprint = evidenceFingerprint(evidence)
+        return fingerprint.takeUnless { it == activeFingerprint }
+    }
+
+    fun requireEvidenceStillEligible(report: String, eligibleIds: Set<String>) {
+        val header = Regex("^---\\s*\\r?\\n([\\s\\S]*?)\\r?\\n---").find(report)?.groupValues?.get(1)
+            ?: error("学情报告缺少来源元数据")
+        val value = Regex("(?m)^source_claim_ids:[ \\t]*([^\\r\\n]*)$").find(header)?.groupValues?.get(1)
+            ?: error("学情报告缺少来源证据清单")
+        val ids = value.split(',').map(String::trim).filter(String::isNotBlank)
+        require(ids.isNotEmpty() && ids.all(eligibleIds::contains)) { "报告引用的成长证据已撤回或不可用，请更新报告" }
+    }
+
     fun evidenceFingerprint(evidence: List<JSONObject>): String {
         val stable = evidence.sortedBy { it.optString("id") }.map { item -> JSONObject()
             .put("id", item.optString("id")).put("status", item.optString("status"))

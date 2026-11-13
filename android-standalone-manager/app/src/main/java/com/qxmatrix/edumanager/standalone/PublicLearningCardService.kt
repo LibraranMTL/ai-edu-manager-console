@@ -12,6 +12,7 @@ data class PublicLearningCardChoice(
     val templateRevision: String,
     val prompt: String,
     val subject: String,
+    val locale: String,
     internal val pack: JSONObject,
     internal val template: JSONObject,
 )
@@ -61,18 +62,18 @@ object PublicLearningCardPolicy {
         }
     }
 
-    fun eligible(manifest: JSONObject, locale: String, grade: String): List<PublicLearningCardChoice> {
+    fun eligible(manifest: JSONObject, locale: String, grade: String, includeOtherLanguages: Boolean = false): List<PublicLearningCardChoice> {
         validateManifest(manifest)
         val normalizedLocale = locale.takeIf { it in locales } ?: return emptyList()
         return objects(manifest.optJSONArray("cardPacks")).filter { pack ->
-            pack.getString("locale") == normalizedLocale && gradeMatches(strings(pack.optJSONArray("gradeBands")), grade)
+            (includeOtherLanguages || pack.getString("locale") == normalizedLocale) && gradeMatches(strings(pack.optJSONArray("gradeBands")), grade)
         }.flatMap { pack -> objects(pack.getJSONArray("templates")).filter { template ->
             gradeMatches(strings(template.optJSONArray("gradeBands")), grade)
         }.map { template -> PublicLearningCardChoice(
             pack.getString("packId"), pack.getString("title"), template.getString("templateId"),
-            template.getString("templateRevision"), template.getString("prompt"), template.getString("subject"),
+            template.getString("templateRevision"), template.getString("prompt"), template.getString("subject"), pack.getString("locale"),
             JSONObject(pack.toString()), JSONObject(template.toString()),
-        ) } }.distinctBy { it.templateRevision }
+        ) } }.distinctBy { it.templateRevision }.sortedBy { if (it.locale == normalizedLocale) 0 else 1 }
     }
 
     fun instancePayload(choice: PublicLearningCardChoice): JSONObject {
@@ -111,7 +112,7 @@ class PublicLearningCardService(private val context: Context) {
         val student = students.requireExact(studentId)
         val manifest = requireNotNull(sync.cloudLearningCardManifest()) { "尚无有效的云端学习卡目录，请先同步云端课程" }
         val locale = supportedLocale(Locale.getDefault())
-        return PublicLearningCardPolicy.eligible(manifest, locale, student.grade)
+        return PublicLearningCardPolicy.eligible(manifest, locale, student.grade, includeOtherLanguages = true)
     }
 
     fun instantiate(studentId: String, templateRevision: String): ScopedContentEntity {

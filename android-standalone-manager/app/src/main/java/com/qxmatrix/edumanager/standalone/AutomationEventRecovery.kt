@@ -33,7 +33,7 @@ class AutomationEventRecovery(private val context: Context) {
         if (mode == AutomationMode.OFF)
             return JSONObject().put("skipped", true).put("errors", 0)
         var imported = 0; var missingFingerprint = 0; var digests = 0; var errors = 0
-        var legacyObserved = 0; var legacyCompleted = 0; var repairedBatches = 0; var batchesNeedAttention = 0; var projects = 0
+        var legacyObserved = 0; var legacyCompleted = 0; var repairedBatches = 0; var batchesNeedAttention = 0; var projects = 0; var reportSnapshots = 0
         val files = FileAssetService(context)
         StudentIndexRepository(context).list().forEach { student ->
             runCatching { synchronized(StudentWorkLocks.forStudent(student.id)) {
@@ -100,6 +100,14 @@ class AutomationEventRecovery(private val context: Context) {
                         digests++
                     }.onFailure { errors++ }
                 }
+                if (mode == AutomationMode.FULL) {
+                    runCatching {
+                        GrowthModelService(context).pendingReportEvidenceFingerprint(student.id)?.let { fingerprint ->
+                            AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, student.id, fingerprint)
+                            reportSnapshots++
+                        }
+                    }.onFailure { errors++ }
+                }
                 legacyCompleted += materials.count { MaterialStatus.normalize(it.optString("status")) == MaterialStatus.PROCESSED &&
                     it.optString("automationDigestFingerprint").isBlank() }
             } }.onFailure { errors++ }
@@ -120,6 +128,7 @@ class AutomationEventRecovery(private val context: Context) {
         return JSONObject().put("importsExamined", imported).put("importsMissingFingerprint", missingFingerprint)
             .put("legacySourcesObserved", legacyObserved).put("legacyProcessedWithoutReceipt", legacyCompleted)
             .put("digestBatchesRecovered", repairedBatches).put("digestBatchesNeedAttention", batchesNeedAttention)
-            .put("digestBatchesExamined", digests).put("projectSnapshotsExamined", projects).put("errors", errors)
+            .put("digestBatchesExamined", digests).put("projectSnapshotsExamined", projects)
+            .put("reportSnapshotsExamined", reportSnapshots).put("errors", errors)
     }
 }

@@ -67,7 +67,7 @@ class GrowthModelService(private val context: Context) {
         return JSONObject().put("ok", true).put("growthDir", growth).put("reportDir", report)
     }
 
-    fun addCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = ""): JSONObject {
+    fun addCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = ""): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId); require(title.isNotBlank()) { "成长证据标题不能为空" }; require(content.isNotBlank()) { "成长证据观察内容不能为空" }; require(sourceUri.isNotBlank()) { "成长证据必须关联原始资料" }
         if (projectId.isNotBlank()) require(projects.requireExact(projectId).studentIds.contains(studentId)) { "项目未绑定当前学生" }
         ensure(studentId); val review = readReview(student); val now = Timestamp.now()
@@ -78,10 +78,10 @@ class GrowthModelService(private val context: Context) {
             .put("projectId", projectId).put("projectName", if (projectId.isBlank()) "" else projects.requireExact(projectId).name)
             .put("confidence", confidence).put("createdAt", now).put("updatedAt", now).put("review", JSONObject().put("status", "pending"))
         review.getJSONArray("candidates").put(candidate); writeReview(student, review); appendDraftCandidate(student, candidate); rebuildIndex(studentId)
-        return candidate
+        candidate
     }
 
-    fun addAutomaticCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = "", generatedBy: String): JSONObject {
+    fun addAutomaticCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = "", generatedBy: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         require(title.isNotBlank() && content.isNotBlank()) { "自动成长证据必须包含标题和观察内容" }
         require(sourceUri.isNotBlank()) { "自动成长证据必须绑定原始资料来源" }
@@ -90,7 +90,7 @@ class GrowthModelService(private val context: Context) {
         val review = readReview(student)
         val evidenceId = GrowthEvidencePolicy.automaticId(studentId, sourceUri, title, content)
         review.getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }?.let {
-            appendDraftCandidate(student, it); rebuildIndex(studentId); return it
+            appendDraftCandidate(student, it); rebuildIndex(studentId); return@synchronized it
         }
         val now = Timestamp.now()
         val candidate = JSONObject().put("schema", "edu-manager.growth-evidence.v1").put("protocolVersion", ProtocolBaseline.EDUCATION_DOMAIN_PROTOCOL_VERSION)
@@ -104,10 +104,10 @@ class GrowthModelService(private val context: Context) {
         review.getJSONArray("candidates").put(candidate)
         val decided = applyAutomaticDecision(student, candidate)
         writeReview(student, review); appendDraftCandidate(student, decided); rebuildIndex(studentId)
-        return decided
+        decided
     }
 
-    fun attachCandidateSource(studentId: String, evidenceId: String, materialId: String, sourceName: String): JSONObject {
+    fun attachCandidateSource(studentId: String, evidenceId: String, materialId: String, sourceName: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId); ensure(studentId)
         val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects()
         val item = candidates.singleOrNull { it.optString("id") == evidenceId } ?: error("未找到成长证据候选")
@@ -136,10 +136,10 @@ class GrowthModelService(private val context: Context) {
         if (item.optString("status") == "needs_attention") applyAutomaticDecision(student, item)
         writeReview(student, JSONObject().put("version", 1).put("updatedAt", now).put("candidates", JSONArray(candidates)))
         rebuildIndex(studentId)
-        return item
+        item
     }
 
-    fun candidates(studentId: String): List<JSONObject> {
+    fun candidates(studentId: String): List<JSONObject> = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId); ensure(studentId)
         val review = readReview(student); var changed = false
         review.getJSONArray("candidates").toObjects().filter {
@@ -149,7 +149,7 @@ class GrowthModelService(private val context: Context) {
             applyAutomaticDecision(student, it); changed = true
         }
         if (changed) writeReview(student, review)
-        return review.getJSONArray("candidates").toObjects()
+        review.getJSONArray("candidates").toObjects()
     }
 
     /** Reads the last committed growth projection without creating directories, applying decisions or rebuilding data. */
@@ -188,7 +188,7 @@ class GrowthModelService(private val context: Context) {
     fun excludeCandidate(studentId: String, evidenceId: String, note: String = "自动成长模型异常清单中排除"): JSONObject =
         reviewCandidate(studentId, evidenceId, "rejected", note)
 
-    fun reviewCandidate(studentId: String, evidenceId: String, status: String, note: String): JSONObject {
+    fun reviewCandidate(studentId: String, evidenceId: String, status: String, note: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         require(status in EVIDENCE_STATUSES) { "不支持的成长证据状态" }
         val student = students.requireExact(studentId); val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects(); val item = candidates.singleOrNull { it.optString("id") == evidenceId } ?: error("未找到成长证据候选")
         if (status == "confirmed") require(!GrowthEvidencePolicy.requiresPrimarySource(item)) { "该候选缺少可核验的原始资料来源，请先补充来源后再确认采用" }
@@ -199,7 +199,11 @@ class GrowthModelService(private val context: Context) {
             .put("reviewerRole", "administrator").put("reviewerId", "local-user").put("reviewedAt", now)); item.put("reviewHistory", history)
         writeReview(student, JSONObject().put("version", 1).put("updatedAt", now).put("candidates", JSONArray(candidates)))
         if (status == "confirmed") appendConfirmedEvidence(student, item)
-        rebuildIndex(studentId); return item
+        if (previous == "confirmed" && status != "confirmed") runCatching {
+            AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, studentId,
+                ScopedContentPolicy.fingerprint(JSONObject().put("withdrawnEvidenceId", evidenceId).put("status", status).put("reviewedAt", now)))
+        }
+        rebuildIndex(studentId); item
     }
 
     fun rebuildIndex(studentId: String): JSONObject {
@@ -238,15 +242,29 @@ class GrowthModelService(private val context: Context) {
         val evidence = index.getJSONArray("evidence").toObjects().filter(::publicationEligible)
         if (evidence.isEmpty()) return generateObservationDraftIfNeeded(studentId)
         val fingerprint = LearningReportPublicationPolicy.evidenceFingerprint(evidence)
-        val latest = LearningInsightsStore(context).reportRevisions(studentId)
-            .filter { it.optString("evidenceFingerprint").isNotBlank() }.maxByOrNull { it.optString("time") }
-        if (latest?.optString("evidenceFingerprint") == fingerprint) {
-            val repaired = reconcileActivePublication(students.requireExact(studentId))
+        val student = students.requireExact(studentId)
+        val activeFingerprint = runCatching {
+            if (activeReportPublicationId(studentId) == null) null
+            else JSONObject(store(student).readBytes(activeReportSetPath(student)).toString(Charsets.UTF_8)).getString("evidenceFingerprint")
+        }.getOrNull()
+        if (activeFingerprint == fingerprint) {
+            val repaired = reconcileActivePublication(student)
             return JSONObject().put("ok", true).put("status", if (repaired) "reconciled" else "unchanged")
                 .put("evidenceFingerprint", fingerprint)
                 .put("message", if (repaired) "已补齐当前报告组发布回执" else "学情证据未变化，沿用当前报告版本")
         }
         return generateAndPublishReports(studentId, fingerprint)
+    }
+
+    /** Reconstruct a missed report trigger without calling a model or modifying report files. */
+    fun pendingReportEvidenceFingerprint(studentId: String): String? = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val evidence = readReview(student).getJSONArray("candidates").toObjects().filter(::publicationEligible)
+        val activeFingerprint = runCatching {
+            if (activeReportPublicationId(studentId) == null) null
+            else JSONObject(store(student).readBytes(activeReportSetPath(student)).toString(Charsets.UTF_8)).getString("evidenceFingerprint")
+        }.getOrNull()
+        LearningReportPublicationPolicy.pendingEvidenceFingerprint(evidence, activeFingerprint)
     }
 
     /** Observation drafts quote verified source text only and never activate or upload a formal report. */
@@ -301,10 +319,16 @@ class GrowthModelService(private val context: Context) {
         val result = generateReportSet(student)
         require(result.evidence.isNotEmpty()) { "当前没有已确认的成长证据。请先消化资料并在成长模型中确认至少一条证据，再生成正式学情报告。" }
         val evidenceFingerprint = LearningReportPublicationPolicy.evidenceFingerprint(result.evidence)
-        require(requestedEvidenceFingerprint.isBlank() || requestedEvidenceFingerprint == evidenceFingerprint) { "生成期间成长证据已变化，请按新版本重新生成" }
+        if (requestedEvidenceFingerprint.isNotBlank() && requestedEvidenceFingerprint != evidenceFingerprint)
+            throw AutomationExecutionException("evidence_snapshot_changed", AutomationFailureClass.TRANSIENT,
+                message = "生成期间成长证据已变化，保留现有报告并等待自动重新生成")
         val prepared = result.reports.map { report -> report.definition to reportPublished(student, report.definition, report.sections, result.evidence) }
         val published = JSONArray()
-        CloudReportSync.withPublicationLock {
+        synchronized(StudentWorkLocks.forStudent(studentId)) { CloudReportSync.withPublicationLock {
+            val currentEvidence = readReview(student).getJSONArray("candidates").toObjects().filter(::publicationEligible)
+            if (LearningReportPublicationPolicy.evidenceFingerprint(currentEvidence) != evidenceFingerprint)
+                throw AutomationExecutionException("evidence_snapshot_changed", AutomationFailureClass.TRANSIENT,
+                    message = "报告生成期间成长证据已变化，保留现有报告并等待自动重新生成")
             val sync = CloudReportSync(context)
             val existing = runCatching { REPORTS.map { definition ->
                 val text = readPublishedReport(student.id, definition.id)
@@ -338,7 +362,7 @@ class GrowthModelService(private val context: Context) {
             prepared.forEachIndexed { index, (definition, _) -> runCatching {
                 store(student).writeBytesSafely("${reportRoot(student)}/${definition.fileName}", readBack[index].toByteArray(), "text/markdown")
             } }
-        }
+        } }
         runCatching { CloudReportSync.enqueueAfterCompletePublication(context, student.id) }
         runCatching { StudioAutomation.enqueueCheck(context, student.id) } // Worker sends nothing without prior per-student consent.
         val message = if (result.warnings.isEmpty()) {
@@ -387,10 +411,13 @@ class GrowthModelService(private val context: Context) {
         val path = activeReportSetPath(student)
         if (!workspace.exists(path)) return@synchronized null
         val pointer = JSONObject(workspace.readBytes(path).toString(Charsets.UTF_8))
+        val eligibleIds = readReview(student).getJSONArray("candidates").toObjects().filter(::publicationEligible)
+            .map { it.getString("id") }.toSet()
         REPORTS.forEach { definition ->
             val entry = LearningReportPublicationPolicy.requireEntry(pointer, student.id, definition.id)
             val content = workspace.readBytes(entry.getString("path"))
             require(ScopedContentPolicy.hash(content) == entry.getString("sha256")) { "学情报告活动版本哈希不一致" }
+            LearningReportPublicationPolicy.requireEvidenceStillEligible(content.toString(Charsets.UTF_8), eligibleIds)
         }
         pointer.getString("publicationId").also { require(it.isNotBlank()) { "学情报告版本标识为空" } }
     }
@@ -404,6 +431,9 @@ class GrowthModelService(private val context: Context) {
             val entry = LearningReportPublicationPolicy.requireEntry(pointer, student.id, reportId)
             val text = workspace.readBytes(entry.getString("path")).toString(Charsets.UTF_8)
             require(EducationPublicationPolicy.sha256(text) == entry.getString("sha256")) { "学情报告活动版本哈希不一致" }
+            val eligibleIds = readReview(student).getJSONArray("candidates").toObjects().filter(::publicationEligible)
+                .map { it.getString("id") }.toSet()
+            LearningReportPublicationPolicy.requireEvidenceStillEligible(text, eligibleIds)
             EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, text)
             return text
         }

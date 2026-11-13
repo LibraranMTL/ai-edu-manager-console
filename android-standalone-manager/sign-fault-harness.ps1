@@ -2,12 +2,14 @@ param(
   [string]$ToolsRoot = 'C:\Users\bxw00\android-build-deps',
   [string]$GradleRoot = 'C:\Users\bxw00\android-build-deps\gradle\gradle-8.10.2',
   [string]$KeystorePath = 'D:\AndroidSigning\AI-Education-Manager\ai-education-manager-release.jks',
-  [string]$OutputDirectory = 'D:\AndroidCandidates\standalone-fault-harness-r18-scope-20261112'
+  [string]$OutputDirectory = 'D:\AndroidCandidates\standalone-fault-harness-r18-scope-20261112',
+  [string]$FaultApplicationSuffix = '.faulttest'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (Test-Path -LiteralPath $OutputDirectory) { throw "Output directory already exists: $OutputDirectory" }
 if (-not (Test-Path -LiteralPath $KeystorePath -PathType Leaf)) { throw 'Release keystore is unavailable.' }
+if ($FaultApplicationSuffix -notmatch '^(\.[a-z][a-z0-9]*)*\.faulttest$') { throw 'Invalid isolated fault-test suffix.' }
 foreach ($drive in @('X:', 'Y:', 'Z:')) { if (Test-Path "$drive\") { throw "Drive $drive is in use; select unused drives before continuing." } }
 $secret = Read-Host 'Release signing password (hidden)' -AsSecureString
 $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
@@ -22,7 +24,7 @@ try {
   $env:JAVA_HOME = 'Y:\jdk17\jdk-17.0.19+10'
   $env:ANDROID_HOME = 'Y:\android-sdk'
   $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
-  & 'Z:\bin\gradle.bat' -p 'X:\android-standalone-manager' -PeduFaultHarness=true ':app:assembleFaultTest' ':app:assembleFaultTestAndroidTest' --no-daemon
+  & 'Z:\bin\gradle.bat' -p 'X:\android-standalone-manager' -PeduFaultHarness=true "-PeduFaultApplicationSuffix=$FaultApplicationSuffix" ':app:assembleFaultTest' ':app:assembleFaultTestAndroidTest' --no-daemon
   if ($LASTEXITCODE -ne 0) { throw 'Fault test build failed.' }
   $app = 'X:\android-standalone-manager\app\build\outputs\apk\faultTest\app-faultTest.apk'
   $test = 'X:\android-standalone-manager\app\build\outputs\apk\androidTest\faultTest\app-faultTest-androidTest.apk'
@@ -31,8 +33,11 @@ try {
   $signer = 'Y:\android-sdk\build-tools\34.0.0\apksigner.bat'
   foreach ($entry in @(@($app, 'fault-app.apk'), @($test, 'fault-instrumentation.apk'))) {
     $out = Join-Path $OutputDirectory $entry[1]
-    $verification = & $signer verify --print-certs $entry[0] 2>$null
-    if ($LASTEXITCODE -ne 0 -or (($verification -join "`n") -notmatch '647087c196380bed06ff285a95b29617dc5a31c4977a0c04ddba895adc67164f')) { throw "Signature verification failed: $($entry[1])" }
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $verification = & $signer verify --print-certs $entry[0] 2>&1; $verifyExit = $LASTEXITCODE }
+    finally { $ErrorActionPreference = $previousPreference }
+    if ($verifyExit -ne 0 -or (($verification -join "`n") -notmatch '647087c196380bed06ff285a95b29617dc5a31c4977a0c04ddba895adc67164f')) { throw "Signature verification failed: $($entry[1])" }
     Copy-Item -LiteralPath $entry[0] -Destination $out
     Get-FileHash -Algorithm SHA256 -LiteralPath $out | Format-List Path,Hash
   }

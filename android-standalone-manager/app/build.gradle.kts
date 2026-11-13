@@ -12,6 +12,8 @@ val releaseKeyAlias = providers.environmentVariable("EDU_ANDROID_KEY_ALIAS").orN
 val releaseKeyPassword = providers.environmentVariable("EDU_ANDROID_KEY_PASSWORD").orNull
 val releaseSigningReady = listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword).all { !it.isNullOrBlank() }
 val faultHarness = providers.gradleProperty("eduFaultHarness").map { it == "true" }.orElse(false).get()
+val faultApplicationSuffix = providers.gradleProperty("eduFaultApplicationSuffix").orElse(".faulttest").get()
+require(faultApplicationSuffix.matches(Regex("^(?:\\.[a-z][a-z0-9]*)*\\.faulttest$"))) { "Invalid isolated fault-test application suffix" }
 val publicContentBaseUrl = providers.gradleProperty("eduPublicContentBaseUrl")
     .orElse(providers.environmentVariable("EDU_PUBLIC_CONTENT_BASE_URL"))
     .orElse("https://www.greatbg.com/edu-cloud")
@@ -77,7 +79,7 @@ android {
         if (faultHarness) {
             create("faultTest") {
                 initWith(getByName("release"))
-                applicationIdSuffix = ".faulttest"
+                applicationIdSuffix = faultApplicationSuffix
                 isDebuggable = true
                 isMinifyEnabled = false
                 buildConfigField("boolean", "FAULT_HARNESS", "true")

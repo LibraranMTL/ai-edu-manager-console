@@ -3,9 +3,25 @@ package com.qxmatrix.edumanager.standalone
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class LearningReportPublicationPolicyTest {
+    @Test fun missingReportTriggerIsRecoveredOnlyForChangedConfirmedEvidence() {
+        val evidence = listOf(JSONObject().put("id", "e1").put("status", "confirmed").put("content", "A"))
+        val fingerprint = LearningReportPublicationPolicy.evidenceFingerprint(evidence)
+        assertEquals(fingerprint, LearningReportPublicationPolicy.pendingEvidenceFingerprint(evidence, null))
+        assertEquals(fingerprint, LearningReportPublicationPolicy.pendingEvidenceFingerprint(evidence, "old"))
+        assertNull(LearningReportPublicationPolicy.pendingEvidenceFingerprint(evidence, fingerprint))
+        assertNull(LearningReportPublicationPolicy.pendingEvidenceFingerprint(emptyList(), "old"))
+    }
+    @Test fun anActiveReportCannotExposeWithdrawnEvidence() {
+        val report = "---\nstatus: active\nsource_claim_ids: e1,e2\n---\n\n# report"
+        LearningReportPublicationPolicy.requireEvidenceStillEligible(report, setOf("e1", "e2", "new-evidence"))
+        assertThrows(IllegalArgumentException::class.java) { LearningReportPublicationPolicy.requireEvidenceStillEligible(report, setOf("e1")) }
+        assertThrows(IllegalStateException::class.java) { LearningReportPublicationPolicy.requireEvidenceStillEligible("---\nstatus: active\n---\n", setOf("e1")) }
+    }
     @Test fun evidence_fingerprint_is_order_independent_and_content_sensitive() {
         val first = JSONObject().put("id", "e1").put("status", "confirmed").put("content", "A").put("sourceUri", "material:1")
         val second = JSONObject().put("id", "e2").put("status", "confirmed").put("content", "B").put("sourceUri", "material:2")

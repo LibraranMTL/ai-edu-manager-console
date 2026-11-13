@@ -118,7 +118,15 @@ class FaultRecoveryInstrumentationTest {
         check(prefs.edit().putString("reportBefore", before.toString(Charsets.UTF_8))
             .putString("reportBeforeSha256", ScopedContentPolicy.hash(before)).commit())
     }
-    private fun reportAbort() { arm("report_before_activation"); GrowthModelService(context).generateAndPublishReports(student().id); error("Expected process termination") }
+    private fun reportAbort() {
+        val growth = GrowthModelService(context)
+        val confirmed = growth.candidates(student().id).first { it.optString("status") == "confirmed" }
+        Thread.sleep(30)
+        growth.reviewCandidate(student().id, confirmed.getString("id"), "confirmed", "Synthetic changed evidence revision")
+        arm("report_before_activation")
+        growth.generateAndPublishReports(student().id)
+        error("Expected process termination")
+    }
     private fun reportVerify() {
         assertEquals("report_before_activation", prefs.getString("reached", ""))
         val path = "${student().paths.summaryPath}/学情报告/active-report-set.json"
@@ -126,7 +134,7 @@ class FaultRecoveryInstrumentationTest {
         val beforeHash = prefs.getString("reportBeforeSha256", "").orEmpty()
         if (beforeHash.isNotBlank()) assertEquals(beforeHash, ScopedContentPolicy.hash(currentBytes))
         else assertEquals(JSONObject(prefs.getString("reportBefore", "")!!).toString(), JSONObject(currentBytes.toString(Charsets.UTF_8)).toString())
-        assertEquals("published", GrowthModelService(context).generateAndPublishReports(student().id).getString("status"))
+        assertEquals("published", GrowthModelService(context).generateAndPublishReportsIfChanged(student().id).getString("status"))
         val pointer = JSONObject(FileAssetService(context).readLogicalBytes(student().id, path).toString(Charsets.UTF_8))
         assertEquals(4, pointer.getJSONArray("items").length())
         GrowthModelService.REPORTS.forEach { definition ->

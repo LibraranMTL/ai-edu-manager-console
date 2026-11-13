@@ -6,6 +6,21 @@ import org.junit.Test
 import java.io.IOException
 
 class AutomationOrchestrationPolicyTest {
+    @Test fun offlineRemoteQueueCannotBlockLocalQueueForTheSameStudent() {
+        val local = AutomationOrchestrator.workName(AutomationAction.CLASSIFY_MATERIAL, "student-a", "task-local")
+        val remote = AutomationOrchestrator.workName(AutomationAction.DIGEST_MATERIAL, "student-a", "task-remote")
+        assertNotEquals(local, remote)
+        assertEquals(local, AutomationOrchestrator.workName(AutomationAction.OCR_MATERIAL, "student-a", "task-other"))
+        assertNotEquals(local, AutomationOrchestrator.workName(AutomationAction.CLASSIFY_MATERIAL, "student-b", "task-local"))
+    }
+    @Test fun changedEvidenceIsRetriedWithoutAskingTheUser() {
+        val failure = AutomationFailurePolicy.decide(AutomationExecutionException("evidence_snapshot_changed",
+            AutomationFailureClass.TRANSIENT, message = "证据变化"), 1, 4)
+        assertEquals("evidence_snapshot_changed", failure.code)
+        assertTrue(failure.autoRetry)
+        assertFalse(failure.attentionRequired)
+        assertFalse(failure.resultUnknown)
+    }
     @Test fun separateTasksNeverReplaceEachOthersRecoverySchedule() {
         assertNotEquals(AutomationReconciliationWorker.retryWorkName("task-a"), AutomationReconciliationWorker.retryWorkName("task-b"))
         assertEquals(AutomationReconciliationWorker.retryWorkName("task-a"), AutomationReconciliationWorker.retryWorkName("task-a"))

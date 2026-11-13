@@ -8,6 +8,18 @@ import org.junit.Test
 class ReportDraftPolicyTest {
     private val evidence = listOf(JSONObject().put("id", "evidence-1").put("title", "完成三次订正"))
 
+    @Test fun eachParagraphAndBulletNeedsItsOwnEvidenceOrConservativeText() {
+        val unsafe = "- 能够订正 [依据:evidence-1]\n- 学生已经完全掌握所有内容"
+        val safe = "- 能够订正 [依据:evidence-1]\n- 资料不足。"
+        val result = ReportDraftPolicy.complete(listOf("优势", "观察"),
+            JSONObject().put("优势", unsafe).put("观察", safe), evidence)
+        assertTrue(!result.sections.getString("优势").contains("完全掌握"))
+        assertEquals(safe, result.sections.getString("观察"))
+        val paragraph = ReportDraftPolicy.complete(listOf("优势"), JSONObject().put("优势",
+            "已完成订正 [依据:evidence-1]\n\n学生具备杰出能力"), evidence)
+        assertTrue(!paragraph.sections.getString("优势").contains("杰出能力"))
+    }
+
     @Test
     fun fillsMissingSectionsInsteadOfFailingTheWholeReport() {
         val completed = ReportDraftPolicy.complete(

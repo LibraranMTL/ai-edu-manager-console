@@ -152,6 +152,10 @@ class AutomationOrchestrator(private val context: Context) {
     }
 
     companion object {
+        internal fun workName(action: AutomationAction, studentId: String, taskId: String): String =
+            if (studentId.isNotBlank()) BackgroundWorkPolicy.uniqueName(if (action.remote) "automation-remote" else "automation-local", studentId)
+            else "automation-action-$taskId"
+
         internal fun enqueue(context: Context, task: JSONObject) {
             val action = AutomationAction.from(task.getJSONObject("input").getString("actionType"))
             val builder = OneTimeWorkRequestBuilder<AutomationActionWorker>()
@@ -159,8 +163,7 @@ class AutomationOrchestrator(private val context: Context) {
                 .addTag("automation-task:${task.getString("id")}")
             if (action.remote) BackgroundWorkPolicy.applyRemote(builder) else builder.setConstraints(BackgroundWorkPolicy.localConstraints)
             val studentId = task.getJSONObject("input").optString("studentId")
-            val workName = if (studentId.isNotBlank()) BackgroundWorkPolicy.uniqueName("automation-action", studentId)
-                else "automation-action-${task.getString("id")}"
+            val workName = workName(action, studentId, task.getString("id"))
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
                 workName, ExistingWorkPolicy.APPEND_OR_REPLACE, builder.build())
         }

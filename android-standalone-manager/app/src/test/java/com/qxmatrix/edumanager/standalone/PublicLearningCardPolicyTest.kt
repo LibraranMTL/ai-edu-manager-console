@@ -8,12 +8,36 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class PublicLearningCardPolicyTest {
+    @Test fun attemptDetailsShowOnlyTheStudentsOwnAnswerWithoutTechnicalMetadata() {
+        val payload = JSONObject().put("evidenceSnapshot", JSONObject().put("result", JSONObject().put("items", JSONArray().put(JSONObject().put("question", "7 + 5?").put("answer", "12")))))
+            .put("answer", JSONObject().put("text", "11")).put("versionId", "private-internal-id")
+        val result = LearningStudioPolicy.readableAttempt(payload)
+        assert(result.contains("7 + 5?") && result.contains("11"))
+        assertFalse(result.contains("private-internal-id"))
+        assertFalse(result.contains("\"answer\""))
+    }
+
+    @Test fun exactAnswerFeedbackComparesOnlySingleQuestionWithoutClaimingMastery() {
+        val item = JSONObject().put("question", "7 + 5?").put("answer", "12").put("rationale", "Seven plus five.")
+        val snapshot = JSONObject().put("answerPolicy", "exact").put("result", JSONObject().put("items", JSONArray().put(item)))
+        val payload = JSONObject().put("evidenceSnapshot", snapshot).put("answer", JSONObject().put("text", " 12 "))
+        val correct = LearningStudioPolicy.readableAttempt(payload)
+        assert(correct.contains("与参考答案一致") && correct.contains("尚未形成掌握程度结论"))
+        payload.put("answer", JSONObject().put("text", "11"))
+        assert(LearningStudioPolicy.readableAttempt(payload).contains("与参考答案不一致"))
+        snapshot.getJSONObject("result").getJSONArray("items").put(JSONObject(item.toString()))
+        assertFalse(LearningStudioPolicy.readableAttempt(payload).contains("答案比对"))
+        snapshot.put("answerPolicy", "rubric")
+        assertFalse(LearningStudioPolicy.readableAttempt(payload).contains("答案比对"))
+    }
     @Test fun filtersSignedPublicTemplatesByExactLocaleAndGrade() {
         val manifest = manifest()
         assertEquals(1, PublicLearningCardPolicy.eligible(manifest, "en-US", "3").size)
         assertEquals(0, PublicLearningCardPolicy.eligible(manifest, "en-GB", "3").size)
         assertEquals(0, PublicLearningCardPolicy.eligible(manifest, "en-US", "4").size)
         assertEquals(0, PublicLearningCardPolicy.eligible(manifest, "en-US", "").size)
+        assertEquals(1, PublicLearningCardPolicy.eligible(manifest, "zh-CN", "3", includeOtherLanguages = true).size)
+        assertEquals(0, PublicLearningCardPolicy.eligible(manifest, "zh-CN", "4", includeOtherLanguages = true).size)
     }
 
     @Test fun createsAStudentFreeImmutableInstancePayload() {

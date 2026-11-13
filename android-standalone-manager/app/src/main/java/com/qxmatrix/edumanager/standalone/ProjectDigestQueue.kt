@@ -112,19 +112,36 @@ class ProjectDigestQueue(context: Context) {
         val groups = jobs.filter { it.optJSONObject("result")?.optString("operationId")?.matches(Regex("project-digest-[0-9a-f]{32}")) == true }
             .groupBy { it.getJSONObject("result").getString("operationId") }
         var restored = 0; var retained = 0
+        val reasons = mutableMapOf<String, Int>()
+        fun recordReason(reason: String) { reasons[reason] = (reasons[reason] ?: 0) + 1 }
         val store = SafWorkspaceStore(appContext, android.net.Uri.parse(project.projectRootUri))
         groups.forEach { (operation, candidates) ->
             val path = "${project.paths.managerPath}/project-materials/digest-provenance/$operation.json"
             if (store.exists(path)) return@forEach
             val job = candidates.singleOrNull()
-            if (job == null || !ProjectLegacyRecoveryPolicy.eligible(job, projectId, operation)) { retained++; return@forEach }
+            if (job == null || !ProjectLegacyRecoveryPolicy.eligible(job, projectId, operation)) {
+                retained++; recordReason("ambiguous_or_incomplete_job"); return@forEach
+            }
             val frozen = job.getJSONArray("frozenMaterials")
-            val recovered = runCatching {
+            val attempt = runCatching {
                 LocalProjectDigestService(appContext).digestFrozen(projectId, frozen, job.optString("studentId"),
                     cacheOnly = true, expectedOperationId = operation, provenanceOnly = true)
-            }.getOrNull()
-            if (recovered?.optString("operationId") == operation && store.exists(path)) restored++ else retained++
+            }
+            if (attempt.getOrNull()?.optString("operationId") == operation && store.exists(path)) restored++ else {
+                retained++
+                val message = attempt.exceptionOrNull()?.message.orEmpty()
+                val reason = when {
+                    message.contains("任务检查点与历史产物") -> "configuration_or_operation_changed"
+                    message.contains("没有可核验的项目模型检查点") -> "checkpoint_missing"
+                    message.contains("检查点与固定来源") -> "checkpoint_source_mismatch"
+                    message.contains("项目原件") || message.contains("固定版本") || message.contains("固定快照") -> "source_unavailable_or_changed"
+                    message.contains("已有项目知识产物") || message.contains("历史项目产物缺失") -> "artifact_missing_or_changed"
+                    else -> "other_verification_failure"
+                }
+                recordReason(reason)
+            }
         }
+        android.util.Log.i("ProjectLegacyRecovery", "completedJobs=${jobs.size} operations=${groups.size} restored=$restored retained=$retained reasons=$reasons")
         JSONObject().put("restored", restored).put("retained", retained)
     }
 

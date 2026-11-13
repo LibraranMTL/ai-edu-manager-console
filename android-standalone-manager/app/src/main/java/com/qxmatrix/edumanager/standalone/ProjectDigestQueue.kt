@@ -29,6 +29,18 @@ object ProjectAutoDigestPolicy {
         actual.distinct().size == actual.size && expected.sorted() == actual.sorted()
 }
 
+object ProjectLegacyRecoveryPolicy {
+    fun eligible(job: JSONObject, projectId: String, operation: String): Boolean {
+        if (job.optString("projectId") != projectId || job.optString("status") != "completed" ||
+            !operation.matches(Regex("project-digest-[0-9a-f]{32}"))) return false
+        val frozen = job.optJSONArray("frozenMaterials") ?: return false
+        val result = job.optJSONObject("result") ?: return false
+        return frozen.length() in 1..50 && result.optString("operationId") == operation &&
+            result.optInt("processed") == frozen.length() &&
+            result.optString("artifactPath").endsWith("/资料消化-$operation.md")
+    }
+}
+
 private object ProjectDigestLocks { val execution = Any() }
 
 /** Durable, bounded queue for project knowledge digestion. Original files never live in this queue. */
@@ -81,6 +93,39 @@ class ProjectDigestQueue(context: Context) {
             if (job.optString("status") == "queued") schedule(job)
         }
         if (changed) write(root)
+        root.getJSONArray("jobs").objects().filter { it.optString("status") == "completed" }
+            .map { it.optString("projectId") }.filter(String::isNotBlank).distinct().forEach(::scheduleLegacyRecovery)
+    }
+
+    fun scheduleLegacyRecovery(projectId: String) {
+        val work = OneTimeWorkRequestBuilder<ProjectLegacyProvenanceWorker>()
+            .setInputData(Data.Builder().putString("projectId", projectId).build()).build()
+        WorkManager.getInstance(appContext).enqueueUniqueWork("android-standalone-project-provenance-$projectId", ExistingWorkPolicy.KEEP, work)
+    }
+
+    /** Reconstruct only a completed, unique job using its exact cached response and unchanged sources. */
+    fun recoverCompletedProvenance(projectId: String): JSONObject = synchronized(ProjectDigestLocks.execution) {
+        val project = ProjectRepository(appContext).requireExact(projectId)
+        val jobs = synchronized(STATE_LOCK) { read().getJSONArray("jobs").objects()
+            .filter { it.optString("projectId") == projectId && it.optString("status") == "completed" }
+            .map { JSONObject(it.toString()) } }
+        val groups = jobs.filter { it.optJSONObject("result")?.optString("operationId")?.matches(Regex("project-digest-[0-9a-f]{32}")) == true }
+            .groupBy { it.getJSONObject("result").getString("operationId") }
+        var restored = 0; var retained = 0
+        val store = SafWorkspaceStore(appContext, android.net.Uri.parse(project.projectRootUri))
+        groups.forEach { (operation, candidates) ->
+            val path = "${project.paths.managerPath}/project-materials/digest-provenance/$operation.json"
+            if (store.exists(path)) return@forEach
+            val job = candidates.singleOrNull()
+            if (job == null || !ProjectLegacyRecoveryPolicy.eligible(job, projectId, operation)) { retained++; return@forEach }
+            val frozen = job.getJSONArray("frozenMaterials")
+            val recovered = runCatching {
+                LocalProjectDigestService(appContext).digestFrozen(projectId, frozen, job.optString("studentId"),
+                    cacheOnly = true, expectedOperationId = operation, provenanceOnly = true)
+            }.getOrNull()
+            if (recovered?.optString("operationId") == operation && store.exists(path)) restored++ else retained++
+        }
+        JSONObject().put("restored", restored).put("retained", retained)
     }
 
     /** Only replay an exact locally persisted result; cacheOnly can never dispatch a model call. */
@@ -243,4 +288,13 @@ class ProjectDigestWorker(context: Context, parameters: WorkerParameters) : Work
         }, onFailure = { queue.fail(jobId, it); Result.success() })
     }
 
+}
+
+/** Runs only local cached verification; never starts a model request. */
+class ProjectLegacyProvenanceWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
+    override fun doWork(): Result {
+        val projectId = inputData.getString("projectId") ?: return Result.failure()
+        return runCatching { ProjectDigestQueue(applicationContext).recoverCompletedProvenance(projectId) }
+            .fold(onSuccess = { Result.success() }, onFailure = { Result.retry() })
+    }
 }

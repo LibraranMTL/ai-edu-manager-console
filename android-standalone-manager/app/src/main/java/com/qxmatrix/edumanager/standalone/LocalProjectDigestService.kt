@@ -54,7 +54,8 @@ class LocalProjectDigestService(private val context: Context) {
     fun digestPending(projectId: String, maximum: Int = 20): JSONObject = digestFrozen(projectId, freezePending(projectId, maximum))
 
     fun digestFrozen(projectId: String, frozen: JSONArray, studentId: String = "", cacheOnly: Boolean = false,
-        retryJobId: String = ""): JSONObject = synchronized(LOCK) {
+        retryJobId: String = "", expectedOperationId: String = "", provenanceOnly: Boolean = false): JSONObject = synchronized(LOCK) {
+        require(!provenanceOnly || (cacheOnly && expectedOperationId.isNotBlank())) { "来源恢复必须使用固定的本机检查点" }
         require(frozen.length() in 1..50) { "固定资料批次为空或过大" }
         val project = projects.requireExact(projectId)
         require(project.materialStorageMode == "workspace-v1" && project.materialMigrationState != "running") { "项目资料尚未统一或正在迁移" }
@@ -92,6 +93,7 @@ class LocalProjectDigestService(private val context: Context) {
         val cacheKey = "project-digest-cache:$projectId:$key"
         val saved = db.tasks().metadata(cacheKey)?.let(::JSONObject)
         val operationId = "project-digest-${key.take(32)}"
+        require(expectedOperationId.isBlank() || operationId == expectedOperationId) { "任务检查点与历史产物不匹配" }
         require(!cacheOnly || saved != null) { "没有可核验的项目模型检查点，保留未知状态且不重复调用" }
         val cached = saved ?: run {
             val taskId = "project:$projectId:$key"
@@ -120,6 +122,18 @@ class LocalProjectDigestService(private val context: Context) {
         require(cached.getString("key") == key) { "项目缓存指纹不匹配" }
         if (cacheOnly) require(ProjectCheckpointRecoveryPolicy.matches(cached, key, frozen)) { "项目检查点与固定来源不一致，保留未知状态" }
         materials.requireFrozenSourcesCurrent(projectId, frozen)
+        val parsed = cached.getJSONObject("result")
+        val store = SafWorkspaceStore(context, Uri.parse(project.knowledgeRootUri))
+        val artifact = "${project.paths.summaryPath}/资料消化-$operationId.md"
+        writeVerified(store, artifact, cached.getString("markdown"), provenanceOnly)
+        writeList(store, project.paths.conceptPath, "资料概念-$operationId.md", "概念", parsed.optJSONArray("concepts"), provenanceOnly)
+        writeList(store, project.paths.entityPath, "资料实体-$operationId.md", "实体", parsed.optJSONArray("entities"), provenanceOnly)
+        val qa = parsed.optJSONArray("qa") ?: JSONArray()
+        if (qa.length() > 0) writeVerified(store, "${project.paths.qaPath}/资料问答-$operationId.md", buildString {
+            appendLine("# 项目问答精华"); appendLine()
+            for (index in 0 until qa.length()) qa.optJSONObject(index)?.let { appendLine("## ${it.optString("question")}"); appendLine(); appendLine(it.optString("answer")); appendLine() }
+        }, provenanceOnly)
+        materials.requireFrozenSourcesCurrent(projectId, frozen)
         val provenance = JSONObject().put("schema", "edu-manager.project-digest-provenance.v1")
             .put("projectId", projectId).put("operationId", operationId).put("sources", JSONArray(frozen.toString()))
         val provenanceStore = SafWorkspaceStore(context, Uri.parse(project.projectRootUri))
@@ -128,19 +142,7 @@ class LocalProjectDigestService(private val context: Context) {
         if (provenanceStore.exists(provenancePath)) require(provenanceStore.readBytes(provenancePath).contentEquals(provenanceBytes)) { "项目来源凭证冲突，保留原文件" }
         else provenanceStore.writeStreamNewSafely(provenancePath, "application/json") { it.write(provenanceBytes) }
         require(provenanceStore.readBytes(provenancePath).contentEquals(provenanceBytes)) { "项目来源凭证回读校验失败" }
-        val parsed = cached.getJSONObject("result")
-        val store = SafWorkspaceStore(context, Uri.parse(project.knowledgeRootUri))
-        val artifact = "${project.paths.summaryPath}/资料消化-$operationId.md"
-        writeVerified(store, artifact, cached.getString("markdown"))
-        writeList(store, project.paths.conceptPath, "资料概念-$operationId.md", "概念", parsed.optJSONArray("concepts"))
-        writeList(store, project.paths.entityPath, "资料实体-$operationId.md", "实体", parsed.optJSONArray("entities"))
-        val qa = parsed.optJSONArray("qa") ?: JSONArray()
-        if (qa.length() > 0) writeVerified(store, "${project.paths.qaPath}/资料问答-$operationId.md", buildString {
-            appendLine("# 项目问答精华"); appendLine()
-            for (index in 0 until qa.length()) qa.optJSONObject(index)?.let { appendLine("## ${it.optString("question")}"); appendLine(); appendLine(it.optString("answer")); appendLine() }
-        })
-        materials.requireFrozenSourcesCurrent(projectId, frozen)
-        materials.markProcessedVersions(projectId, fixed.associate { it.getString("materialId") to it.getInt("version") }, artifact, operationId)
+        if (!provenanceOnly) materials.markProcessedVersions(projectId, fixed.associate { it.getString("materialId") to it.getInt("version") }, artifact, operationId)
         JSONObject().put("ok", true).put("processed", fixed.size).put("operationId", operationId).put("artifactPath", artifact)
     }
 
@@ -177,15 +179,15 @@ class LocalProjectDigestService(private val context: Context) {
         本文是项目知识候选；资料分类不等于学生贡献确认。
     """.trimIndent() + "\n"
 
-    private fun writeList(store: SafWorkspaceStore, root: String, name: String, title: String, values: JSONArray?) {
+    private fun writeList(store: SafWorkspaceStore, root: String, name: String, title: String, values: JSONArray?, verifyOnly: Boolean = false) {
         if (root.isBlank() || values == null || values.length() == 0) return
         val body = buildString { appendLine("# $title"); appendLine(); for (index in 0 until values.length()) appendLine("- ${values.optString(index)}") }
-        writeVerified(store, "$root/$name", body)
+        writeVerified(store, "$root/$name", body, verifyOnly)
     }
-    private fun writeVerified(store: SafWorkspaceStore, path: String, text: String) {
+    private fun writeVerified(store: SafWorkspaceStore, path: String, text: String, verifyOnly: Boolean = false) {
         val bytes = text.toByteArray(Charsets.UTF_8)
         if (store.exists(path)) require(store.readBytes(path).contentEquals(bytes)) { "已有项目知识产物与检查点不一致，保留原文件" }
-        else store.writeBytesSafely(path, bytes, "text/markdown")
+        else { require(!verifyOnly) { "历史项目产物缺失，保留原状且不补造凭证" }; store.writeBytesSafely(path, bytes, "text/markdown") }
         require(store.readBytes(path).contentEquals(bytes)) { "项目知识产物回读校验失败" }
     }
     private fun parse(text: String): JSONObject {

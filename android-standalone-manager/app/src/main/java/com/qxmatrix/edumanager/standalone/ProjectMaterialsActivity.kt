@@ -118,6 +118,7 @@ class ProjectMaterialsActivity : Activity() {
         root.addView(button("返回学习项目") { finish() }, matchWrap())
         val page = ScrollView(this).apply { isFillViewport = true; addView(root) }
         setContentView(page); refresh()
+        runCatching { ProjectDigestQueue(this).scheduleLegacyRecovery(project.id) }
         if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_MENTOR, false)) root.post {
             if (!isFinishing && !isDestroyed) mentorDialog()
         }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowRight, CircleAlert, FolderKanban, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
 import { ExpertConsultationCard } from './ExpertConsultationCard';
 import './learning-workbench.css';
@@ -15,7 +15,10 @@ type Projection = {
   expertConsultation?: { draft?: unknown; authorizationValid?: boolean; reviewed?: boolean };
   expertEntryEnabled?: boolean;
 };
-type Api = { getLearningWorkbenchProjection?: (studentId: string) => Promise<string> };
+type Api = {
+  getLearningWorkbenchProjection?: (studentId: string) => Promise<string>;
+  onSubsystemProgress?: (callback: (payload: { name: string; status: string }) => void) => () => void;
+};
 
 export function LearningWorkbenchPanel({ api, studentId, studentName, onPrimaryAction, onProject, onExpert, onUnavailable }: {
   api?: Api; studentId: string; studentName: string; onPrimaryAction: () => void; onProject: (projectId: string) => void;
@@ -24,17 +27,23 @@ export function LearningWorkbenchPanel({ api, studentId, studentName, onPrimaryA
   const [projection, setProjection] = useState<Projection | null>(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const requestGeneration = useRef(0);
   async function refresh() {
+    const generation = ++requestGeneration.current;
     if (!studentId || !api?.getLearningWorkbenchProjection) { setProjection(null); setLoading(false); return; }
     setLoading(true); setMessage('');
     try {
       const result = JSON.parse(await api.getLearningWorkbenchProjection(studentId));
+      if (generation !== requestGeneration.current) return;
       if (!result.ok) { if (result.code === 'learning_workbench_disabled') onUnavailable?.(); throw new Error(result.message || '学情工作台加载失败。'); }
       setProjection(result.projection);
-    } catch (error) { setMessage(error instanceof Error ? error.message : '学情工作台加载失败。'); }
-    finally { setLoading(false); }
+    } catch (error) { if (generation === requestGeneration.current) setMessage(error instanceof Error ? error.message : '学情工作台加载失败。'); }
+    finally { if (generation === requestGeneration.current) setLoading(false); }
   }
-  useEffect(() => { void refresh(); }, [studentId]);
+  useEffect(() => { void refresh(); return () => { requestGeneration.current++; }; }, [studentId]);
+  useEffect(() => api?.onSubsystemProgress?.((payload) => {
+    if (['tasks', 'assets', 'projects'].includes(payload.name) && payload.status === 'ready') void refresh();
+  }), [api, studentId]);
   if (!studentId) return <section className="panel workbench-empty"><Sparkles size={30} /><h2>先建立或选择学生档案</h2><p>学情工作台严格按学生隔离，不会把其他学生的结论带入当前页面。</p></section>;
   if (loading) return <section className="panel workbench-empty"><RefreshCw className="spin" size={24} /><p>正在汇总 {studentName} 的只读学情工作台…</p></section>;
   if (!projection) return <section className="panel workbench-empty"><CircleAlert size={26} /><p>{message || '暂时无法读取学情工作台。'}</p><button className="secondary" onClick={() => void refresh()}>重试</button></section>;

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 const CloudDocumentsPanel = React.lazy(() => import('./CloudDocumentsPanel').then(module => ({ default: module.CloudDocumentsPanel })));
 const AssetCenterPanel = React.lazy(() => import('./AssetCenterPanel').then(module => ({ default: module.AssetCenterPanel })));
@@ -1225,6 +1225,7 @@ type AndroidBridge = {
   scanMaterialSources?: (studentId: string, sourcesJson: string) => Promise<string>;
   importMaterialSourceFiles?: (studentId: string, pathsJson: string, targetJson?: string) => Promise<string>;
   getMaterialImportRecords?: (studentId: string) => Promise<string>;
+  getProjectManualImportRecords?: (studentId: string, projectId: string) => Promise<string>;
   removeMaterialImportRecords?: (studentId: string, recordIdsJson: string) => Promise<string>;
   getCaptureCenterState?: () => Promise<string>;
   showQuickCapture?: () => Promise<string>;
@@ -1343,7 +1344,7 @@ type AndroidBridge = {
   updateProjectStatus?: (projectId: string, status: string) => Promise<string>;
   updateProjectStudents?: (projectId: string, studentIdsJson: string) => Promise<string>;
   applyProjectWorkspaceTemplate?: (projectId: string, templateId: string, foldersJson: string, templateName?: string, templateV2Json?: string) => Promise<string>;
-  openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge') => Promise<string>;
+  openProjectSpace?: (projectId: string, space: 'root' | 'workspace' | 'raw' | 'knowledge' | 'importTarget') => Promise<string>;
   scanProjectWorkspace?: (projectId: string, restart?: boolean) => Promise<string>;
   relocateProjectMaterial?: (projectId: string, materialId: string, expectedVersion: number, expectedRecordRevision: number) => Promise<string>;
   cancelProjectWorkspaceScan?: (projectId: string) => Promise<string>;
@@ -2251,6 +2252,7 @@ type DirectCourseFeedback = {
 type NativeImportResult = {
   ok?: boolean;
   imported?: number;
+  targetType?: string;
   message?: string;
 };
 
@@ -9893,12 +9895,15 @@ ${sourceText}`;
           : payload;
       const message = result.message || '';
       setImportMessage(message);
-      if (pendingImportStudentId && (result.ok || message.startsWith('已导入'))) {
+      if (pendingImportStudentId && result.targetType !== 'project' && (result.ok || message.startsWith('已导入'))) {
         const matchedCount = message.match(/已导入\s*(\d+)/);
         const importedCount = Number(result.imported ?? (matchedCount ? Number(matchedCount[1]) : 1));
         recordImportedFiles(pendingImportStudentId, importedCount);
       }
-      window.setTimeout(() => setImportMessage(''), 3600);
+      if (pendingImportStudentId) {
+        const student = students.find((item) => item.id === pendingImportStudentId);
+        if (student) void refreshMaterialImportRecords(student);
+      }
     };
     (window as unknown as { onNativeUpdateResult?: (payload: string) => void }).onNativeUpdateResult = (payload: string) => {
       setCheckingUpdate(false);
@@ -10063,7 +10068,7 @@ ${sourceText}`;
       delete (window as unknown as { onNativeCollaborationChanged?: (payload: string) => void }).onNativeCollaborationChanged;
       delete (window as unknown as { onNativeAgentMemoryChanged?: (payload: string) => void }).onNativeAgentMemoryChanged;
     };
-  }, [pendingImportStudentId]);
+  }, [pendingImportStudentId, materialImportTargetKey]);
 
   useEffect(() => {
     const refreshVisible = async () => {
@@ -10290,7 +10295,7 @@ ${sourceText}`;
       void refreshCaptureSources();
     }
     return undefined;
-  }, [activeSection, selectedId]);
+  }, [activeSection, selectedId, materialImportTargetKey]);
 
   useEffect(() => {
     if (isWindows && activeSection === 'inbox' && captureView === 'timeline' && selectedStudent) {
@@ -11713,6 +11718,8 @@ ${sourceText}`;
 
   const importFilesForStudent = async (student: Student) => {
     setPendingImportStudentId(student.id);
+    setImportMessage('请选择本机资料；选择后正在导入，请稍候。');
+    try {
     const ok = await bridge()?.importFiles?.(student.id, JSON.stringify(materialImportTargetForStudent(student)));
     if (typeof ok === 'string') {
       try {
@@ -11721,13 +11728,12 @@ ${sourceText}`;
       } catch {
         setImportMessage('导入资料结果解析失败。');
       }
-      window.setTimeout(() => setImportMessage(''), 4200);
       return;
     }
     if (!ok) {
       setImportMessage('当前环境不支持原生文件导入，请在 Android APK 中使用。');
-      window.setTimeout(() => setImportMessage(''), 3600);
     }
+    } catch (error) { setImportMessage(`导入请求失败：${String(error)}`); }
   };
 
   const importImagesForStudent = (student: Student) => {
@@ -11853,7 +11859,10 @@ ${sourceText}`;
   };
 
   const refreshMaterialImportRecords = async (student: Student) => {
-    const raw = await bridge()?.getMaterialImportRecords?.(student.id);
+    const target = materialImportTargetForStudent(student);
+    const raw = target.type === 'project'
+      ? await bridge()?.getProjectManualImportRecords?.(student.id, target.id)
+      : await bridge()?.getMaterialImportRecords?.(student.id);
     if (!raw) return;
     try {
       const result = JSON.parse(raw) as { ok?: boolean; records?: MaterialImportRecord[] };
@@ -15864,6 +15873,21 @@ ${JSON.stringify(items, null, 2)}
     }
   };
 
+  const openImportTarget = async (student: Student) => {
+    const target = materialImportTargetForStudent(student);
+    if (target.type === 'student') {
+      const raw = await bridge()?.openStudentRawDir?.(student.id);
+      try { const result = JSON.parse(raw || '{}'); setImportMessage(result.ok ? `已打开：${result.path}` : result.message || '无法打开目录。'); }
+      catch { setImportMessage('打开目录失败。'); }
+      return;
+    }
+    try {
+      const raw = await bridge()?.openProjectSpace?.(target.id, 'importTarget');
+      const result = JSON.parse(raw || '{}');
+      setImportMessage(result.ok ? `已打开项目导入位置：${result.path}` : result.message || '无法打开项目目录。');
+    } catch { setImportMessage('打开项目目录失败。'); }
+  };
+
   const migrateSelectedStudentWorkspace = async () => {
     if (!selectedStudent || !studentEditDraft) return;
     if (isWindows && !windowsLicenseActive) {
@@ -18384,7 +18408,7 @@ ${JSON.stringify(items, null, 2)}
               {isWindows && (
                 <label className="compact-field material-import-target">
                   <span>导入位置</span>
-                  <select value={normalizedMaterialImportTargetKey(selectedStudent)} onChange={(event) => setMaterialImportTargetKey(event.target.value)}>
+                  <select value={normalizedMaterialImportTargetKey(selectedStudent)} onChange={(event) => { setMaterialImportTargetKey(event.target.value); setMaterialImportRecords([]); setSelectedMaterialImportRecordIds([]); }}>
                     <option value="student">学生原始资料库 · {selectedStudent.name}</option>
                     {availableImportProjectsForStudent(selectedStudent.id).map((project) => (
                       <option value={project.id} key={project.id}>项目原始资料库 · {project.name}</option>
@@ -18409,9 +18433,9 @@ ${JSON.stringify(items, null, 2)}
                 </>
               )}
               {isWindows && (
-                <button className="secondary" onClick={() => openStudentRawDir(selectedStudent)}>
+                <button className="secondary" onClick={() => void openImportTarget(selectedStudent)}>
                   <FolderOpen size={18} />
-                  打开学生原始资料库
+                  打开所选导入位置
                 </button>
               )}
             </div>}
@@ -18777,122 +18801,38 @@ ${JSON.stringify(items, null, 2)}
             )}
             {isWindows && activePageTab === 'materials-import' && (
               <section className="material-source-panel">
-                <div className="mini-heading">
-                  <strong>资料来源目录</strong>
-                  <span>来源目录只用于发现资料；导入时可选择学生原始资料库或当前学生绑定且未封存的项目原始资料库。</span>
-                </div>
-                <div className="actions">
-                  <label className="compact-field material-import-target">
-                    <span>导入位置</span>
-                    <select value={normalizedMaterialImportTargetKey(selectedStudent)} onChange={(event) => setMaterialImportTargetKey(event.target.value)}>
-                      <option value="student">学生原始资料库 · {selectedStudent.name}</option>
-                      {availableImportProjectsForStudent(selectedStudent.id).map((project) => (
-                        <option value={project.id} key={project.id}>项目原始资料库 · {project.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <button className="secondary" onClick={() => addMaterialSourceDir(selectedStudent)}>
-                    <Plus size={18} />
-                    添加来源目录
-                  </button>
-                  <button className="primary" onClick={() => void scanMaterialSourcesForStudent(selectedStudent)} disabled={Boolean(materialSourceBusyAction) || (selectedStudent.materialSources ?? []).filter((source) => source.enabled).length === 0}>
-                    <RefreshCw size={18} />
-                    {materialSourceBusyAction === 'scan' ? '正在扫描…' : '扫描全部来源'}
-                  </button>
-                  <button className="secondary" onClick={() => refreshMaterialImportRecords(selectedStudent)}>
-                    <Archive size={18} />
-                    刷新导入记录
-                  </button>
-                </div>
-                {(selectedStudent.materialSources ?? []).length > 0 ? (
-                  <div className="material-source-list">
-                    {(selectedStudent.materialSources ?? []).map((source) => (
-                      <div className="material-source-item" key={source.id}>
-                        <label>
-                          <input type="checkbox" checked={source.enabled} onChange={() => toggleMaterialSource(selectedStudent, source.id)} />
-                          <span>
-                            <strong>{source.name}</strong>
-                            <small>{source.path}</small>
-                            {source.lastScannedAt && <em>最近扫描：{new Date(source.lastScannedAt).toLocaleString('zh-CN')}</em>}
-                          </span>
-                        </label>
-                        <button className="secondary compact" onClick={() => removeMaterialSource(selectedStudent, source.id)}>删除</button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-state">尚未添加资料来源目录。可添加 Downloads、截图、微信/QQ 文件或扫描仪输出目录。</div>
-                )}
-                {materialSourceFiles.length > 0 && (
-                  <div className="material-source-results">
-                    <div className="mini-heading">
-                      <strong>待导入文件</strong>
-                      <span>已导入或重复文件会自动标记并默认跳过。</span>
-                    </div>
-                    <div className="download-list material-source-file-list">
-                      {materialSourceFiles.map((file) => (
-                        <label className={file.importable ? 'download-item' : 'download-item disabled'} key={file.id}>
-                          <input
-                            type="checkbox"
-                            checked={selectedMaterialSourcePaths.includes(file.path)}
-                            disabled={!file.importable}
-                            onChange={() => toggleMaterialSourceFile(file.path)}
-                          />
-                          <span>
-                            <strong>{file.name}</strong>
-                            <small>
-                              {file.sourceName} · {file.type} · {formatFileSize(file.size)} · {file.modified ? new Date(file.modified).toLocaleString('zh-CN') : '未知时间'}
-                            </small>
-                            {file.reason && <em>{file.reason}</em>}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                    <div className="actions">
-                      <button className="primary" onClick={() => void importSelectedMaterialSourceFiles(selectedStudent)} disabled={Boolean(materialSourceBusyAction) || selectedMaterialSourcePaths.length === 0}>
-                        <FileDown size={18} />
-                        {materialSourceBusyAction === 'import' ? '正在导入…' : '导入选中文件'}
-                      </button>
-                      <button
-                        className="secondary"
-                        onClick={() => setSelectedMaterialSourcePaths(materialSourceFiles.filter((file) => file.importable).map((file) => file.path))}
-                      >
-                        全选新文件
-                      </button>
-                      <span className="inline-hint">已选 {selectedMaterialSourcePaths.length} 个</span>
-                    </div>
-                  </div>
-                )}
+                <div className="actions"><button className="secondary compact" onClick={() => void refreshMaterialImportRecords(selectedStudent)}>刷新导入记录</button></div>
+                {materialImportRecords.length === 0 && <div className="empty-state compact">所选位置暂无上传记录。</div>}
                 {materialImportRecords.length > 0 && (
                   <div className="material-import-records">
                     <div className="mini-heading">
                       <strong>新上传资料</strong>
-                      <span>可选择尚未进入消化批次的记录并从列表移除；物理文件和文件资产不会删除。</span>
+                      <span>{normalizedMaterialImportTargetKey(selectedStudent) === 'student' ? '显示学生原始资料库的上传记录；可移除尚未进入消化批次的记录。' : '显示当前学生手动导入此项目的资料；处理状态以项目资料页面为准。'}</span>
                     </div>
                     <div className="actions compact-actions">
-                      <button
+                      {normalizedMaterialImportTargetKey(selectedStudent) === 'student' && <button
                         className="secondary compact"
                         onClick={() => setSelectedMaterialImportRecordIds(materialImportRecords.filter(removableMaterialImportRecord).map((record) => record.id))}
                       >
                         <ListChecks size={16} />选择可移除资料
-                      </button>
-                      <button className="danger-soft compact" onClick={() => removeSelectedMaterialImportRecords(selectedStudent)} disabled={selectedMaterialImportRecordIds.length === 0}>
+                      </button>}
+                      {normalizedMaterialImportTargetKey(selectedStudent) === 'student' && <button className="danger-soft compact" onClick={() => removeSelectedMaterialImportRecords(selectedStudent)} disabled={selectedMaterialImportRecordIds.length === 0}>
                         <Trash2 size={16} />从列表移除 ({selectedMaterialImportRecordIds.length})
-                      </button>
+                      </button>}
                     </div>
                     <div className="record-list compact-record-list">
                       {materialImportRecords.slice(0, 30).map((record) => (
                         <label className={removableMaterialImportRecord(record) ? 'record-item selectable' : 'record-item locked'} key={record.id}>
-                          <input
+                          {normalizedMaterialImportTargetKey(selectedStudent) === 'student' && <input
                             type="checkbox"
                             checked={selectedMaterialImportRecordIds.includes(record.id)}
                             disabled={!removableMaterialImportRecord(record)}
                             onChange={() => toggleMaterialImportRecord(record.id)}
-                          />
+                          />}
                           <span>
                             <strong>{record.fileName}</strong>
                             <small>{record.sourceName || '未知来源'} → {record.targetPath || '原始资料库'}</small>
-                            <em>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : '未知时间'} · {formatFileSize(record.fileSize)} · {record.status === 'pending_digest' ? '待消化' : record.status === 'processed' ? '已完成' : record.status === 'submitted' || record.status === 'digesting' ? '已进入消化批次' : record.status}</em>
+                            <em>{record.importedAt ? new Date(record.importedAt).toLocaleString('zh-CN') : '未知时间'} · {formatFileSize(record.fileSize)} · {record.status === 'pending_digest' || record.status === 'pending' ? '待处理' : record.status === 'processed' ? '已完成' : record.status === 'submitted' || record.status === 'digesting' ? '已进入消化批次' : record.status}</em>
                           </span>
                         </label>
                       ))}
@@ -18946,7 +18886,7 @@ ${JSON.stringify(items, null, 2)}
             </div>}
             {activePageTab === 'materials-import' && inboxMessage && <div className="notice">{inboxMessage}</div>}
             {activePageTab === 'materials-import' && downloadsMessage && <div className="notice">{downloadsMessage}</div>}
-            {activePageTab === 'materials-import' && importMessage && <div className="notice">{importMessage}</div>}
+            {activePageTab === 'materials-import' && importMessage && <div className="notice" role="status" aria-live="polite">{importMessage}</div>}
             {activePageTab === 'collection-overview' && digestMessage && <div className="notice">{digestMessage}</div>}
           </section>
         )}

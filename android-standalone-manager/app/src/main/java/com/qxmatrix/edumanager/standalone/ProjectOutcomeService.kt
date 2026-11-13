@@ -230,6 +230,7 @@ class ProjectOutcomeService(private val context: Context) {
     }
 
     private fun evidenceSnapshot(project: ProjectRecord): JSONObject {
+        materials.requireCurrentOriginalsIntact(project.id)
         val status = materials.status(project.id)
         val metrics = JSONObject().put("materials", status.optInt("materials")).put("pendingMaterials", status.optInt("pending"))
             .put("pendingDigest", status.optInt("digestPending")).put("unavailable", status.optInt("unavailable"))

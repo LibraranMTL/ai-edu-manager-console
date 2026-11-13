@@ -20,6 +20,10 @@ class StudioInputFactory(private val context: Context, private val repository: S
                 val report = GrowthModelService.REPORTS.singleOrNull { row.projectId.isBlank() && row.logicalPath == "${student.paths.summaryPath}/学情报告/${it.fileName}" }
                 require(report != null && LearningStudioPolicy.recentPublished(text)) { "近期学习入口只能使用该学生正式报告目录中的已发布报告" }
                 EducationPublicationPolicy.validatePublishedReport(studentId, report.title, text)
+                val active = GrowthModelService(context).readPublishedReport(studentId, report.id)
+                require(EducationPublicationPolicy.sha256(text) == EducationPublicationPolicy.sha256(active)) {
+                    "报告来源已变化或不可用，请先更新当前学情报告"
+                }
                 require(Regex("(?m)^student_id: ${Regex.escape(studentId)}\\s*$").containsMatchIn(text)) { "报告缺少明确学生归属" }
             }
             allowed += id; frozen[id] = row.sourceSha256

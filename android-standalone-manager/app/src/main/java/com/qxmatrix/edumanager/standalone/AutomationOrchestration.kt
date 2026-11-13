@@ -156,23 +156,39 @@ class AutomationOrchestrator(private val context: Context) {
             if (studentId.isNotBlank()) BackgroundWorkPolicy.uniqueName(if (action.remote) "automation-remote" else "automation-local", studentId)
             else "automation-action-$taskId"
 
-        internal fun enqueue(context: Context, task: JSONObject) {
+        internal fun shouldRescueLegacyLocal(queued: Boolean, remote: Boolean, active: List<Pair<String, Boolean>>, legacyIds: Set<String>): Boolean =
+            queued && !remote && active.isNotEmpty() && active.none { it.second } && active.all { it.first in legacyIds }
+
+        internal fun enqueue(context: Context, task: JSONObject, legacyRescue: Boolean = false) {
             val action = AutomationAction.from(task.getJSONObject("input").getString("actionType"))
             val builder = OneTimeWorkRequestBuilder<AutomationActionWorker>()
                 .setInputData(workDataOf("taskId" to task.getString("id")))
                 .addTag("automation-task:${task.getString("id")}")
             if (action.remote) BackgroundWorkPolicy.applyRemote(builder) else builder.setConstraints(BackgroundWorkPolicy.localConstraints)
             val studentId = task.getJSONObject("input").optString("studentId")
-            val workName = workName(action, studentId, task.getString("id"))
+            val workName = if (legacyRescue) "automation-legacy-rescue-${ScopedContentPolicy.hash(task.getString("id").toByteArray()).take(32)}"
+                else workName(action, studentId, task.getString("id"))
             WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-                workName, ExistingWorkPolicy.APPEND_OR_REPLACE, builder.build())
+                workName, if (legacyRescue) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.APPEND_OR_REPLACE, builder.build())
         }
 
         internal fun ensureScheduled(context: Context, task: JSONObject): Boolean {
             val manager = WorkManager.getInstance(context.applicationContext)
-            val active = manager.getWorkInfosByTag("automation-task:${task.getString("id")}").get()
-                .any { !it.state.isFinished }
-            if (active) return false
+            val active = manager.getWorkInfosByTag("automation-task:${task.getString("id")}").get().filter { !it.state.isFinished }
+            if (active.isNotEmpty()) {
+                val input = task.getJSONObject("input")
+                val studentId = input.optString("studentId")
+                val action = AutomationAction.from(input.getString("actionType"))
+                if (studentId.isNotBlank() && !action.remote && task.optString("status") == "queued") {
+                    val legacy = manager.getWorkInfosForUniqueWork(BackgroundWorkPolicy.uniqueName("automation-action", studentId)).get()
+                        .map { it.id.toString() }.toSet()
+                    if (shouldRescueLegacyLocal(true, false, active.map { it.id.toString() to (it.state == WorkInfo.State.RUNNING) }, legacy)) {
+                        enqueue(context, task, legacyRescue = true)
+                        return true
+                    }
+                }
+                return false
+            }
             enqueue(context, task)
             return true
         }

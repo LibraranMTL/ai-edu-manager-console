@@ -590,6 +590,20 @@ class LocalProjectMaterialService(private val context: Context) {
         return rollback.put("migrationState", project.materialMigrationState)
     }
 
+    /** Fail closed before producing current reports when registered source bytes cannot be verified. */
+    @Synchronized fun requireCurrentOriginalsIntact(projectId: String) {
+        val project = projects.requireExact(projectId)
+        val items = readRegistry(project).getJSONArray("materials").objects()
+        items.filter { it.optString("adoption") == "accepted" }.forEach { item ->
+            val location = item.optJSONObject("location")
+            val expected = item.optString("sha256")
+            val actual = if (location == null || expected.isBlank()) null else runCatching {
+                fingerprint(sourceStore(project, location.getString("rootId")), location.getString("relativePath")).first
+            }.getOrNull()
+            require(actual != null && actual == expected) { "项目原件不可用或已变化：${item.optString("title")}；保留历史成果，请重新扫描或恢复原件后再生成报告" }
+        }
+    }
+
     fun readMaterialBytes(projectId: String, materialId: String): ByteArray {
         val project = projects.requireExact(projectId); val registry = readRegistry(project); val item = material(registry, materialId)
         return sourceStore(project, item.getJSONObject("location").getString("rootId"))

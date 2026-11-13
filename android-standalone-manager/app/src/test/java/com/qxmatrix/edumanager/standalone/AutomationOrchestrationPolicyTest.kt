@@ -6,6 +6,14 @@ import org.junit.Test
 import java.io.IOException
 
 class AutomationOrchestrationPolicyTest {
+    @Test fun onlyQueuedLocalWorkBlockedInOldQueueCanBeRescued() {
+        val old = setOf("old-work")
+        assertTrue(AutomationOrchestrator.shouldRescueLegacyLocal(true, false, listOf("old-work" to false), old))
+        assertFalse(AutomationOrchestrator.shouldRescueLegacyLocal(true, true, listOf("old-work" to false), old))
+        assertFalse(AutomationOrchestrator.shouldRescueLegacyLocal(false, false, listOf("old-work" to false), old))
+        assertFalse(AutomationOrchestrator.shouldRescueLegacyLocal(true, false, listOf("old-work" to true), old))
+        assertFalse(AutomationOrchestrator.shouldRescueLegacyLocal(true, false, listOf("old-work" to false, "new-work" to false), old))
+    }
     @Test fun offlineRemoteQueueCannotBlockLocalQueueForTheSameStudent() {
         val local = AutomationOrchestrator.workName(AutomationAction.CLASSIFY_MATERIAL, "student-a", "task-local")
         val remote = AutomationOrchestrator.workName(AutomationAction.DIGEST_MATERIAL, "student-a", "task-remote")

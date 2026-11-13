@@ -268,7 +268,9 @@ class CloudReportSync(private val context: Context) {
         require(Regex("^\\d{8}$").matches(pairingCode.trim())) { "Windows 配对码应为 8 位数字" }
         return post(server(), "/v1/pairings/approve", token(), JSONObject()
             .put("pairingCode", pairingCode.trim())
-            .put("cloudStudentIds", JSONArray().put(state.cloudStudentId)))
+            .put("cloudStudentIds", JSONArray().put(state.cloudStudentId))
+            .put("contractVersion", 2).put("profileFields", JSONArray(state.profileFields.sorted()))
+            .put("materialCategories", JSONArray(state.materialCategories.sorted())))
     }
 
     /** Explicitly creates a separate viewer identity; source/upload permission alone never grants inbox reads. */

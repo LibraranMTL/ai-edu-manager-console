@@ -490,3 +490,37 @@ test('source upload authorization limits fields, purpose and expiry across legac
   assert.equal(renewed.status, 200);
   assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
 }));
+
+test('scoped pairing cannot widen source authorization or read unselected legacy reports', async () => fixture(async ({ call, advance }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '合成范围学生' })).body;
+  const issued = await call('POST', '/v1/source-enrollments', ADMIN, { cloudStudentId: student.id });
+  const source = (await call('POST', '/v1/source-enrollments/redeem', '', { enrollmentCode: issued.body.enrollmentCode,
+    contractVersion: 2, profileFields: ['displayName'], materialCategories: ['learning_report'] })).body;
+  const expiresAt = Date.parse('2026-09-25T00:00:00Z') + 7 * 86400000;
+  const scope = (fields, categories) => call('POST', '/v2/source-upload-scope', source.deviceToken, {
+    cloudStudentId: student.id, profileFields: fields, materialCategories: categories,
+    authorizationPurpose: 'document_sync', authorizationExpiresAt: expiresAt });
+  assert.equal((await scope(['displayName'], ['learning_report'])).status, 200);
+  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
+  const uploaded = await call('POST', '/v1/reports', source.deviceToken, report);
+  assert.equal(uploaded.status, 201);
+  assert.equal((await scope([], ['learning_material'])).status, 200);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
+  const viewer = (await call('POST', '/v1/pairings', '')).body;
+  const request = { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id], contractVersion: 2,
+    profileFields: [], materialCategories: ['learning_report'] };
+  assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken, request)).status, 403);
+  request.materialCategories = ['learning_material'];
+  assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken, request)).status, 200);
+  assert.equal((await call('GET', `/v1/students/${student.id}/reports`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', `/v1/reports/${uploaded.body.revisionId}/content`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', `/v2/students/${student.id}/profile`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', '/v1/students', viewer.deviceToken)).body.students[0].displayName, '已授权学生');
+  assert.equal((await call('GET', `/v2/students/${student.id}/materials?category=learning_material`, viewer.deviceToken)).status, 200);
+  assert.equal((await scope([], ['learning_report'])).status, 200);
+  assert.equal((await call('GET', `/v2/students/${student.id}/materials?category=learning_material`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', `/v1/students/${student.id}/reports`, viewer.deviceToken)).status, 403);
+  advance(7 * 86400000 + 1);
+  assert.equal((await call('GET', `/v1/students/${student.id}/documents`, viewer.deviceToken)).status, 403);
+}));

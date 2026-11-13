@@ -140,6 +140,11 @@ class FileAssetService(private val context: Context) {
                     ledger.compareAndSetIntent(operationId, student.id, "prepared", "rolled_back", System.currentTimeMillis())
                 }
             }
+            runCatching {
+                AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, student.id,
+                    ScopedContentPolicy.fingerprint(JSONObject().put("removedMaterialId", material.getString("id"))
+                        .put("sourceSha256", material.optString("sourceSha256")).put("deletedAt", now)))
+            }
         }
         JSONObject().put("ok", true).put("studentId", student.id).put("logicalPath", normalized)
             .put("materialId", material?.optString("id").orEmpty()).put("deletedAt", now)
@@ -247,6 +252,31 @@ class FileAssetService(private val context: Context) {
         val logicalPath = material.optString("absolutePath")
         require(logicalPath == student.paths.rawPath || logicalPath.startsWith("${student.paths.rawPath}/")) { "资料路径超出学生原始资料库" }
         return SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(logicalPath).use { it.readBytesBounded(maximum) }
+    }
+
+    /** Stream both hashes so source validation does not load a large original into memory. */
+    fun materialHashes(studentId: String, materialId: String): Pair<String, String> {
+        val student = students.requireExact(studentId)
+        val row = StudentMaterialRepository(context, student).list().singleOrNull { it.optString("id") == materialId }
+            ?: throw NoSuchElementException("未找到指定资料")
+        val path = row.optString("absolutePath")
+        require(path.startsWith("${student.paths.rawPath.trimEnd('/')}/")) { "资料路径超出学生原始资料库" }
+        val sha256 = java.security.MessageDigest.getInstance("SHA-256")
+        val sha1 = java.security.MessageDigest.getInstance("SHA-1")
+        var total = 0L
+        SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(path).use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                total += count
+                require(total <= MAX_FILE_BYTES) { "原件超过可核验大小" }
+                sha256.update(buffer, 0, count); sha1.update(buffer, 0, count)
+            }
+        }
+        fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+        return hex(sha256.digest()) to hex(sha1.digest())
     }
 
     fun transitionMaterial(studentId: String, materialId: String, next: MaterialStatus): JSONObject {

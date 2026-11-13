@@ -3,6 +3,8 @@ package com.qxmatrix.edumanager.standalone
 import org.json.JSONArray
 import org.json.JSONObject
 
+class ReportEvidenceUnavailableException : IllegalArgumentException("报告引用的成长证据已撤回或不可用，请更新报告")
+
 /** Pure contract for one active, immutable four-report set. */
 object LearningReportPublicationPolicy {
     const val SCHEMA = "edu-manager.learning-report-set.v1"
@@ -19,7 +21,7 @@ object LearningReportPublicationPolicy {
         val value = Regex("(?m)^source_claim_ids:[ \\t]*([^\\r\\n]*)$").find(header)?.groupValues?.get(1)
             ?: error("学情报告缺少来源证据清单")
         val ids = value.split(',').map(String::trim).filter(String::isNotBlank)
-        require(ids.isNotEmpty() && ids.all(eligibleIds::contains)) { "报告引用的成长证据已撤回或不可用，请更新报告" }
+        if (ids.isEmpty() || !ids.all(eligibleIds::contains)) throw ReportEvidenceUnavailableException()
     }
 
     fun evidenceFingerprint(evidence: List<JSONObject>): String {

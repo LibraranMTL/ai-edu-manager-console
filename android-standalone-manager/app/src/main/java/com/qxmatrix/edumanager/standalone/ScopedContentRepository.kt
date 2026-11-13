@@ -23,6 +23,7 @@ class ScopedContentRepository(private val context: Context,
         dao.list(studentId, kinds, limit.coerceIn(1, 100), offset.coerceAtLeast(0))
     }
     fun search(studentId: String, query: String, offset: Int = 0) = transaction(studentId) { dao.search(studentId, ScopedContentPolicy.query(query), 50, offset.coerceAtLeast(0)) }
+        .filter { row -> row.projectId.isBlank() || runCatching { ContentSourceResolver(context).locate(studentId, row) }.isSuccess }
     fun filtered(studentId: String, kind: String, query: String, offset: Int = 0) = transaction(studentId) {
         dao.filtered(studentId, kind, ScopedContentPolicy.query(query), offset.coerceAtLeast(0))
     }

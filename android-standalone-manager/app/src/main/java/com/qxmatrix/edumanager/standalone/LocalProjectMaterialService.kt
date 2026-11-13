@@ -604,6 +604,37 @@ class LocalProjectMaterialService(private val context: Context) {
         }
     }
 
+    /** Check the exact frozen inputs against both current registration and original bytes. */
+    @Synchronized fun requireFrozenSourcesCurrent(projectId: String, frozen: JSONArray) {
+        require(frozen.length() > 0) { "项目成果缺少固定来源，暂不能作为当前结果" }
+        val project = projects.requireExact(projectId)
+        val registry = readRegistry(project)
+        val ids = mutableSetOf<String>()
+        frozen.objects().forEach { source ->
+            val id = source.optString("materialId")
+            val expected = source.optString("sha256")
+            require(id.isNotBlank() && ids.add(id) && expected.matches(Regex("[0-9a-f]{64}"))) { "项目来源记录无效" }
+            val item = material(registry, id)
+            val location = item.optJSONObject("location") ?: error("项目原件位置不可用")
+            val actual = runCatching { fingerprint(sourceStore(project, location.getString("rootId")), location.getString("relativePath")).first }.getOrNull()
+            require(ProjectSourceIntegrityPolicy.matches(source, item, actual)) { "项目原件不可用或已变化，历史成果保留但不作为当前结果" }
+        }
+        require(ids.size == frozen.length()) { "项目来源记录无效" }
+    }
+
+    /** Retain generated files but fail closed if their provenance cannot be confirmed. */
+    fun requireGeneratedKnowledgeCurrent(projectId: String, path: String) {
+        val operation = Regex("project-digest-[0-9a-f]{32}").find(path.substringAfterLast('/'))?.value ?: return
+        val project = projects.requireExact(projectId)
+        val store = controlStore(project)
+        val manifestPath = "${project.paths.managerPath}/project-materials/digest-provenance/$operation.json"
+        require(store.exists(manifestPath)) { "历史项目知识缺少完整来源凭证，已保留原文件，暂不能作为当前结果" }
+        val manifest = JSONObject(store.readBytes(manifestPath).toString(Charsets.UTF_8))
+        require(manifest.optString("schema") == "edu-manager.project-digest-provenance.v1" &&
+            manifest.optString("projectId") == projectId && manifest.optString("operationId") == operation) { "项目知识来源凭证不匹配" }
+        requireFrozenSourcesCurrent(projectId, manifest.getJSONArray("sources"))
+    }
+
     fun readMaterialBytes(projectId: String, materialId: String): ByteArray {
         val project = projects.requireExact(projectId); val registry = readRegistry(project); val item = material(registry, materialId)
         return sourceStore(project, item.getJSONObject("location").getString("rootId"))

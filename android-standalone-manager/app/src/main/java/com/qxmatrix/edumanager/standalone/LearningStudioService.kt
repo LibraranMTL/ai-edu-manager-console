@@ -171,6 +171,10 @@ class ContentSourceResolver(private val context: Context) {
                 project.paths.entityPath, project.paths.summaryPath, project.paths.qaPath, project.paths.synthesisPath, project.paths.reportPath).map { project.knowledgeRootUri to it }
         }
         require(roots.any { (root, path) -> path.isNotBlank() && root == row.rootUri && row.logicalPath.startsWith("${path.trimEnd('/')}/") }) { "来源已迁移或不在当前授权目录，请重新索引" }
+        if (row.projectId.isNotBlank()) {
+            LocalProjectMaterialService(context).requireGeneratedKnowledgeCurrent(row.projectId, row.logicalPath)
+            ProjectOutcomeService(context).requireOutcomeSourcesCurrent(row.projectId, row.logicalPath)
+        }
         val document = requireNotNull(SafWorkspaceStore(context, android.net.Uri.parse(row.rootUri)).document(row.logicalPath)) { "原件缺失，请重新扫描" }
         require(document.isFile && document.canRead()) { "原件读取授权已失效" }
         val metadata = JSONObject(row.payload)

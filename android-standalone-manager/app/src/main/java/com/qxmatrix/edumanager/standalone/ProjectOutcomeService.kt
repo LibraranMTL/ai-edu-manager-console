@@ -229,6 +229,23 @@ class ProjectOutcomeService(private val context: Context) {
         return (indexed + outputs).sortedByDescending { it.optString("createdAt") }
     }
 
+    /** Historical files remain in place; only a verified report may be presented as current. */
+    fun requireOutcomeSourcesCurrent(projectId: String, reportPath: String) {
+        val project = projects.requireExact(projectId)
+        val entry = readIndex(project).getJSONArray("entries").objects()
+            .singleOrNull { it.optString("kind") == "progress_report" && it.optString("path") == reportPath } ?: return
+        materials.requireCurrentOriginalsIntact(projectId)
+        val payload = JSONObject(controlStore(project).readBytes(entry.getString("metadataPath")).toString(Charsets.UTF_8))
+        require(payload.optString("projectId") == projectId && payload.optString("reportId") == entry.optString("id")) { "项目报告来源身份不匹配" }
+        val evidence = payload.getJSONArray("evidence")
+        evidence.objects().filter { it.optString("kind") == "knowledge" }.forEach { item ->
+            val path = item.getString("path")
+            materials.requireGeneratedKnowledgeCurrent(projectId, path)
+            val bytes = knowledgeStore(project).openInputStream(path).use { it.readBytesBounded(128_000) }
+            require(ScopedContentPolicy.hash(bytes) == item.getString("sha256")) { "项目报告引用的知识已变化；历史报告已保留" }
+        }
+    }
+
     private fun evidenceSnapshot(project: ProjectRecord): JSONObject {
         materials.requireCurrentOriginalsIntact(project.id)
         val status = materials.status(project.id)
@@ -244,6 +261,7 @@ class ProjectOutcomeService(private val context: Context) {
             .put("kind", "definition").put("title", "项目定义").put("sha256", ScopedContentPolicy.fingerprint(definition)).put("path", "").put("excerpt", definition.toString()))
         materials.knowledgeFiles(project.id).filterNot { file -> file.name.startsWith("项目进展报告-") || file.name.startsWith("项目综合报告-") || file.name.startsWith("项目导师建议-") ||
             (project.paths.reportPath.isNotBlank() && (file.relativePath == project.paths.reportPath || file.relativePath.startsWith("${project.paths.reportPath.trimEnd('/')}/"))) }
+            .filter { file -> runCatching { materials.requireGeneratedKnowledgeCurrent(project.id, file.relativePath) }.isSuccess }
             .take(20).forEach { file ->
                 val bytes = runCatching { knowledgeStore(project).openInputStream(file.relativePath).use { it.readBytesBounded(128_000) } }.getOrNull() ?: return@forEach
                 val hash = ScopedContentPolicy.hash(bytes)

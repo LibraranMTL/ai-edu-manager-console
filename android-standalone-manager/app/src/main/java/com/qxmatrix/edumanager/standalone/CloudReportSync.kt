@@ -7,6 +7,8 @@ import android.util.Base64
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.Worker
@@ -216,7 +218,10 @@ class CloudReportSync(private val context: Context) {
         if (enabled) require(status(studentId).authorizationExpiresAt > System.currentTimeMillis()) { "请先重新确认上传范围和有效期" }
         prefs.edit().putBoolean("enabled:$studentId", enabled)
             .putString("pending:$studentId", if (enabled) "enable" else "disable").apply()
-        if (!enabled) WorkManager.getInstance(context).cancelUniqueWork(workName(studentId))
+        if (!enabled) {
+            WorkManager.getInstance(context).cancelUniqueWork(workName(studentId))
+            WorkManager.getInstance(context).cancelUniqueWork(periodicWorkName(studentId))
+        } else schedulePeriodicReconciliation(studentId)
         CloudSyncReceiptStore(context).append(studentId, if (enabled) "queued" else "withdrawn", "upload-switch:$studentId",
             if (enabled) "已等待发送" else "已关闭后续上传；云端既有资料未删除")
         schedule(studentId)
@@ -244,6 +249,7 @@ class CloudReportSync(private val context: Context) {
         CloudSyncReceiptStore(context).append(studentId, "queued", "scope:$studentId:$authorizationExpiresAt",
             "已授权 ${acceptedFields.size} 个基础字段、${accepted.size} 类资料；用途 ${if (authorizationPurpose == "expert_interpretation") "专家解读咨询" else "文档同步"}")
         schedule(studentId)
+        schedulePeriodicReconciliation(studentId)
         return status(studentId)
     }
 
@@ -325,7 +331,10 @@ class CloudReportSync(private val context: Context) {
                 .put("cloudStudentId", state.cloudStudentId).put("enabled", desired))
             prefs.edit().putString("pending:$studentId", "").apply()
         }
-        if (!status(studentId).enabled) return
+        if (!status(studentId).enabled) {
+            WorkManager.getInstance(context).cancelUniqueWork(periodicWorkName(studentId))
+            return
+        }
         val hadError = state.lastError.isNotBlank()
         if (prefs.getInt("contractVersion:$studentId", 1) >= 2 && status(studentId).profileFields.isNotEmpty()) {
             synchronizeProfile(studentId, state.cloudStudentId)
@@ -348,6 +357,8 @@ class CloudReportSync(private val context: Context) {
                 error("${definition.title}含本机绝对路径，已停止上传并等待去敏")
             }
             val hash = EducationPublicationPolicy.sha256(content)
+            // Only the exact report whose source has been revalidated can leave a prior hold.
+            setSourceIntegrity(state.cloudStudentId, "learning_report", "*", "clear", hash)
             if (prefs.getString("hash:$studentId:${definition.id}", "") == hash) continue
             val body = JSONObject().put("cloudStudentId", state.cloudStudentId).put("localStudentId", studentId).put("originPlatform", "android")
                 .put("reportType", type).put("sourceStatus", sourceStatus)
@@ -361,6 +372,11 @@ class CloudReportSync(private val context: Context) {
             )
             prefs.edit().putString("hash:$studentId:${definition.id}", hash).apply()
         }
+        } catch (error: ReportEvidenceUnavailableException) {
+            reportFailure = try {
+                setSourceIntegrity(state.cloudStudentId, "learning_report", "*", "hold")
+                error
+            } catch (holdError: Exception) { holdError }
         } catch (error: Exception) {
             reportFailure = error
         }
@@ -421,10 +437,29 @@ class CloudReportSync(private val context: Context) {
         }
         if ("learning_material" !in categories) return
         val selected = selectedRawMaterials(studentId)
-        FileAssetService(context).materials(studentId).filter { it.optString("id") in selected }.forEach { material ->
+        val available = FileAssetService(context).materials(studentId).filter { it.optString("id") in selected }
+        var materialFailure: Exception? = null
+        (selected - available.map { it.optString("id") }.toSet()).forEach { missingId ->
+            try {
+                setSourceIntegrity(cloudStudentId, "learning_material", missingId, "hold")
+                if (materialFailure == null) materialFailure = IllegalStateException("已授权原件在本机登记中不存在：$missingId")
+            } catch (error: Exception) { if (materialFailure == null) materialFailure = error }
+        }
+        available.forEach { material ->
+          if (!status(studentId).enabled) return
+          try {
             val materialId = material.getString("id"); val expected = material.optString("sourceSha256")
-            val bytes = FileAssetService(context).readMaterialBytes(studentId, materialId, 20 * 1024 * 1024)
-            val hash = ScopedContentPolicy.hash(bytes); require(expected.isBlank() || expected == hash) { "${material.optString("fileName")} 原件已变化，停止上传" }
+            val bytes = try { FileAssetService(context).readMaterialBytes(studentId, materialId, 20 * 1024 * 1024) }
+            catch (error: Exception) {
+                setSourceIntegrity(cloudStudentId, "learning_material", materialId, "hold")
+                throw error
+            }
+            val hash = ScopedContentPolicy.hash(bytes)
+            if (expected.isNotBlank() && expected != hash) {
+                setSourceIntegrity(cloudStudentId, "learning_material", materialId, "hold")
+                error("${material.optString("fileName")} 原件已变化，停止上传")
+            }
+            if (expected.isNotBlank()) setSourceIntegrity(cloudStudentId, "learning_material", materialId, "clear", hash)
             val key = "materialHash:$studentId:learning_material:$materialId"
             if (prefs.getString(key, "") == hash) return@forEach
             val filename = material.optString("fileName", "$materialId.bin")
@@ -438,7 +473,15 @@ class CloudReportSync(private val context: Context) {
             uploadMaterial(cloudStudentId, studentId, materialId, filename, hash, bytes,
                 "learning_material", contentType, material.optString("projectId"))
             prefs.edit().putString(key, hash).apply()
+          } catch (error: Exception) { if (materialFailure == null) materialFailure = error }
         }
+        materialFailure?.let { throw it }
+    }
+
+    private fun setSourceIntegrity(cloudStudentId: String, category: String, objectId: String, action: String, hash: String = "") {
+        val body = JSONObject().put("category", category).put("objectId", objectId).put("action", action)
+        if (hash.isNotBlank()) body.put("contentSha256", hash)
+        post(server(), "/v2/students/$cloudStudentId/source-integrity", token(), body)
     }
 
     private fun uploadMaterial(cloudStudentId: String, localStudentId: String, reportId: String,
@@ -484,6 +527,7 @@ class CloudReportSync(private val context: Context) {
         prefs.edit().putBoolean("enabled:$studentId", false).putString("pending:$studentId", "disable")
             .putString("lastError:$studentId", "整组快照未提交，云上传已暂停：${cause.message ?: "存储失败"}".take(300)).commit()
         WorkManager.getInstance(context).cancelUniqueWork(workName(studentId))
+        WorkManager.getInstance(context).cancelUniqueWork(periodicWorkName(studentId))
         schedule(studentId)
     }
 
@@ -543,7 +587,10 @@ class CloudReportSync(private val context: Context) {
      */
     fun switchToOfficialService(): Int {
         val studentIds = prefs.all.keys.filter { it.startsWith("cloud:") }.map { it.removePrefix("cloud:") }.toSet()
-        studentIds.forEach { WorkManager.getInstance(context).cancelUniqueWork(workName(it)) }
+        studentIds.forEach {
+            WorkManager.getInstance(context).cancelUniqueWork(workName(it))
+            WorkManager.getInstance(context).cancelUniqueWork(periodicWorkName(it))
+        }
         prefs.edit().clear().putString("server", CloudServiceEndpoint.OFFICIAL_BASE_URL).commit()
         return studentIds.size
     }
@@ -703,9 +750,20 @@ class CloudReportSync(private val context: Context) {
         WorkManager.getInstance(context).enqueueUniqueWork(BackgroundWorkPolicy.uniqueName("cloud-report", studentId), policy, work)
     }
 
+    private fun schedulePeriodicReconciliation(studentId: String) {
+        if (!status(studentId).enabled) return
+        val work = PeriodicWorkRequestBuilder<CloudReportWorker>(1, TimeUnit.HOURS)
+            .setInputData(workDataOf("studentId" to studentId))
+            .setConstraints(BackgroundWorkPolicy.remoteConstraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            periodicWorkName(studentId), ExistingPeriodicWorkPolicy.KEEP, work)
+    }
+
     fun resumePendingWork() {
         CloudReportSetPolicy.recoveryCandidates(prefs.all).forEach { studentId ->
             schedule(studentId, ExistingWorkPolicy.KEEP)
+            schedulePeriodicReconciliation(studentId)
         }
     }
 
@@ -719,6 +777,7 @@ class CloudReportSync(private val context: Context) {
             if (sync.status(studentId).enabled) sync.schedule(studentId)
         }
         private fun workName(studentId: String) = BackgroundWorkPolicy.uniqueName("cloud-report", studentId)
+        private fun periodicWorkName(studentId: String) = BackgroundWorkPolicy.uniqueName("cloud-integrity", studentId)
     }
 }
 

@@ -119,6 +119,15 @@ class LocalProjectDigestService(private val context: Context) {
         }
         require(cached.getString("key") == key) { "项目缓存指纹不匹配" }
         if (cacheOnly) require(ProjectCheckpointRecoveryPolicy.matches(cached, key, frozen)) { "项目检查点与固定来源不一致，保留未知状态" }
+        materials.requireFrozenSourcesCurrent(projectId, frozen)
+        val provenance = JSONObject().put("schema", "edu-manager.project-digest-provenance.v1")
+            .put("projectId", projectId).put("operationId", operationId).put("sources", JSONArray(frozen.toString()))
+        val provenanceStore = SafWorkspaceStore(context, Uri.parse(project.projectRootUri))
+        val provenancePath = "${project.paths.managerPath}/project-materials/digest-provenance/$operationId.json"
+        val provenanceBytes = provenance.toString().toByteArray(Charsets.UTF_8)
+        if (provenanceStore.exists(provenancePath)) require(provenanceStore.readBytes(provenancePath).contentEquals(provenanceBytes)) { "项目来源凭证冲突，保留原文件" }
+        else provenanceStore.writeStreamNewSafely(provenancePath, "application/json") { it.write(provenanceBytes) }
+        require(provenanceStore.readBytes(provenancePath).contentEquals(provenanceBytes)) { "项目来源凭证回读校验失败" }
         val parsed = cached.getJSONObject("result")
         val store = SafWorkspaceStore(context, Uri.parse(project.knowledgeRootUri))
         val artifact = "${project.paths.summaryPath}/资料消化-$operationId.md"
@@ -130,6 +139,7 @@ class LocalProjectDigestService(private val context: Context) {
             appendLine("# 项目问答精华"); appendLine()
             for (index in 0 until qa.length()) qa.optJSONObject(index)?.let { appendLine("## ${it.optString("question")}"); appendLine(); appendLine(it.optString("answer")); appendLine() }
         })
+        materials.requireFrozenSourcesCurrent(projectId, frozen)
         materials.markProcessedVersions(projectId, fixed.associate { it.getString("materialId") to it.getInt("version") }, artifact, operationId)
         JSONObject().put("ok", true).put("processed", fixed.size).put("operationId", operationId).put("artifactPath", artifact)
     }

@@ -181,6 +181,11 @@ class MarkdownBrowserActivity : Activity() {
 
     private fun openDocument(document: Document) {
         val result = runCatching {
+            if (intent.getStringExtra(EXTRA_MODE) == MODE_PROJECT) {
+                val projectId = requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID))
+                LocalProjectMaterialService(this).requireGeneratedKnowledgeCurrent(projectId, document.path)
+                ProjectOutcomeService(this).requireOutcomeSourcesCurrent(projectId, document.path)
+            }
             val maximumBytes = if (intent.getStringExtra(EXTRA_MODE) in setOf(MODE_CONVERSATION, MODE_CONVERSATION_DIGEST)) MAX_CONVERSATION_BYTES else MAX_MARKDOWN_BYTES
             val text = document.content ?: SafWorkspaceStore(this, Uri.parse(document.rootUri)).readBytes(document.path).also { require(it.size <= maximumBytes) { "Markdown 文档超过浏览上限" } }.toString(Charsets.UTF_8)
             require(text.toByteArray().size <= maximumBytes) { "Markdown 文档超过浏览上限" }; text

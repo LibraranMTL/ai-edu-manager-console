@@ -112,9 +112,12 @@ class ProjectMaterialsActivity : Activity() {
         searchRow.addView(button("查找") { searchText = search.text.toString(); refresh() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(searchRow, matchWrap())
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(ScrollView(this).apply { isFillViewport = true; addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // The action panel can be taller than a phone viewport at large font scales.
+        // Scroll the entire page so the tabs and selected content remain reachable.
+        root.addView(list, matchWrap())
         root.addView(button("返回学习项目") { finish() }, matchWrap())
-        setContentView(root); refresh()
+        val page = ScrollView(this).apply { isFillViewport = true; addView(root) }
+        setContentView(page); refresh()
         if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_MENTOR, false)) root.post {
             if (!isFinishing && !isDestroyed) mentorDialog()
         }

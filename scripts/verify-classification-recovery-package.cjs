@@ -4,6 +4,7 @@
 const { app } = require('electron');
 const fs = require('node:fs/promises'), fss = require('node:fs'), path = require('node:path'), os = require('node:os');
 const vm = require('node:vm'), assert = require('node:assert/strict'), { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const resources = path.resolve(process.argv[2]), reportFile = path.resolve(process.argv[3]);
 const codexPath = process.argv[4], workbuddyPath = process.argv[5];
 if (!codexPath || !workbuddyPath) throw Error('Provide installed Codex CLI and WorkBuddy executable paths; input is synthetic only.');
@@ -17,15 +18,27 @@ app.whenReady().then(async () => {
   try {
     Object.defineProperty(process, 'resourcesPath', { value: resources });
     const source = await fs.readFile(path.join(runtime, 'main.cjs'), 'utf8');
+    // Production ASAR may be minified; use the syntax tree instead of looking
+    // for a closing brace at the beginning of a line.
+    const ts = require('typescript');
+    const parsed = ts.createSourceFile('packaged-main.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
     const load = (name, context) => {
-      const start = source.search(new RegExp(`(?:async )?function ${name}\\(`));
-      assert.ok(start >= 0); vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+      let found = null;
+      function visit(node) {
+        if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node;
+        if (!found) ts.forEachChild(node, visit);
+      }
+      visit(parsed);
+      assert.ok(found, `packaged function ${name} missing`);
+      vm.runInContext(source.slice(found.getStart(parsed), found.end), context);
     };
     const context = vm.createContext({ fs: fss, path, os, process, spawn, Buffer,
       require: name => name.startsWith('./') ? require(path.join(runtime, name)) : require(name),
       app: { isPackaged: true, getPath: name => { assert.equal(name, 'userData'); return path.join(process.env.APPDATA, 'edu-manager-launcher'); } },
       mainWindow: null, shell: { openExternal: () => { throw Error('Probe must not start login'); } },
       findPreferredCodexCliInstall: () => ({ exePath: codexPath }), findAgentToolInstall: () => ({ exePath: workbuddyPath }),
+      refreshPreferredCodexCliInstall: async () => ({ exePath: codexPath }),
+      builtinStructuredProvider: require(path.join(runtime, 'builtin-structured-provider.cjs')),
       findExecutableInPath: () => process.execPath,
       discoverWorkBuddyRuntime: require(path.join(runtime, 'workbuddy-runtime.cjs')).discoverWorkBuddyRuntime,
     });
@@ -47,21 +60,37 @@ app.whenReady().then(async () => {
     const student = { id: 'synthetic-recovery-student', agentTool: 'workbuddy', classificationFallback: { enabled: true, providerId: 'codex', version: 1 } };
     const secondStudent = { ...student, id: 'synthetic-second-student' };
     const students = [student, secondStudent];
-    const project = { id: 'synthetic-recovery-project-42', name: '合成实验项目', studentIds: students.map(s => s.id) };
+    const project = { id: 'synthetic-recovery-project-42', name: '合成实验项目', studentIds: students.map(s => s.id),
+      materialStorageMode: 'workspace-v1', workspacePath: path.join(root, 'destination'), managerPath: path.join(root, 'manager'), rawPath: path.join(root, 'raw') };
     const folder = path.join(root, 'source'), destination = path.join(root, 'destination'); await fs.mkdir(folder); await fs.mkdir(destination);
     const original = path.join(folder, 'synthetic.txt'); await fs.writeFile(original, `这是合成教育实验记录，项目编号：${project.id}。测量六次，每次七个单位，总数42。`);
     await fs.utimes(original, new Date(Date.now() - 10000), new Date(Date.now() - 10000));
+    const hash = async file => crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex');
+    const originalHash = await hash(original), deliveredReceipts = [];
     taskHost = await require('../tests/helpers/smart-inbox-task-host.cjs').createTaskHost(path.join(root, 'tasks'), { runtime });
     const qualifiers = new Map();
     const { createSmartInboxHost } = require(path.join(runtime, 'smart-inbox-host.cjs'));
+    const materialHost = require(path.join(runtime, 'project-material-host.cjs')).createProjectMaterialHost(project);
     service = createSmartInboxHost({ directory: path.join(root, 'inbox'), students: () => [], student: id => students.find(s => s.id === id),
-      projects: () => [project], isWorkspace: () => false, legacySettings: () => ({}), forbiddenRoots: () => [destination],
+      projects: () => [project], isWorkspace: () => true, materialHost: () => materialHost, legacySettings: () => ({}), forbiddenRoots: () => [destination],
       automaticAllowed: () => true, acquire: () => () => {}, beginBatch: taskHost.beginBatch, endBatch: taskHost.endBatch,
       agent: { route: () => require(path.join(runtime, 'agent-invocation-service.cjs')).classificationRoute(student),
         select: (_, id) => adapters[id], spawnProcess: context.spawnAdapterProcess,
         qualification: { load: (_, key) => qualifiers.get(key), save: async (_, key, value) => { qualifiers.set(key, value); } } },
       validateTarget: target => { assert.ok(students.some(s => s.id === target.studentId)); assert.equal(target.id, project.id); return target; },
-      deliver: async (snapshot, target, item) => { const file = path.join(destination, target.studentId + '.txt'); await fs.copyFile(snapshot, file); return { ok: true, path: file, recordId: item.operationId }; },
+      // Isolated orchestration uses the packaged production material registry;
+      // it does not exercise the application's main-process IPC delivery path.
+      deliver: async (snapshot, target, item, checkpoint) => {
+        const file = path.join(destination, '收件箱', target.studentId + '.txt');
+        await checkpoint({ destinationPath: file });
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.copyFile(snapshot, file);
+        assert.equal(await hash(snapshot), await hash(file));
+        const result = await materialHost.registerTerminalUpload(file, { eventId: item.operationId, studentId: target.studentId,
+          sourceType: 'host_material_source', intakeAssociation: { itemId: item.id, operationId: item.operationId } });
+        const receipt = { ok: true, path: file, recordId: result.material.materialId };
+        assert.ok(receipt.recordId); deliveredReceipts.push(receipt); return receipt;
+      },
     });
     await service.initialize();
     const registered = await service.engine.updateSource({ folder, studentId: student.id, enabled: true, automatic: true });
@@ -74,8 +103,13 @@ app.whenReady().then(async () => {
     report.blockReason = detail.blockReason; report.message = detail.message;
     report.taskStatuses = taskHost.disk().tasks.map(t => t.status);
     assert.equal(row.status, 'delivered'); assert.equal(detail.target.id, project.id);
-    await fs.access(original);
-    report.checks.push('real Agent classified exact synthetic project and host verified and registered one copy through actual task center');
+    assert.equal(await hash(original), originalHash);
+    assert.equal(await hash(path.join(destination, '收件箱', student.id + '.txt')), originalHash);
+    assert.equal(deliveredReceipts.length, 1);
+    const registry = await materialHost.store.read();
+    assert.ok(registry.materials.some(m => m.materialId === deliveredReceipts[0].recordId));
+    report.checks.push('real Agent classified synthetic project; packaged material registry registered copy, original and copy hashes match');
+    report.deliveryScope = 'isolated project using packaged production material registration; main-process IPC delivery path not exercised';
     if (detail.execution?.attempts?.length) report.checks.push('primary failed before student transmission and fallback completed');
     else report.checks.push('primary completed; real fallback scenario was not exercised');
     const before = report.runs.length; await service.engine.requestScan(registered.id); await service.engine.tick();
@@ -83,11 +117,17 @@ app.whenReady().then(async () => {
     const secondFolder = path.join(root, 'second'); await fs.mkdir(secondFolder);
     const secondFile = path.join(secondFolder, 'second.txt');
     await fs.writeFile(secondFile, `另一名虚构学生的合成实验，项目编号：${project.id}。独立记录八组观察，只用于测试共享登录，不包含真实资料。`);
+    const secondHash = await hash(secondFile);
     await fs.utimes(secondFile, new Date(Date.now() - 10000), new Date(Date.now() - 10000));
     const secondSource = await service.engine.updateSource({ folder: secondFolder, studentId: secondStudent.id, enabled: true, automatic: true });
     await service.engine.requestScan(secondSource.id); await service.engine.tick();
     const secondRow = (await service.engine.list({ studentId: secondStudent.id, status: 'delivered' })).rows[0];
     assert.ok(secondRow); assert.equal(secondRow.studentId, secondStudent.id);
+    assert.equal(await hash(secondFile), secondHash);
+    assert.equal(await hash(path.join(destination, '收件箱', secondStudent.id + '.txt')), secondHash);
+    assert.equal(deliveredReceipts.length, 2);
+    const secondRegistry = await materialHost.store.read();
+    assert.ok(secondRegistry.materials.some(m => m.materialId === deliveredReceipts[1].recordId));
     assert.equal(report.runs.length - before, 1, 'second authorized student reuses login and qualification; only a classification invocation is added');
     report.secondStudent = { status: secondRow.status, newExternalCalls: report.runs.length - before, sharedQualification: true };
     report.checks.push('second authorized synthetic student uses same login and cached qualification, with one classification call and no extra login/probe');

@@ -3,15 +3,18 @@ const fs = require('node:fs/promises'), os = require('node:os'), path = require(
 const { createSmartInbox } = require('../electron/smart-inbox.cjs');
 (async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-smart-inbox-ui-'));
-  const source = path.join(root, 'source'), authSource = path.join(root, 'authorization'), extra = path.join(root, 'extra'), destination = path.join(root, 'destination');
-  for (const dir of [source, authSource, extra, destination]) await fs.mkdir(dir);
+  const source = path.join(root, 'source'), authSource = path.join(root, 'authorization'), backlogSource = path.join(root, 'backlog'), extra = path.join(root, 'extra'), destination = path.join(root, 'destination');
+  for (const dir of [source, authSource, backlogSource, extra, destination]) await fs.mkdir(dir);
   for (let i = 0; i < 3; i++) await fs.writeFile(path.join(source, `实验记录${i + 1}.txt`), `物理项目第${i + 1}次测量。project-physics。`);
   await fs.writeFile(path.join(source, '已失效资料.docx'), 'synthetic missing file');
   await fs.writeFile(path.join(authSource, '授权恢复验证.txt'), 'AUTH-RECOVERY project-physics 合成授权恢复资料');
+  await fs.writeFile(path.join(backlogSource, '内部授权会话.md'), '"title": "codex 授权会话"\n系统内部授权状态记录，不属于学生学习项目。');
   let authorizationReady = false, fallbackEnabled = false;
-  const context = id => ({ studentId: id, projects: [{ id: 'project-physics', name: '物理研究', categories: [{ categoryId: 'notes', name: '实验记录' }] }] });
+  const allProjects = [{ id: 'project-physics', name: '物理研究', studentIds: ['test-a', 'test-b'], identifiers: ['project-physics'], categories: [{ categoryId: 'notes', name: '实验记录' }] },
+    ...Array.from({ length: 5 }, (_, index) => ({ id: `project-extra-${index}`, name: `候选项目${index + 1}`, studentIds: ['test-a'], identifiers: [`project-extra-${index}`], categories: [] }))];
+  const context = (id, options = {}) => ({ studentId: id, projects: options.mode === 'details' ? allProjects.filter(project => options.projectIds.includes(project.id)) : allProjects, profile: {} });
   const engine = createSmartInbox({ directory: path.join(root, 'state'), stableAgeMs: 0, forbiddenRoots: () => [destination], automaticAllowed: () => true,
-    context: async id => context(id), validateTarget: async target => { if (!['test-a', 'test-b'].includes(target.studentId)) throw Error('学生范围无效'); return target; },
+    context: async (id, options) => context(id, options), validateTarget: async target => { if (!['test-a', 'test-b'].includes(target.studentId)) throw Error('学生范围无效'); return target; },
     extract: async item => ({ text: await fs.readFile(item.snapshotPath, 'utf8'), warnings: [] }),
     classify: async input => {
       if (input.text.includes('AUTH-RECOVERY') && !authorizationReady) throw Object.assign(Error('后台未登录，资料已保留'), { code: 'AUTHENTICATION_REQUIRED',
@@ -25,6 +28,8 @@ const { createSmartInbox } = require('../electron/smart-inbox.cjs');
   await engine.requestScan(initial.id); await engine.tick();
   const authorization = await engine.updateSource({ folder: authSource, name: '授权恢复测试', studentId: 'test-a', enabled: true, automatic: false });
   await engine.requestScan(authorization.id); await engine.tick();
+  const backlog = await engine.updateSource({ folder: backlogSource, name: '系统会话测试', studentId: 'test-a', enabled: true, automatic: true });
+  await engine.requestScan(backlog.id); await engine.tick();
   await fs.unlink(path.join(source, '已失效资料.docx')); await engine.requestScan(initial.id); await engine.tick();
   const { createServer } = await import('vite');
   const server = await createServer({ server: { host: '127.0.0.1', port: 5187, strictPort: true }, plugins: [{ name: 'smart-inbox-isolated', configureServer(vite) {
@@ -43,6 +48,12 @@ const { createSmartInbox } = require('../electron/smart-inbox.cjs');
         else if (action === 'detach') data = await engine.detach(input.id);
         else if (action === 'detail') data = await engine.detail(input.id);
         else if (action === 'context') data = context(input.studentId);
+        else if (action === 'rules') data = await engine.listUserRules(input);
+        else if (action === 'saveRule') data = await engine.saveUserRule(input);
+        else if (action === 'ruleSuggestions') data = await engine.listRuleSuggestions(input);
+        else if (action === 'previewRule') data = await engine.previewBacklog({ itemIds: input.itemIds, rule: input.rule, page: input.page, studentId: input.studentId });
+        else if (action === 'trial') data = await engine.previewBacklog(input);
+        else if (action === 'applyTrial') data = await engine.applyPreview(input);
         else if (action === 'continueAgent') { authorizationReady = true; data = await engine.resumeAgent(input.studentId, input.requestId); await engine.tick(); data.message = `已恢复 ${data.count} 项`; }
         else if (action === 'authorizeAgent') data = { message: '隔离界面测试：正式应用将自动准备官方 CLI 并打开登录页，不要求选择 JSON' };
         else if (action === 'saveFallback') { fallbackEnabled = input.enabled === true; authorizationReady = fallbackEnabled;

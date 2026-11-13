@@ -1,8 +1,9 @@
 'use strict';
-const fs=require('node:fs'),path=require('node:path'),{spawn}=require('node:child_process');
+const fs=require('node:fs'),path=require('node:path'),{spawn,execFileSync}=require('node:child_process');
 const {createCodexResearchSearch}=require('../electron/planning-research.cjs');
 const {classifyResearchTimeout}=require('../electron/research-task-policy.cjs');
-const executable=process.argv[2]||'C:/Users/bxw00/AppData/Local/OpenAI/Codex/bin/codex.exe';
+const executable=process.argv[2];
+if(!executable||!path.isAbsolute(executable))throw Error('需提供已安装 Codex 可执行文件的绝对路径');
 const output=path.resolve(process.argv[3]||'artifacts/p0-agent-0228/research-timeout-real-host.json');
 const mode=process.argv[4]||'confirmed-close';
 let processId=0;
@@ -17,7 +18,7 @@ const search=createCodexResearchSearch({executable,spawnProcess:spawn,
  const classification=evidence?classifyResearchTimeout(evidence,{remainingRouteAttempts:1,nextProviderAvailable:true}):null;
  if(mode==='unconfirmed'&&processId){try{process.kill(processId);}catch{}await new Promise(resolve=>setTimeout(resolve,250));}
  const report={schema:'research-timeout-real-host.v1',checkedAt:new Date().toISOString(),executable,mode,
-  executableVersion:'codex-cli 0.130.0-alpha.5',processId,error:{code:error?.code||'',messageClass:error?.code?'research_timeout':'unexpected'},
+  executableVersion:(()=>{try{return execFileSync(executable,['--version'],{encoding:'utf8',timeout:5000,windowsHide:true}).trim();}catch{return 'unavailable';}})(),processId,error:{code:error?.code||'',messageClass:error?.code?'research_timeout':'unexpected'},
   evidence,classification};
  fs.mkdirSync(path.dirname(output),{recursive:true});fs.writeFileSync(output,JSON.stringify(report,null,2));
  console.log(JSON.stringify({output,processId,code:error?.code,disposition:classification?.disposition,evidence},null,2));

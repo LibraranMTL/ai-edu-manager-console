@@ -64,10 +64,8 @@ test('host quick and source-directory imports can target student raw or an activ
   assert.match(ui, /导入位置/);
   assert.match(ui, /project\.status !== 'sealed'/);
   assert.doesNotMatch(ui, /导入后统一复制到当前学生原始资料库/);
-  const sourcePanel = ui.indexOf('<strong>资料来源目录</strong>');
-  const visibleTarget = ui.indexOf('<span>导入位置</span>', sourcePanel);
-  const resultsCondition = ui.indexOf('{materialSourceFiles.length > 0', sourcePanel);
-  assert.ok(sourcePanel > 0 && visibleTarget > sourcePanel && resultsCondition > visibleTarget, 'source-directory target selector should be visible before scan results');
+  assert.doesNotMatch(ui, /<strong>资料来源目录<\/strong>/);
+  assert.match(ui, /打开所选导入位置/);
 });
 
 test('Android terminal exposes target selection and upload button state feedback', () => {

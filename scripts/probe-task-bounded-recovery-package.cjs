@@ -24,12 +24,26 @@ async function run() {
     assert.equal(reconcileInterruptedExecutions(store).length, 1);
     const file = path.join(root, 'tasks.json');
     await fs.writeFile(file, JSON.stringify(store));
+    // The Worker now requires an explicit SQLite store_open before list;
+    // reading the legacy JSON without opening returns ready:false by design.
+    const opened = await client.request(file, 'store_open');
+    assert.equal(opened.ok, true);
     const result = await client.request(file, 'list');
     assert.equal(result.ok, true);
     assert.equal(result.tasks.find(t => t.id === 'wait').phaseLabel, '稍后继续');
-    assert.equal(result.tasks.find(t => t.id === 'interrupted').phaseLabel, '核对中');
+    const unresolved = result.tasks.find(t => t.id === 'interrupted');
+    const detail = await client.request(file, 'detail', { id: 'interrupted' });
+    assert.equal(detail.ok, true);
+    assert.equal(detail.task.recoveryState, 'unknown');
+    assert.equal(detail.task.autoRetry, false);
+    assert.equal(unresolved.phaseLabel, '需要你帮助');
     console.log(JSON.stringify({ ok: true, electron: process.versions.electron, sourceFilesMatched: files.length, workerReadModel: true,
       persistedRetryIdentity: true, unknownExecutionPreserved: true, realStudentAccess: false, liveAgentCall: false }));
-  } finally { client.close(); await fs.rm(root, { recursive: true, force: true }); }
+  } finally {
+    await client.close();
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(root).startsWith('edu-recovery-package-'));
+    await fs.rm(root, { recursive: true, force: true });
+  }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

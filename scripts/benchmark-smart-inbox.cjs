@@ -27,12 +27,14 @@ const { digest } = require('../electron/smart-inbox-policy.cjs');
     for (let start = 0; start < 10000; start += 100) await Promise.all(Array.from({ length: 100 }, async (_, i) => {
       const name = `old-${start + i}.txt`, stat = await fs.stat(path.join(source, name));
       const id = digest([registered.id, name, identity(stat)]);
+      const statuses = ['review', 'delivered', 'ignored', 'execution_unknown', 'delivery_reconcile'];
+      const students = ['synthetic', 'synthetic-b', 'synthetic-c', ''];
       await fs.writeFile(path.join(host.directory, 'items', `${id}.json`), JSON.stringify({ id, sourceId: registered.id, sourceType: 'folder',
-        studentId: 'synthetic', identity: identity(stat), name, locator: name, size: stat.size, revision: 1, status: 'review',
+        studentId: students[(start + i) % students.length], identity: identity(stat), name, locator: name, size: stat.size, revision: 1, status: statuses[(start + i) % statuses.length],
         createdAt: new Date(simulatedNow - 86400000).toISOString(), message: '合成已处理元数据，不作为准确率样本' }));
     }));
     const coldRss = process.memoryUsage().rss;
-    engine = createSmartInbox(host); await engine.init();
+    engine = createSmartInbox(host); const coldStart = performance.now(); await engine.init(); const coldInitMs = performance.now() - coldStart;
     const scan = async () => { const start = performance.now(); await engine.requestScan(registered.id); await engine.tick(); return performance.now() - start; };
     await scan();
     const delay = monitorEventLoopDelay({ resolution: 10 }); delay.enable();
@@ -53,7 +55,7 @@ const { digest } = require('../electron/smart-inbox-policy.cjs');
     concurrentQueries.sort((a, b) => a - b);
     delay.disable();
     const report = { kind: 'synthetic-local-performance-not-user-acceptance', machine: { cpus: os.cpus().length, memoryGiB: os.totalmem() / 2 ** 30, node: process.version },
-      fixture: '10000 historical files and 10000 synthetic completed metadata rows; then 10 new files; simulated clock only', unchangedScanMs: unchanged, unchangedCounters,
+      fixture: '10000 historical files with mixed review, delivered, ignored, execution-unknown and receipt-review metadata across four student scopes; then 10 new files; simulated Agent and clock', coldInitMs, unchangedScanMs: unchanged, unchangedCounters,
       added10ScanMs: addedMs, totals: counters, queryP95Ms: queries[Math.floor(queries.length * .95)], mainEventLoopMaxMs: delay.max / 1e6,
       concurrentQueryCount: concurrentQueries.length, concurrentQueryP95Ms: concurrentQueries[Math.floor(concurrentQueries.length * .95)],
       rssDeltaMiB: (process.memoryUsage().rss - before) / 2 ** 20, loadAndScanRssDeltaMiB: (process.memoryUsage().rss - coldRss) / 2 ** 20,

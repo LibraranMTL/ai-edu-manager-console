@@ -38,10 +38,11 @@ function stableTaskId(kind, sourceType, sourceId) {
 }
 
 const scenario = String(args.get('scenario') || '').trim();
-if (!['idle', 'normal-task', 'backlog-recovery', 'agent-project-task', 'agent-backlog-workbuddy', 'agent-research-codex'].includes(scenario)) {
+if (!['idle', 'normal-task', 'backlog-recovery', 'agent-project-task', 'agent-backlog-workbuddy', 'agent-research-codex', 'agent-inbox'].includes(scenario)) {
   throw new Error('scenario must be idle, normal-task, backlog-recovery, agent-project-task, agent-backlog-workbuddy or agent-research-codex');
 }
-const projectAgentScenario = ['agent-project-task', 'agent-backlog-workbuddy'].includes(scenario);
+const inboxScenario = scenario === 'agent-inbox';
+const projectAgentScenario = ['agent-project-task', 'agent-backlog-workbuddy', 'agent-inbox'].includes(scenario);
 const researchScenario = scenario === 'agent-research-codex';
 const agentScenario = projectAgentScenario || researchScenario;
 const agentProvider = String(args.get('agent-provider') || (researchScenario ? 'codex' : 'workbuddy')).trim().toLowerCase();
@@ -102,12 +103,39 @@ if (sourceWorkBuddyAuth) {
 
 const studentBaseDir = path.join(output, 'student-data');
 const taskCenterDir = path.join(studentBaseDir, '.edu-manager', 'task-center');
-const count = ['idle', 'agent-project-task', 'agent-research-codex'].includes(scenario) ? 0 : scenario === 'normal-task' ? 1 : 12;
+const count = ['idle', 'agent-project-task', 'agent-research-codex', 'agent-inbox'].includes(scenario) ? 0 : scenario === 'normal-task' ? 1 : 12;
 const createdAt = new Date().toISOString();
 const students = [];
 const tasks = [];
 const events = [];
 fs.mkdirSync(output, { recursive: false });
+if (inboxScenario) {
+  const source = `${output}-source`;
+  if (fs.existsSync(source)) throw Error('synthetic source already exists');
+  fs.mkdirSync(source);
+  for (const [name, text] of Object.entries({
+    'physics-semantic.txt': '合成实验记录：调整摆线长度，测量同一个摆球来回振荡的周期，每组重复三次并记录秒数。',
+    'biology-semantic.txt': '合成实验记录：把幼苗放在不同光照条件下，每天记录叶片数量和植株高度，持续观察两周。',
+    'mixed-projects.txt': '合成汇总：摆长与周期实验已经重复测量；同时幼苗光照实验也记录了叶片数量与植株高度，两个实验都有实质进展。',
+    'explicit-conflict.txt': '合成汇总：p0-synthetic-project-01 的摆长周期记录和 p0-synthetic-project-02 的幼苗光照观察均有实质进展。',
+    'ambiguous.txt': '合成备忘：下周需要再观察变化并整理这次测量结果，先把表格准备好。',
+    'unrelated.txt': '合成闲聊：周末打算做一顿面条，先准备番茄和鸡蛋，再考虑是否邀请朋友。',
+  })) fs.writeFileSync(path.join(source, name), text, 'utf8');
+  if (args.get('multi-source') === 'true') {
+    for (const [suffix, entries] of Object.entries({
+      a: { 'a-physics.txt': '合成实验：调整摆线长度并测量摆球振荡周期，每个长度重复三次，记录秒数和测量误差。', 'a-unrelated.txt': '合成生活对话：准备晚饭时买番茄和鸡蛋，再查询公交时间。' },
+      b: { 'b-biology.txt': '合成实验：不同光照下幼苗连续观察两周，每天记录叶片数量和植株高度并比较对照组。', 'b-conflict.txt': '合成汇总：摆长和摆球周期测量已经完成；幼苗光照组也记录了叶片数量和高度，两个实验都有实质数据。' },
+      c: { 'c-ambiguous.txt': '合成备忘：下次继续观察变化并补充测量记录，先准备表格。', 'c-physics.txt': '合成实验：记录不同摆线长度对应的摆球来回振荡周期，每组测量三次并记录误差范围。' },
+      d: { 'd-conflict.txt': '合成双项目报告：调整摆线后记录摆球往返周期，同时对比不同光照下幼苗的高度和叶片，两项都有实验数据。', 'd-unrelated.txt': '合成普通日程：明天到车站接朋友，准备雨伞并提前查询发车时间。' },
+      e: { 'e-biology.txt': '合成观察：将幼苗分成遮光组与日照组，连续两周测量叶片数量及植株高度，整理数据后记录观察误差。', 'e-ambiguous.txt': '合成便笺：记录暂时不完整，下一次补全数据表并继续讨论。' },
+    })) {
+      const folder = `${output}-source-${suffix}`;
+      if (fs.existsSync(folder)) throw Error('synthetic source already exists');
+      fs.mkdirSync(folder);
+      for (const [name, text] of Object.entries(entries)) fs.writeFileSync(path.join(folder, name), text, 'utf8');
+    }
+  }
+}
 for (let index = 0; index < count; index += 1) {
   const suffix = String(index + 1).padStart(2, '0');
   const studentId = `p0-synthetic-student-${suffix}`;
@@ -188,8 +216,8 @@ if (projectAgentScenario) {
     id: studentId,
     name: 'P0合成Agent学生01',
     loginId: 'P0-AGENT-01',
-    status: 'paused',
-    activityStatus: 'paused',
+    status: inboxScenario ? 'active' : 'paused',
+    activityStatus: inboxScenario ? 'active' : 'paused',
     active: true,
     archived: false,
     rootPath: studentRoot,
@@ -198,7 +226,7 @@ if (projectAgentScenario) {
     digestTime: '00:00',
     // Keep the synthetic student eligible for project scope resolution while
     // suppressing unrelated periodic student tasks during the Agent queue test.
-    automaticTasksPaused: true,
+    automaticTasksPaused: !inboxScenario,
   });
   const projectId = 'p0-synthetic-project-01';
   const projectRootPath = path.join(output, 'project-data', projectId);
@@ -270,7 +298,8 @@ if (projectAgentScenario) {
   });
   projects.push({
     id: projectId,
-    name: 'P0合成项目',
+    name: inboxScenario ? '合成单摆周期实验' : 'P0合成项目',
+    ...(inboxScenario ? { description: '研究摆线长度、摆球振荡周期和测量误差。' } : {}),
     storageName: 'P0合成项目',
     type: '学习项目',
     status: 'active',
@@ -290,7 +319,7 @@ if (projectAgentScenario) {
     materialMigrationState: 'complete',
     inboxRelativePath: '收件箱',
     materialAutomation: {
-      enabled: true,
+      enabled: !inboxScenario,
       processingPaused: false,
       autoAdoptPathClassified: true,
       autoDigest: true,
@@ -304,9 +333,16 @@ if (projectAgentScenario) {
     createdAt,
     updatedAt: createdAt,
   });
+  if (inboxScenario) {
+    const id = 'p0-synthetic-project-02', projectRoot = path.join(output, 'project-data', id);
+    const workspace = path.join(projectRoot, '项目工作空间'), knowledge = path.join(projectRoot, '项目知识空间');
+    const manager = path.join(projectRoot, '.edu-manager'), raw = path.join(knowledge, '原始资料库'), result = path.join(projectRoot, '输出结果');
+    for (const dir of [path.join(workspace, '收件箱'), knowledge, manager, raw, result]) fs.mkdirSync(dir, { recursive: true });
+    projects.push({ id, name: '合成幼苗光照实验', description: '研究不同光照对幼苗生长、叶片数量和植株高度的影响。', storageName: '合成幼苗光照实验', type: '学习项目', status: 'active', agentTool: agentProvider, projectRootPath: projectRoot, managerPath: manager, workspacePath: workspace, workspaceMode: 'managed', knowledgeRootPath: knowledge, rawPath: raw, outputPath: result, studentIds: [studentId], studentNames: ['P0合成Agent学生01'], assetIds: [], materialStorageMode: 'workspace-v1', materialRegistryVersion: 1, materialMigrationState: 'complete', inboxRelativePath: '收件箱', materialAutomation: { enabled: false }, createdAt, updatedAt: createdAt });
+  }
   const kind = 'project_digest';
   const taskId = stableTaskId(kind, 'project', projectId);
-  tasks.push({
+  if (!inboxScenario) tasks.push({
     id: taskId,
     title: 'P0合成项目资料消化',
     kind,
@@ -338,7 +374,7 @@ if (projectAgentScenario) {
     },
     riskLevel: 'medium',
   });
-  events.push({
+  if (!inboxScenario) events.push({
     id: `p0-fixture-created-${scenario}-01`,
     taskId,
     type: 'task_created',

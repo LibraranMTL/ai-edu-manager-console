@@ -46,13 +46,15 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);
   assert.equal(releaseManifest.windowsTerminalVersionName, windowsManifest.windowsTerminalVersionName);
-  assert.equal(terminalVersion.versionName, '0.18.7');
-  assert.equal(terminalVersion.versionCode, 237);
-  assert.equal(terminalVersion.releaseStatus, 'candidate');
-  assert.equal(releaseManifest.windowsTerminalVersionName, '0.18.6');
-  assert.equal(releaseManifest.windowsTerminalVersionCode, 236);
+  if (terminalVersion.releaseStatus === 'stable') {
+    assert.equal(terminalVersion.versionName, releaseManifest.windowsTerminalVersionName);
+    assert.equal(terminalVersion.versionCode, releaseManifest.windowsTerminalVersionCode);
+  } else {
+    assert.equal(terminalVersion.releaseStatus, 'candidate');
+    assert.ok(terminalVersion.versionCode > releaseManifest.windowsTerminalVersionCode);
+  }
   assert.equal(releaseManifest.windowsTerminalReleaseStatus, 'stable');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, '0.18.6');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, releaseManifest.windowsTerminalVersionName);
   const publicWebsiteManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8'));
   assert.match(downloadPage, new RegExp(`Android v${releaseManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}`));
   assert.match(downloadPage, new RegExp(new URL(releaseManifest.tabletTerminalApkUrl).pathname.split('/').pop().replaceAll('.', '\\.')));

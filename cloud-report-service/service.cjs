@@ -606,11 +606,13 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const scoped = db.prepare('SELECT 1 FROM scoped_viewer_bindings WHERE device_id=? AND student_id=?').get(deviceId, studentId);
     if (scoped) requireV2Grant(deviceId, studentId, 'material.read', category);
   }
-  function requireScopedSourceMaterial(deviceId, studentId, category) {
-    const scoped = db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
+  function sourceUsesScopedContract(deviceId, studentId) {
+    return Boolean(db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
       AND scope IN ('student_profile.write','material.write') LIMIT 1`).get(deviceId, studentId)
-      || db.prepare('SELECT 1 FROM source_auto_bindings WHERE source_device_id=? AND student_id=?').get(deviceId, studentId);
-    if (scoped) requireV2Grant(deviceId, studentId, 'material.write', category);
+      || db.prepare('SELECT 1 FROM source_auto_bindings WHERE source_device_id=? AND student_id=?').get(deviceId, studentId));
+  }
+  function requireScopedSourceMaterial(deviceId, studentId, category) {
+    if (sourceUsesScopedContract(deviceId, studentId)) requireV2Grant(deviceId, studentId, 'material.write', category);
   }
   function appendSyncEvent(studentId, eventType, objectType, objectId, revisionId = '', tombstone = 0) {
     db.prepare(`INSERT INTO sync_events(student_id,event_type,object_type,object_id,revision_id,occurred_at,tombstone)
@@ -777,8 +779,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       if (admin) { if (!studentExists(studentId)) fail(404, '学生不存在'); }
       else {
         requireGrant(source.id, studentId, 'report.write');
-        const managed = db.prepare('SELECT 1 FROM source_auto_bindings WHERE source_device_id=? AND student_id=? AND revoked_at IS NULL').get(source.id, studentId);
-        if (managed && Number(options.contractVersion) < 2) fail(400, '安卓来源必须按当前授权范围配对');
+        if (sourceUsesScopedContract(source.id, studentId) && !(Number(options.contractVersion) >= 2))
+          fail(400, '已采用范围授权的来源必须按当前授权范围配对');
       }
     }
     const pairing = db.prepare('SELECT device_id,expires_at,consumed_at FROM pairings WHERE code_hash=?').get(digest(code));

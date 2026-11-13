@@ -508,6 +508,10 @@ test('scoped pairing cannot widen source authorization or read unselected legacy
   assert.equal((await scope([], ['learning_material'])).status, 200);
   assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
   const viewer = (await call('POST', '/v1/pairings', '')).body;
+  for (const contractVersion of [undefined, 1, 'invalid']) {
+    assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken,
+      { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id], contractVersion })).status, 400);
+  }
   const request = { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id], contractVersion: 2,
     profileFields: [], materialCategories: ['learning_report'] };
   assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken, request)).status, 403);

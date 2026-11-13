@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const { hashStableFile, writeJsonAtomic } = require('./project-materials.cjs');
 const { realDirectory, MAX_BYTES, ALLOWED } = require('./download-inbox.cjs');
 const P = require('./smart-inbox-policy.cjs');
+const { inspectConversation } = require('./smart-inbox-conversation.cjs');
 const { taskRetryDecision } = require('./task-recovery-policy.cjs');
 const within = (root, file) => { const rel = path.relative(root, file); return !rel || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + path.sep)); };
 const identity = s => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs].join(':');
@@ -27,12 +28,30 @@ function legacyAgentBlock(message) {
       ? '旧记录确认停在发送正文之前；请重新授权、启用备用 Agent，或直接手动投递。'
       : '旧记录确认未发送正文；请启用可用 Agent，或直接手动投递。' };
 }
+// Groups are presentation metadata only. Legacy messages are interpreted for
+// display; they never authorize a retry, ignore, or delivery.
+function reasonGroup(item) {
+  const message = String(item.message || '');
+  if (item.status === 'execution_unknown') return 'execution_unknown';
+  if (['delivery_reconcile', 'archive_pending', 'delivering'].includes(item.status)) return 'receipt_review';
+  if (item.originalMissing) return 'original_missing';
+  if (item.reasonCode === 'student_conflict' || /多个学生|涉及其他学生/.test(message)) return 'student_conflict';
+  if (!item.studentId) return 'student_unknown';
+  if (item.conversationKind === 'internal_task') return 'internal_task';
+  if (item.blockReason?.category === 'agent') return 'agent';
+  if (['no_candidate', 'candidate_scope_too_large'].includes(item.reasonCode)
+    || /项目上下文过多|候选项目过多|没有足够的本机证据|无法可靠缩小|尚无可信项目候选/.test(message)) return 'no_candidate';
+  if (item.status === 'review') return 'classification_review';
+  return 'other';
+}
 
 // The host owns scheduling and resource admission. This service owns no timer,
 // watcher, model credentials or arbitrary destination-file capability.
 function createSmartInbox(host) {
-  const root = host.directory, sources = new Map(), items = new Map(), rules = new Map();
+  const root = host.directory, sources = new Map(), items = new Map(), rules = new Map(), userRules = new Map();
   const cacheFiles = new Map(), itemOperations = new Map();
+  const previews = new Map();
+  let readIndex = null;
   let cacheBytes = 0;
   let loaded, active = null, closed = false, blocked = '', turn = 0, commands = Promise.resolve();
   let defaults = { schedule: { ...P.DEFAULT_SCHEDULE } };
@@ -57,15 +76,18 @@ function createSmartInbox(host) {
     const value = clone(record);
     try { await writeJsonAtomic(fileFor(kind, value.id), value); }
     catch (e) { blocked = `资料状态保存失败，已停止新执行：${e.message}`; throw e; }
-    ({ sources, items, rules }[kind])?.set(value.id, value);
+    ({ sources, items, rules, 'user-rules': userRules }[kind])?.set(value.id, value);
+    if (kind === 'items' && readIndex) {
+      try { readIndex.update(value); } catch { try { readIndex.close(); } catch {} readIndex = null; }
+    }
     return value;
   }
   async function init() {
     return loaded ||= (async () => {
-      for (const name of ['sources', 'items', 'rules', 'decisions', 'snapshots', 'extractions']) {
+      for (const name of ['sources', 'items', 'rules', 'user-rules', 'rule-audit', 'decisions', 'snapshots', 'extractions']) {
         await fs.mkdir(path.join(root, name), { recursive: true }); await realDirectory(path.join(root, name));
       }
-      for (const [kind, map] of [['sources', sources], ['items', items], ['rules', rules]]) {
+      for (const [kind, map] of [['sources', sources], ['items', items], ['rules', rules], ['user-rules', userRules]]) {
         for await (const entry of await fs.opendir(path.join(root, kind))) {
           if (!entry.isFile() || !/^[a-zA-Z0-9_-]+\.json$/.test(entry.name)) continue;
           const value = await read(path.join(root, kind, entry.name));
@@ -136,6 +158,8 @@ function createSmartInbox(host) {
         const file = path.join(root, 'extractions', entry.name), stat = await fs.lstat(file);
         cacheFiles.set(file, { size: stat.size, at: stat.mtimeMs }); cacheBytes += stat.size;
       }
+      try { readIndex = require('./smart-inbox-index.cjs').createInboxIndex(root, items.values()); }
+      catch { readIndex = null; }
     })().catch(e => { blocked = `资料收件箱初始化失败：${e.message}`; throw e; });
   }
   async function putCache(file, value) {
@@ -400,6 +424,15 @@ function createSmartInbox(host) {
     await putCache(file, { schema: 3, sha256: item.fingerprint.sha256, result: value }); stats.extracted++;
     return { ...value, cacheFile: file };
   }
+  const userRuleVersion = () => P.digest([...userRules.values()].map(rule => ({ id: rule.id, version: rule.version, enabled: rule.enabled }))
+    .sort((left, right) => left.id.localeCompare(right.id)));
+  async function auditRule(event, item, match) {
+    if (!match?.hit?.rule) return;
+    const record = { id: crypto.randomUUID(), event, at: iso(), itemId: item.id, sourceId: item.sourceId,
+      studentId: item.studentId, sha256: item.fingerprint?.sha256 || '', ruleId: match.hit.rule.id,
+      ruleVersion: match.hit.rule.version, action: match.action, target: match.target || null, reason: match.reason || '' };
+    await writeJsonAtomic(fileFor('rule-audit', record.id), record);
+  }
   async function checkCurrent(item, source, auto = false) {
     if (closed || blocked) throw Error(blocked || '已停止资料处理');
     const current = sources.get(source.id);
@@ -485,6 +518,34 @@ function createSmartInbox(host) {
     const deliveryWorkKey = P.digest([item.fingerprint.sha256, selected.type, selected.id,
       selected.categoryId, 'intake-association-v2']);
     const operationId = P.digest([item.id, deliveryWorkKey, item.revision]);
+    // Reuse only an independently verified receipt in the same student and
+    // project. Conversation/share deliveries have separate source ledgers and
+    // deliberately continue through their normal importer.
+    if (!previous && item.studentId && selected.type === 'project' && ['folder', 'download'].includes(source.type)
+      && typeof host.registerAssociation === 'function' && await host.canReuseReceipt?.(selected)) {
+      let matching = null;
+      try { matching = readIndex?.matchingFingerprint(item.studentId, item.fingerprint.sha256) || null; }
+      catch { try { readIndex?.close(); } catch {} readIndex = null; }
+      const priorItems = matching ? matching.map(id => items.get(id)).filter(Boolean) : [...items.values()];
+      const prior = priorItems.find(candidate => candidate.id !== item.id && candidate.status === 'delivered'
+        && candidate.studentId === item.studentId && candidate.fingerprint?.sha256 === item.fingerprint.sha256
+        && candidate.receipt && P.sameTarget(candidate.target, selected));
+      if (prior) {
+        await verifyReceipt(prior, prior.receipt);
+        await checkCurrent(item, source, automatic);
+        await host.validateTarget(selected);
+        item = await save('items', { ...item, target: selected, operationId, deliveryWorkKey, automatic, receipt: prior.receipt,
+          status: 'archive_pending', deliveredAt: iso(), reusedReceiptFrom: prior.id, message: '已复用相同资料的已验回执，正在登记来源关联。' });
+        try {
+          if (selected.categoryId) await host.applyCategory?.(item, automatic);
+          item = { ...item, extractionReuse: await host.registerAssociation(item) };
+          await host.acknowledge?.(source, item);
+          item = await archive(item, source); stats.delivered++;
+          return save('items', { ...item, revision: item.revision + 1, status: 'delivered', manualLocked: !automatic,
+            message: '已复用同学生、同项目的已验资料并登记来源关联。' });
+        } catch (error) { await save('items', { ...item, status: 'archive_pending', message: error.message }); throw error; }
+      }
+    }
     item = await save('items', { ...item, previous, target: selected, operationId, status: 'delivering', receipt: null, associationChange: null,
       destinationPath: '', executionId: operationId, deliveryWorkKey, automatic, message: '', blockReason: null });
     try {
@@ -516,60 +577,137 @@ function createSmartInbox(host) {
       target: source.target && (!item.studentId || source.target.studentId === item.studentId) ? source.target : null };
     await checkCurrent(item, source);
     item = await snapshot(item, source);
-    const context = await host.context(item.studentId);
-    if (context.studentId !== item.studentId) throw Error('分类上下文超出已确认学生范围');
+    const lightContext = await host.context(item.studentId, { mode: 'light' });
+    if (lightContext.studentId !== item.studentId) throw Error('分类上下文超出已确认学生范围');
     const routingWorkKey = P.digest([source.id, item.fingerprint.sha256, P.ROUTING_POLICY_VERSION]);
     const data = await extraction(item);
     const textBytes = Buffer.byteLength(data.text);
     if (textBytes > remainingBytes) return { deferred: true, textBytes: 0 };
     item = await save('items', { ...item, originalMissing: false, truncated: data.truncated,
       extractionWarnings: data.warnings, extractionPartial: data.partial, extractionBlocked: data.blocked });
-    const review = async message => ({ ...await save('items', { ...item, status: 'review', message }), textBytes });
-    if (!data.text.trim() || data.truncated || data.blocked) return review('正文为空、被截断或提取异常，未发送给Agent，请人工确认');
-    if (Buffer.byteLength(JSON.stringify(context)) > 100 * 1024) return review('项目上下文过多，请指定来源投递项目');
+    const review = async (message, reasonCode = 'review_required') => ({ ...await save('items', { ...item, status: 'review', reasonCode, message }), textBytes });
+    if (!data.text.trim() || data.truncated || data.blocked) return review('正文为空、被截断或提取异常，未发送给Agent，请人工确认', 'extraction_incomplete');
+    const conversation = inspectConversation(data.text, host.studentHints?.() || [], item.studentId);
+    item = await save('items', { ...item, conversationKind: conversation.kind, conversationSourceAgent: conversation.sourceAgent || '' });
+    if (conversation.studentConflict) return review('正文涉及其他学生或多个学生，请确认所属学生后处理。', 'student_conflict');
     let suggestion = { candidates: [], sensitive: false, conflict: false, reason: '' };
-    const sensitiveLocalOnly = P.risks(data.text);
-    let decision = P.automaticTarget({ source: routingSource, item, context, text: data.text, suggestion,
+    let routingScope = null;
+    const ruleMatch = P.matchUserRules({ rules: [...userRules.values()], source: routingSource, item, text: data.text, context: lightContext });
+    if (ruleMatch.status === 'conflict') return review(ruleMatch.reason, 'rule_conflict');
+    if (ruleMatch.status === 'matched' && ruleMatch.action === 'ignore') {
+      if (!source.automatic) return review(`${ruleMatch.reason}；来源设置为仅生成建议，未自动忽略。`);
+      await auditRule('matched_ignore', item, ruleMatch);
+      return { ...await save('items', { ...item, previousStatus: item.status, status: 'ignored', manualLocked: false,
+        revision: item.revision + 1, userRuleDecision: { ruleId: ruleMatch.hit.rule.id, ruleVersion: ruleMatch.hit.rule.version,
+          action: 'ignore', reason: ruleMatch.reason, at: iso() }, lastDecision: { action: 'rule_ignore', at: iso() },
+        message: `${ruleMatch.reason}；已移至可恢复的“已忽略”，未删除原件。` }), textBytes };
+    }
+    let decision = ruleMatch.status === 'matched' && ruleMatch.action === 'deliver'
+      ? { target: ruleMatch.target, basis: 'user_rule', resolutionBasis: 'user_rule', ruleId: ruleMatch.hit.rule.id,
+        confidence: 1, evidence: ruleMatch.reason, policyVersion: P.ROUTING_POLICY_VERSION }
+      : P.automaticTarget({ source: routingSource, item, context: lightContext, text: data.text, suggestion,
       rules: [...rules.values()], routingV2Enabled: host.routingV2Enabled !== false,
-      classificationAttempted: false, sensitiveLocalOnly });
-    if (!decision && sensitiveLocalOnly) return review('包含敏感资料线索；仅允许本机同一学生范围内的明确项目或学生资料库归属，未跨学生自动发送。');
+      classificationAttempted: false });
+    if (!decision && item.studentId && item.fingerprint?.sha256 && typeof host.fingerprintProjects === 'function') {
+      const matches = await host.fingerprintProjects(item.studentId, item.fingerprint.sha256);
+      if (matches.length === 1) decision = { target: { studentId: item.studentId, type: 'project', id: matches[0], categoryId: '' },
+        basis: 'verified_content_history', resolutionBasis: 'verified_content_history', confidence: 1,
+        evidence: item.fingerprint.sha256, policyVersion: P.ROUTING_POLICY_VERSION };
+      else if (matches.length > 1) return review('相同文件指纹已关联多个项目，未按项目编号强行决定，请人工确认。', 'multiple_fingerprint_targets');
+    }
     if (!decision) {
-      const examples = [...rules.values()].filter(r => r.sourceId === source.id && r.studentId === item.studentId).slice(-8)
-        .map(r => ({ identifier: r.identifier, target: r.target, confirmations: r.count, active: r.active, suspended: r.suspended, version: r.version }));
-      const contextHash = P.digest({ context, examples }), cached = await read(data.cacheFile, null);
-      if (cached?.contextHash === contextHash && cached.suggestion) { suggestion = P.validateSuggestion(cached.suggestion, context, data.text); stats.cacheHits++; }
-      else {
-        const executionId = crypto.randomUUID();
-        item = await save('items', { ...item, status: 'analyzing', executionId, attempts: item.attempts + 1, blockReason: null,
-          execution: { stage: 'qualifying', contextHash, sha256: item.fingerprint.sha256, studentId: item.studentId } });
-        const result = await host.classify({ context: { ...context, confirmedExamples: examples, extractionLimitations: data.warnings || [] }, text: data.text, executionId, itemId: item.id,
+      let selected = P.selectRoutingCandidates({ context: lightContext, text: data.text, item, ruleMatch });
+      if (lightContext.projects.length > 5 && !selected.strong) {
+        // Recall sees every authorized project, but may only propose candidates.
+        // It cannot authorize delivery or assert that unreturned projects are excluded.
+        const workspaceHints = await host.workspaceCandidates?.(item.studentId, [conversation.workspacePath, conversation.repositoryPath]) || [];
+        const recallContext = { ...lightContext, projects: lightContext.projects.map(project => ({
+          id: project.id, name: String(project.name || '').slice(0, 160), summary: String(project.summary || '').slice(0, 300),
+          aliases: (project.aliases || []).slice(0, 10), identifiers: (project.identifiers || []).slice(0, 10),
+          studentIds: project.studentIds, categories: [], materialTerms: [], knowledgeTerms: [], workspaceHint: workspaceHints.includes(project.id),
+          localHints: (selected.candidates.find(candidate => candidate.id === project.id)?.evidence || []).slice(0, 3) })) };
+        if (Buffer.byteLength(JSON.stringify(recallContext)) > 100 * 1024) return review('项目轻量信息超过召回上限，请人工确认，未排除任何项目。', 'candidate_scope_too_large');
+        const recallHash = P.digest({ lightContext, workspaceHints, userRuleVersion: userRuleVersion(), policyVersion: P.ROUTING_POLICY_VERSION });
+        const recallExecutionId = crypto.randomUUID();
+        item = await save('items', { ...item, status: 'analyzing', executionId: recallExecutionId, attempts: item.attempts + 1,
+          execution: { stage: 'qualifying', purpose: 'candidate_recall', contextHash: recallHash, sha256: item.fingerprint.sha256, studentId: item.studentId } });
+        const result = await host.classify({ context: recallContext, text: data.text, executionId: recallExecutionId, itemId: item.id,
           onStage: async stage => {
             if (stage.stage === 'not_sent' || stage.stage === 'possibly_sent') {
               await checkCurrent(item, source);
               if (!host.automaticAllowed(item.studentId)) throw Object.assign(Error('自动处理已暂停'), { code: 'ROUTE_CHANGED' });
-              if (P.digest({ context: await host.context(item.studentId), examples }) !== contextHash) throw Object.assign(Error('学生项目上下文已变化'), { code: 'ROUTE_CHANGED' });
+              const current = await host.context(item.studentId, { mode: 'light' });
+              const currentHints = await host.workspaceCandidates?.(item.studentId, [conversation.workspacePath, conversation.repositoryPath]) || [];
+              if (P.digest({ lightContext: current, workspaceHints: currentHints, userRuleVersion: userRuleVersion(), policyVersion: P.ROUTING_POLICY_VERSION }) !== recallHash)
+                throw Object.assign(Error('学生项目上下文或规则已变化'), { code: 'ROUTE_CHANGED' });
+            }
+            item = await save('items', { ...item, execution: { ...item.execution, ...stage } });
+          },
+          onResult: async result => { await writeJsonAtomic(fileFor('decisions', recallExecutionId), { itemId: item.id,
+            studentId: item.studentId, sha256: item.fingerprint.sha256, purpose: 'candidate_recall',
+            result: P.validateSuggestion(result, recallContext, data.text), at: iso() }); },
+        });
+        const recalled = P.validateSuggestion(result, recallContext, data.text); stats.classified++;
+        const recalledIds = recalled.candidates.filter(candidate => candidate.type === 'project').map(candidate => candidate.id);
+        if (!recalledIds.length) return { ...await save('items', { ...item, status: 'review', reasonCode: 'no_candidate', suggestion: recalled,
+          proposedTarget: recalled.candidates[0] || null, execution: { ...item.execution, stage: 'host_committed' },
+          routingScope: { totalProjects: lightContext.projects.length, candidateIds: [], complete: false, recallCoveredAll: true },
+          message: recalled.reason || '已检查全部项目，尚无可信项目候选，请确认资料归属。' }), textBytes };
+        selected = { ...selected, candidateIds: recalledIds.slice(0, 5), complete: false, strong: false, workspaceHints,
+          reason: '已检查全部项目并召回候选；候选以外的项目未被视为排除。' };
+      }
+      const candidateIds = selected.candidateIds.length ? selected.candidateIds
+        : selected.complete ? lightContext.projects.slice(0, 5).map(project => project.id) : [];
+      if (!candidateIds.length && lightContext.projects.length) return review(selected.reason || '无法可靠缩小候选项目范围，请确认投递项目。', 'no_candidate');
+      const details = candidateIds.length ? await host.context(item.studentId, { mode: 'details', projectIds: candidateIds }) : lightContext;
+      const bounded = P.boundedRoutingContext(details, data.text);
+      if (!bounded.context) return review(bounded.reason, 'candidate_scope_too_large');
+      routingScope = { candidateIds, candidates: selected.candidates, totalProjects: lightContext.projects.length,
+        compressed: bounded.compressed, complete: selected.complete, workspaceHintIds: selected.workspaceHints || [], reason: selected.reason };
+      const agentContext = bounded.context;
+      const examples = [...rules.values()].filter(r => r.sourceId === source.id && r.studentId === item.studentId).slice(-8)
+        .map(r => ({ identifier: r.identifier, target: r.target, confirmations: r.count, active: r.active, suspended: r.suspended, version: r.version }));
+      const contextHash = P.digest({ lightContext, agentContext, examples, userRuleVersion: userRuleVersion(), policyVersion: P.ROUTING_POLICY_VERSION }), cached = await read(data.cacheFile, null);
+      if (cached?.contextHash === contextHash && cached.suggestion) { suggestion = P.validateSuggestion(cached.suggestion, agentContext, data.text); stats.cacheHits++; }
+      else {
+        const executionId = crypto.randomUUID();
+        item = await save('items', { ...item, status: 'analyzing', executionId, attempts: item.attempts + 1, blockReason: null,
+          execution: { stage: 'qualifying', contextHash, sha256: item.fingerprint.sha256, studentId: item.studentId } });
+        const result = await host.classify({ context: { ...agentContext, confirmedExamples: examples, extractionLimitations: data.warnings || [] }, text: data.text, executionId, itemId: item.id,
+          onStage: async stage => {
+            if (stage.stage === 'not_sent' || stage.stage === 'possibly_sent') {
+              await checkCurrent(item, source);
+              if (!host.automaticAllowed(item.studentId)) throw Object.assign(Error('自动处理已暂停'), { code: 'ROUTE_CHANGED' });
+              const currentLight = await host.context(item.studentId, { mode: 'light' });
+              const currentDetails = candidateIds.length ? await host.context(item.studentId, { mode: 'details', projectIds: candidateIds }) : currentLight;
+              const currentBounded = P.boundedRoutingContext(currentDetails, data.text).context;
+              if (!currentBounded || P.digest({ lightContext: currentLight, agentContext: currentBounded, examples,
+                userRuleVersion: userRuleVersion(), policyVersion: P.ROUTING_POLICY_VERSION }) !== contextHash) throw Object.assign(Error('学生项目上下文或规则已变化'), { code: 'ROUTE_CHANGED' });
             }
             item = await save('items', { ...item, execution: { ...item.execution, ...stage } });
           },
           onResult: async result => { await writeJsonAtomic(path.join(root, 'decisions', `${executionId}.json`), {
-            itemId: item.id, studentId: item.studentId, sha256: item.fingerprint.sha256, result: P.validateSuggestion(result, context, data.text), at: iso() }); },
+            itemId: item.id, studentId: item.studentId, sha256: item.fingerprint.sha256, result: P.validateSuggestion(result, agentContext, data.text), at: iso() }); },
         });
-        suggestion = P.validateSuggestion(result, context, data.text); stats.classified++;
+        suggestion = P.validateSuggestion(result, agentContext, data.text); stats.classified++;
         await writeJsonAtomic(path.join(root, 'decisions', `${executionId}.json`), { itemId: item.id, result: suggestion, at: iso() });
         const { cacheFile, ...extracted } = data;
         await putCache(data.cacheFile, { schema: 3, sha256: item.fingerprint.sha256, result: extracted, suggestion, contextHash });
       }
-      decision = P.automaticTarget({ source: routingSource, item, context, text: data.text, suggestion,
+      decision = P.automaticTarget({ source: routingSource, item, context: agentContext, text: data.text, suggestion,
         rules: [...rules.values()], routingV2Enabled: host.routingV2Enabled !== false,
         classificationAttempted: true });
+      if (!selected.complete && !selected.strong) decision = null;
     }
+    if (ruleMatch.status === 'matched') await auditRule('matched_deliver', item, ruleMatch);
     const sharedUnresolved = !decision && !item.studentId && source.automatic && source.autoAttributeShared;
-    item = await save('items', { ...item, status: sharedUnresolved ? 'retry' : 'review', suggestion, blockReason: null,
-      routingWorkKey, nextRetryAt: sharedUnresolved ? new Date(now() + 6 * 60 * 60 * 1000).toISOString() : '',
+    item = await save('items', { ...item, status: sharedUnresolved ? 'retry' : 'review', reasonCode: decision ? '' : 'classification_review', suggestion, blockReason: null,
+      routingWorkKey, routingScope, nextRetryAt: sharedUnresolved ? new Date(now() + 6 * 60 * 60 * 1000).toISOString() : '',
       execution: item.execution ? { ...item.execution, stage: 'host_committed' } : null,
-      identifier: P.identifiers(data.text, context.projects).length === 1 ? P.identifiers(data.text, context.projects)[0].id : '',
+      identifier: P.identifiers(data.text, lightContext.projects).length === 1 ? P.identifiers(data.text, lightContext.projects)[0].id : '',
       proposedTarget: decision?.target || suggestion.candidates[0] || routingSource.target || null, ruleId: decision?.ruleId || '',
-      ruleVersion: rules.get(decision?.ruleId)?.version || 0, basis: decision?.basis || 'agent_suggestion',
+      ruleVersion: userRules.get(decision?.ruleId)?.version || rules.get(decision?.ruleId)?.version || 0, basis: decision?.basis || 'agent_suggestion',
+      ruleSetVersion: userRuleVersion(),
       routingDecision: decision ? { primaryTarget: decision.target, matchedProjectId: decision.matchedProjectId || '',
         primaryStudentId: decision.primaryStudentId || decision.target.studentId,
         linkedStudentIds: decision.linkedStudentIds || [decision.target.studentId],
@@ -579,7 +717,7 @@ function createSmartInbox(host) {
       message: sharedUnresolved ? '共享资料已进入自动暂存池；当前无可信项目，项目上下文变化后将自动重试。'
         : data.partial ? '已基于可读正文判断；图片、公式未完整识别，不影响有充分正文证据的分类投递'
           : suggestion.reason || '请确认投递位置' });
-    if (decision && source.enabled && host.automaticAllowed(item.studentId)) item = await deliverItem(item, source, decision.target, true);
+    if (decision && source.enabled && source.automatic && host.automaticAllowed(item.studentId)) item = await deliverItem(item, source, decision.target, true);
     return { ...item, textBytes: Buffer.byteLength(data.text) };
   }
   async function processSource(id, manual = false) {
@@ -918,6 +1056,7 @@ function createSmartInbox(host) {
             }
           } else {
             const destination = P.target(selected.target || item.proposedTarget);
+            if (request.action === 'accept' && item.suggestion?.conflict) throw Error('多个项目存在冲突，请手动指定投递位置');
             if (request.action === 'accept' && !P.sameTarget(destination, item.proposedTarget)) throw Error('目标已改变，请使用纠正投递');
             if (source.detached) throw Error('来源已解除关联');
             await host.validateTarget(destination);
@@ -946,8 +1085,160 @@ function createSmartInbox(host) {
     if (['confirm_student', 'reassign_student', 'retry', 'restart_unknown'].includes(request.action) && results.some(r => r.ok)) setImmediate(() => tick().catch(e => host.onError?.(e)));
     host.changed?.(); return result;
   }
+  async function saveUserRule(input) {
+    await init();
+    return serial(async () => {
+      const previous = input.id ? userRules.get(String(input.id)) : null;
+      if (input.id && !previous) throw Error('规则不存在');
+      if (previous && Number(input.expectedVersion) !== Number(previous.version)) throw Error('规则已变化，请刷新后重试');
+      const validated = P.validateUserRule(input, previous);
+      const source = validated.sourceId ? sources.get(validated.sourceId) : null;
+      if (validated.sourceId && (!source || source.detached)) throw Error('规则来源不存在或已解除关联');
+      if (source?.studentId && source.studentId !== validated.studentId) throw Error('规则来源与学生范围不一致');
+      await host.context(validated.studentId, { mode: 'light' });
+      if (validated.target) await host.validateTarget(validated.target);
+      const record = { ...validated, id: previous?.id || crypto.randomUUID(), version: (previous?.version || 0) + 1,
+        createdAt: previous?.createdAt || iso(), updatedAt: iso() };
+      await save('user-rules', record);
+      const auditId = crypto.randomUUID();
+      await writeJsonAtomic(fileFor('rule-audit', auditId), { id: auditId, event: previous ? 'updated' : 'created',
+        at: iso(), ruleId: record.id, ruleVersion: record.version, before: previous, after: record });
+      host.changed?.(); return clone(record);
+    });
+  }
+  async function listUserRules(query = {}) {
+    await init(); const studentId = String(query.studentId || ''), sourceId = String(query.sourceId || '');
+    return [...userRules.values()].filter(rule => (!studentId || rule.studentId === studentId) && (!sourceId || rule.sourceId === sourceId))
+      .sort((a, b) => b.priority - a.priority || b.updatedAt.localeCompare(a.updatedAt)).map(clone);
+  }
+  async function listRuleSuggestions(query = {}) {
+    await init();
+    const studentId = String(query.studentId || ''), grouped = new Map();
+    for (const item of items.values()) {
+      if (!item.studentId || studentId && item.studentId !== studentId || !item.sourceId) continue;
+      const action = item.lastDecision?.action;
+      const isDelivery = item.status === 'delivered' && ['accept', 'correct'].includes(action) && item.target && item.identifier;
+      const isIgnore = item.status === 'ignored' && action === 'ignore' && item.conversationKind === 'internal_task';
+      if (!isDelivery && !isIgnore) continue;
+      const draft = { name: isIgnore ? '建议：忽略系统内部任务' : '建议：已确认项目标识', studentId: item.studentId,
+        sourceId: item.sourceId, sourceAgent: item.conversationSourceAgent || '',
+        conversationKind: isIgnore ? 'internal_task' : '', action: isIgnore ? 'ignore' : 'deliver',
+        target: isIgnore ? null : item.target, enabled: false, priority: 0,
+        includeWords: [], excludeWords: [], pathIncludes: [], extensions: [],
+        projectAliases: isDelivery ? [item.identifier] : [] };
+      const id = P.digest(draft), value = grouped.get(id) || { id, draft, examples: [], count: 0, feedback: { accept: 0, correct: 0, ignore: 0 } };
+      const fingerprint = item.fingerprint?.sha256 || item.id;
+      if (!value.examples.includes(fingerprint)) { value.examples.push(fingerprint); value.count++; value.feedback[action]++; }
+      grouped.set(id, value);
+    }
+    return [...grouped.values()].map(({ id, draft, count, feedback }) => ({ id, draft, count, feedback,
+      basis: draft.action === 'ignore' ? '人工忽略且结构化内容确认为内部任务' : '人工确认或纠正的目标与明确标识' }))
+      .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+  }
+  async function previewText(item, source) {
+    const resolved = await resolveSourceFile(source, item.locator);
+    const fingerprint = await hashStableFile(resolved.path);
+    if (identity(resolved.stat) !== item.identity && !item.fingerprint?.sha256) throw Error('原件版本已变化');
+    if (item.fingerprint?.sha256 && fingerprint.sha256 !== item.fingerprint.sha256) throw Error('原件指纹已变化');
+    if (item.snapshotPath && item.fingerprint?.sha256) {
+      if ((await hashStableFile(item.snapshotPath)).sha256 !== item.fingerprint.sha256) throw Error('快照校验失败');
+    }
+    const key = P.digest([item.studentId || item.sourceId, fingerprint.sha256, path.extname(item.name).toLowerCase(), host.extractorVersion || 'v1']);
+    const cached = await read(path.join(root, 'extractions', `${key}.json`), null);
+    if (cached?.schema === 3 && cached.sha256 === fingerprint.sha256 && typeof cached.result?.text === 'string') {
+      return { text: cached.result.text, fingerprint, source: 'existing_extraction_cache', truncated: Boolean(cached.result.truncated || cached.result.blocked) };
+    }
+    const extension = path.extname(item.name).toLowerCase();
+    if (!['.md', '.txt', '.csv'].includes(extension)) return { text: '', fingerprint, source: 'not_extracted', truncated: false };
+    const file = item.snapshotPath || resolved.path, buffer = await fs.readFile(file);
+    if (buffer.length > 200 * 1024) return { text: '', fingerprint, source: 'text_over_limit', truncated: true };
+    return { text: buffer.toString('utf8'), fingerprint, source: 'read_only_text', truncated: false };
+  }
+  async function previewOne(item, extraRule = null) {
+    const source = sources.get(item.sourceId);
+    const base = { id: item.id, revision: item.revision, sourceId: item.sourceId, sourceRevision: source?.revision || 0,
+      studentId: item.studentId, name: item.name, status: item.status, eligible: false, suggestedAction: 'confirm', reason: '' };
+    if (!source || source.detached) return { ...base, reason: '来源不存在或已解除关联' };
+    if (item.studentId && !P.studentScopeMatches(item, source)) return { ...base, reason: '来源学生已变化，请人工核对历史资料' };
+    if (!item.studentId || item.receipt || item.manualLocked || !['review', 'retry'].includes(item.status)
+      || ['execution_unknown', 'delivery_reconcile', 'delivering', 'analyzing'].includes(item.status)) return { ...base, reason: '记录状态、人工锁定或既有回执不允许重新处理' };
+    let data;
+    try { data = await previewText(item, source); } catch (error) { return { ...base, reason: error.message }; }
+    if (!data.text || data.truncated) return { ...base, fingerprint: data.fingerprint, reason: data.source === 'not_extracted' ? '试算不写入提取缓存；此格式需正式分析后判断' : '正文为空或超出试算限制' };
+    const conversation = inspectConversation(data.text, host.studentHints?.() || [], item.studentId);
+    if (conversation.studentConflict) return { ...base, fingerprint: data.fingerprint, reason: '正文涉及其他学生或多个学生，请确认所属学生后处理。' };
+    const context = await host.context(item.studentId, { mode: 'light' });
+    const activeRules = extraRule ? [...userRules.values()].filter(rule => !extraRule.id || rule.id !== extraRule.id).concat({ ...extraRule, id: extraRule.id || 'preview-rule', version: Number(extraRule.version || 1) }) : [...userRules.values()];
+    const match = P.matchUserRules({ rules: activeRules, source, item: { ...item, conversationKind: conversation.kind,
+      conversationSourceAgent: conversation.sourceAgent || '' }, text: data.text, context });
+    if (match.status === 'conflict') return { ...base, eligible: true, fingerprint: data.fingerprint, ruleStatus: match.status, reason: match.reason };
+    if (match.status === 'matched') return { ...base, eligible: true, fingerprint: data.fingerprint, suggestedAction: match.action,
+      target: match.target || null, ruleId: match.hit.rule.id, ruleVersion: match.hit.rule.version, ruleStatus: match.status, reason: match.reason };
+    const local = P.automaticTarget({ source, item: { ...item, fingerprint: data.fingerprint }, context, text: data.text,
+      suggestion: { candidates: [], sensitive: false, conflict: false, reason: '' }, rules: [...rules.values()],
+      routingV2Enabled: host.routingV2Enabled !== false, classificationAttempted: false });
+    if (local) return { ...base, eligible: true, fingerprint: data.fingerprint, suggestedAction: 'deliver', target: local.target,
+      reason: `本机确定性依据：${local.basis}` };
+    const candidates = P.selectRoutingCandidates({ context, text: data.text, item, ruleMatch: match });
+    const canRecallAll = Buffer.byteLength(JSON.stringify(context)) <= 100 * 1024;
+    const mayClassify = candidates.candidateIds.length || !context.projects.length || canRecallAll;
+    return { ...base, eligible: true, fingerprint: data.fingerprint, suggestedAction: mayClassify ? 'classify' : 'confirm',
+      candidateIds: candidates.candidateIds, candidates: candidates.candidates, candidateComplete: candidates.complete,
+      reason: !candidates.strong && context.projects.length > 5 && canRecallAll ? '将先检查全部授权项目并生成候选；试算不会调用Agent。'
+        : candidates.reason || (mayClassify ? '将仅加载受限上下文后调用分类器。' : '没有可靠候选项目。') };
+  }
+  async function previewBacklog(input = {}) {
+    await init();
+    let extraRule = null;
+    if (input.rule) extraRule = P.validateUserRule(input.rule, input.rule);
+    const requested = new Set((input.itemIds || []).map(String));
+    const trialStudentId = String(input.studentId || '');
+    const candidates = [...items.values()].filter(item => (!trialStudentId || item.studentId === trialStudentId) && (requested.size ? requested.has(item.id)
+      : item.status === 'review' && (['no_candidate', 'candidate_scope_too_large'].includes(item.reasonCode) || /项目上下文过多|候选项目过多|无法可靠缩小|没有足够的本机证据|包含敏感资料线索/.test(item.message || ''))));
+    const pageSize = 100, page = Math.max(1, Math.floor(Number(input.page) || 1));
+    const results = [];
+    for (const item of candidates.slice((page - 1) * pageSize, page * pageSize)) { results.push(await previewOne(item, extraRule)); await yieldTurn(); }
+    const previewId = crypto.randomUUID(), expiresAt = new Date(now() + 15 * 60_000).toISOString();
+    previews.set(previewId, { previewId, expiresAt, results, draftRule: Boolean(extraRule), ruleSetVersion: userRuleVersion() });
+    for (const [id, preview] of previews) if (Date.parse(preview.expiresAt) <= now()) previews.delete(id);
+    const counts = results.reduce((value, result) => { const key = result.eligible ? result.suggestedAction : 'ineligible'; value[key] = (value[key] || 0) + 1; return value; }, {});
+    return { previewId, expiresAt, ruleSetVersion: userRuleVersion(), total: candidates.length, page, pageSize, counts, results };
+  }
+  async function applyPreview(input = {}) {
+    await init();
+    if (input.confirmed !== true) throw Error('必须明确确认后才能重新处理试算项');
+    const preview = previews.get(String(input.previewId || ''));
+    if (!preview || Date.parse(preview.expiresAt) <= now()) throw Error('试算已过期，请重新试算');
+    if (preview.draftRule) throw Error('规则草稿仅供试算，请先保存规则后重新试算');
+    if (preview.ruleSetVersion !== userRuleVersion()) throw Error('规则版本已变化，请重新试算');
+    const requested = new Set((input.itemIds || []).map(String));
+    if (!requested.size || requested.size > 100) throw Error('确认处理范围无效');
+    const results = [];
+    for (const entry of preview.results.filter(result => requested.has(result.id))) {
+      await withItemLock(entry.id, async () => {
+        try {
+          const item = items.get(entry.id), source = item && sources.get(item.sourceId);
+          if (!entry.eligible || !item || !source || item.revision !== entry.revision || source.revision !== entry.sourceRevision
+            || item.receipt || item.manualLocked || !['review', 'retry'].includes(item.status)) throw Error('记录已变化或不再满足安全处理条件');
+          await checkCurrent(item, source);
+          const original = await resolveSourceFile(source, item.locator);
+          const currentFingerprint = await hashStableFile(original.path);
+          if (!entry.fingerprint?.sha256 || currentFingerprint.sha256 !== entry.fingerprint.sha256
+            || item.fingerprint?.sha256 && item.fingerprint.sha256 !== entry.fingerprint.sha256) throw Error('原件指纹已变化');
+          await save('sources', { ...source, manualWork: true });
+          const saved = await save('items', { ...item, status: 'pending', revision: item.revision + 1, nextRetryAt: '',
+            suggestion: null, proposedTarget: null, blockReason: null, execution: null,
+            trialConfirmation: { previewId: preview.previewId, ruleSetVersion: preview.ruleSetVersion, at: iso() },
+            message: '已按只读试算确认重新处理；正式处理仍会再次核对原件、范围、回执和规则版本。' });
+          results.push({ id: entry.id, ok: true, revision: saved.revision });
+        } catch (error) { results.push({ id: entry.id, ok: false, message: error.message }); }
+      });
+    }
+    if (results.some(result => result.ok)) setImmediate(() => tick().catch(error => host.onError?.(error)));
+    host.changed?.(); return { results };
+  }
   return {
-    init, bootstrap, syncConversationRouting, updateSource, tick, decide,
+    init, bootstrap, syncConversationRouting, updateSource, tick, decide, saveUserRule, listUserRules, listRuleSuggestions, previewBacklog, applyPreview,
     async intakeManual(sourceId, entries) {
       await init();
       return serial(async () => {
@@ -1043,17 +1334,26 @@ function createSmartInbox(host) {
     async list(query = {}) {
       await init(); const rows = [], sourceId = String(query.sourceId || ''), scope = String(query.studentId || '');
       const page = Math.max(1, Math.floor(Number(query.page) || 1)), size = 25;
-      for (const i of items.values()) {
+      const requestedGroup = String(query.reasonGroup || ''), reasonCounts = {};
+      let indexed = null;
+      // Group counts must cover the entire filtered scope, not just an indexed page.
+      try { if (!query.includeReasonCounts && !requestedGroup) indexed = readIndex?.list({ studentId: scope, sourceId, status: query.status, page, size }) || null; }
+      catch { try { readIndex?.close(); } catch {} readIndex = null; }
+      for (const i of indexed ? indexed.ids.map(id => items.get(id)).filter(Boolean) : items.values()) {
         if (sourceId && i.sourceId !== sourceId || scope && i.studentId && i.studentId !== scope) continue;
         if (query.status === 'delivered' ? i.status !== 'delivered' : query.status === 'ignored' ? i.status !== 'ignored' : ['delivered', 'ignored'].includes(i.status)) continue;
+        const group = reasonGroup(i); reasonCounts[group] = (reasonCounts[group] || 0) + 1;
+        if (requestedGroup && group !== requestedGroup) continue;
         rows.push(i);
       }
       rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      return { total: rows.length, page, pageSize: size, rows: rows.slice((page - 1) * size, page * size).map(i => ({
-        id: i.id, sourceId: i.sourceId, sourceName: sources.get(i.sourceId)?.name, sourceType: i.sourceType, studentId: i.studentId, name: i.name, size: i.size, status: i.status, revision: i.revision, automationDisposition: i.automationDisposition || '', originalMissing: Boolean(i.originalMissing),
+      return { total: indexed ? indexed.total : rows.length, page, pageSize: size, reasonCounts, rows: (indexed ? rows : rows.slice((page - 1) * size, page * size)).map(i => ({
+        id: i.id, sourceId: i.sourceId, sourceName: sources.get(i.sourceId)?.name, sourceType: i.sourceType, studentId: i.studentId, name: i.name, size: i.size, status: i.status, reasonCode: i.reasonCode || '', reasonGroup: reasonGroup(i), revision: i.revision, automationDisposition: i.automationDisposition || '', originalMissing: Boolean(i.originalMissing),
         blockReason: i.blockReason || null, execution: i.execution ? { stage: i.execution.stage, providerId: i.execution.providerId,
           switched: Boolean(i.execution.switched || i.execution.attempts?.some(a => a.providerId && a.providerId !== i.execution.providerId)) } : null,
-        message: i.status === 'pending' && sources.get(i.sourceId)?.waitingReason || i.message, proposedTarget: i.proposedTarget, target: i.target, reason: i.status === 'pending' ? sources.get(i.sourceId)?.waitingReason || i.message : i.originalMissing || i.extractionPartial || i.associationChange?.retained ? i.message : i.suggestion?.candidates[0]?.reason || i.message, manualLocked: i.manualLocked,
+        message: i.status === 'pending' && sources.get(i.sourceId)?.waitingReason || i.message, proposedTarget: i.proposedTarget, target: i.target,
+        suggestionConflict: Boolean(i.suggestion?.conflict), candidateTargets: i.suggestion?.conflict ? (i.suggestion.candidates || []).map(({ studentId, type, id, categoryId }) => ({ studentId, type, id, categoryId })) : [],
+        reason: i.status === 'pending' ? sources.get(i.sourceId)?.waitingReason || i.message : i.originalMissing || i.extractionPartial || i.associationChange?.retained ? i.message : i.suggestion?.conflict ? i.suggestion.reason || i.message : i.suggestion?.candidates[0]?.reason || i.message, manualLocked: i.manualLocked,
         reconcileAttempts: Number(i.reconcileAttempts || 0), reconcileExhausted: ['execution_unknown', 'delivery_reconcile'].includes(i.status) && Number(i.reconcileAttempts || 0) >= 3, createdAt: i.createdAt,
       })) };
     },
@@ -1063,7 +1363,7 @@ function createSmartInbox(host) {
       if (i.receipt) { await verifyReceipt(i, i.receipt); return i.receipt.path; }
       const file = i.archivePath || (await resolveItemFile(i, source)).path;
       if (i.archivePath && (await hashStableFile(file)).sha256 !== i.fingerprint.sha256) throw Error('归档原件已变化'); return file; },
-    async close() { closed = true; await active?.catch(() => {}); await commands.catch(() => {}); },
+    async close() { closed = true; await active?.catch(() => {}); await commands.catch(() => {}); try { readIndex?.close(); } catch {} readIndex = null; },
   };
 }
-module.exports = { createSmartInbox, identity, within };
+module.exports = { createSmartInbox, identity, within, reasonGroup };

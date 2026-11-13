@@ -66,8 +66,11 @@ function createSmartInboxHost(h) {
     if (typeof h.materialCategories === 'function') return await h.materialCategories(project) || [];
     return await h.materialHost(project).store.readCategories?.() || [];
   }
-  async function context(id) {
+  async function context(id, options = {}) {
     const s = id ? student(id) : null, projects = [];
+    const mode = options.mode || 'full';
+    const requested = new Set((options.projectIds || []).map(String));
+    if (mode === 'details' && (requested.size < 1 || requested.size > 5)) throw Error('候选项目范围无效');
     const candidates = h.projects().filter(p => !['sealed', 'archived'].includes(p.status)
       && (!id || p.studentIds?.map(String).includes(String(id))));
     for (const p of candidates) {
@@ -76,13 +79,19 @@ function createSmartInboxHost(h) {
         try { student(studentId); return true; } catch { return false; }
       }))].sort();
       if (!activeStudentIds.length || id && !activeStudentIds.includes(String(id))) continue;
+      const base = { id: String(p.id), name: p.name, summary: String(p.description || p.goal || '').slice(0, 600),
+        studentIds: activeStudentIds,
+        identifiers: [...new Set([String(p.id), String(p.name || ''), ...(p.aliases || [])].filter(value => value.length >= 3))],
+        aliases: [...new Set((p.aliases || []).map(String).filter(Boolean))], recentActivityAt: String(p.updatedAt || '') };
+      if (mode === 'light' || mode === 'details' && !requested.has(String(p.id))) {
+        if (mode === 'light') projects.push(base);
+        continue;
+      }
       const routingContext = h.isWorkspace(p) && typeof h.materialRoutingContext === 'function'
         ? await h.materialRoutingContext(p) : null;
       const categories = routingContext?.categories || (h.isWorkspace(p) ? await readProjectCategories(p) : []);
       const index = { categories };
-      projects.push({ id: String(p.id), name: p.name, summary: String(p.description || p.goal || '').slice(0, 600),
-        studentIds: activeStudentIds,
-        identifiers: [...new Set([String(p.id), String(p.name || '')].filter(value => value.length >= 3))],
+      projects.push({ ...base,
         categories: h.isWorkspace(p) ? categoryDefinitions(p, index).map(c => ({ categoryId: c.categoryId, name: c.name })) : [],
         materialTerms: (routingContext?.materialTerms || []).slice(0, 200),
         knowledgeTerms: (routingContext?.knowledgeTerms || []).slice(0, 100),
@@ -93,7 +102,35 @@ function createSmartInboxHost(h) {
     // credentials or another student's profile to the classifier.
     return { studentId: String(s?.id || ''), basic: { grade: String(s?.grade || ''), curriculum: String(s?.curriculum || '') }, projects,
       profile: s ? { summary: String(s.interests || '').slice(0, 600), source: 'student_account', confirmed: false,
-        growth: await h.profile?.(s) || null } : { summary: '', source: 'shared_intake', confirmed: false, growth: null } };
+        growth: mode === 'light' ? null : await h.profile?.(s) || null } : { summary: '', source: 'shared_intake', confirmed: false, growth: null },
+      contextMode: mode, totalProjects: candidates.length };
+  }
+  async function fingerprintProjects(id, sha256) {
+    if (!/^[a-f0-9]{64}$/i.test(String(sha256 || ''))) return [];
+    student(id);
+    const matches = [];
+    for (const project of h.projects().filter(project => !['sealed', 'archived'].includes(project.status)
+      && project.studentIds?.map(String).includes(String(id)))) {
+      if (!h.isWorkspace(project) || typeof h.materialRoutingContext !== 'function') continue;
+      const routing = await h.materialRoutingContext(project);
+      if ((routing?.historicalAssociations || []).some(association => association.sha256 === sha256)) matches.push(String(project.id));
+    }
+    return matches;
+  }
+  async function workspaceCandidates(id, paths) {
+    if (!id) return []; student(id);
+    const actual = [];
+    for (const value of paths || []) {
+      if (!value || !path.isAbsolute(value)) continue;
+      try { actual.push((await fs.realpath(value)).toLocaleLowerCase()); } catch { /* unavailable hints are not evidence */ }
+    }
+    if (!actual.length) return [];
+    const matches = [];
+    for (const project of h.projects().filter(p => !['sealed', 'archived'].includes(p.status) && p.studentIds?.map(String).includes(String(id)))) {
+      if (!project.workspacePath || !path.isAbsolute(project.workspacePath)) continue;
+      try { if (actual.includes((await fs.realpath(project.workspacePath)).toLocaleLowerCase())) matches.push(String(project.id)); } catch { /* no match */ }
+    }
+    return matches;
   }
   async function resolveEvent(source, locator) {
     student(source.studentId);
@@ -107,8 +144,10 @@ function createSmartInboxHost(h) {
     return { path: file, stat };
   }
   const engine = createSmartInbox({
-    directory: h.directory, forbiddenRoots: h.forbiddenRoots, context, automaticAllowed: h.automaticAllowed,
+    directory: h.directory, forbiddenRoots: h.forbiddenRoots, context, fingerprintProjects, workspaceCandidates, automaticAllowed: h.automaticAllowed,
+    studentHints: () => (h.students?.() || []).filter(s => !s.archived && s.status !== 'archived').map(s => ({ id: String(s.id), name: String(s.name || '') })),
     routingV2Enabled: h.routingV2Enabled !== false,
+    canReuseReceipt: target => { const project = h.projects().find(p => String(p.id) === target.id); return Boolean(project && h.isWorkspace(project)); },
     acquire: h.acquire, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch,
     settleItems: h.settleItems, changed: h.changed, onError: h.onError,
     extractorVersion: EXTRACTOR_VERSION,
@@ -188,7 +227,7 @@ function createSmartInboxHost(h) {
     },
     reconcile: item => h.reconcile(item),
   });
-  return { engine, context, routing, async initialize() {
+  return { engine, context, workspaceCandidates, routing, async initialize() {
     await engine.bootstrap({ legacy: await h.legacySettings(), students: h.students() }); await engine.recover();
   } };
 }

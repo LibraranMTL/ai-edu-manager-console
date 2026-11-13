@@ -1,6 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
-const ROUTING_POLICY_VERSION = 'smart-inbox-routing-v2';
+const ROUTING_POLICY_VERSION = 'smart-inbox-routing-v5';
 const DEFAULT_SCHEDULE = Object.freeze({ mode: 'daily', time: '20:00', weekday: 1, minutes: 1440 });
 const EXTRACTABLE = new Set(['.txt', '.md', '.csv', '.docx', '.xlsx', '.pptx', '.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp']);
 const digest = value => crypto.createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -56,17 +56,145 @@ function identifiers(text, projects) {
   return projects.filter(project => [String(project.id), ...(project.identifiers || [])].some(id => id.length >= 3 &&
     new RegExp(`(^|[^\\p{L}\\p{N}_-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}_-])`, 'u').test(text)));
 }
-function risks(text) {
-  return /身份证|病历|诊断报告|银行卡|银行账户|医疗记录|护照号码|medical record|passport number|bank account/i.test(text);
+const normalizedList = value => [...new Set((Array.isArray(value) ? value : []).map(v => String(v || '').trim()).filter(Boolean))];
+function validateUserRule(input, previous = null) {
+  const action = String(input.action || previous?.action || 'deliver');
+  if (!['deliver', 'ignore'].includes(action)) throw Error('规则动作无效');
+  const studentId = String(input.studentId ?? previous?.studentId ?? '');
+  if (!studentId) throw Error('规则必须限定学生');
+  const targetValue = input.target === null ? null : input.target || previous?.target || null;
+  const rule = {
+    id: String(input.id || previous?.id || ''), name: String(input.name ?? previous?.name ?? '').trim().slice(0, 120),
+    studentId, sourceId: String(input.sourceId ?? previous?.sourceId ?? ''), action,
+    target: action === 'deliver' ? target(targetValue) : null,
+    enabled: Boolean(input.enabled ?? previous?.enabled ?? true), priority: Math.max(-1000, Math.min(1000, Math.trunc(Number(input.priority ?? previous?.priority ?? 0) || 0))),
+    includeWords: normalizedList(input.includeWords ?? previous?.includeWords).slice(0, 50),
+    excludeWords: normalizedList(input.excludeWords ?? previous?.excludeWords).slice(0, 50),
+    pathIncludes: normalizedList(input.pathIncludes ?? previous?.pathIncludes).slice(0, 30),
+    extensions: normalizedList(input.extensions ?? previous?.extensions).map(v => (v.startsWith('.') ? v : `.${v}`).toLowerCase()).slice(0, 30),
+    projectAliases: normalizedList(input.projectAliases ?? previous?.projectAliases).slice(0, 30),
+    sourceAgent: String(input.sourceAgent ?? previous?.sourceAgent ?? '').trim().toLowerCase().slice(0, 120),
+    conversationKind: String(input.conversationKind ?? previous?.conversationKind ?? ''),
+  };
+  if (!['', 'internal_task', 'conversation', 'document'].includes(rule.conversationKind)) throw Error('会话类型无效');
+  if (!rule.name) throw Error('规则名称不能为空');
+  if (rule.target && rule.target.studentId !== studentId) throw Error('规则目标与学生范围不一致');
+  if (![rule.includeWords, rule.excludeWords, rule.pathIncludes, rule.extensions, rule.projectAliases].some(values => values.length)
+    && !rule.sourceId && !rule.sourceAgent && !rule.conversationKind) throw Error('规则至少需要来源或一个匹配条件');
+  if (action === 'ignore' && !rule.includeWords.length && !rule.pathIncludes.length && !rule.extensions.length && rule.conversationKind !== 'internal_task') {
+    throw Error('忽略规则必须包含正文、路径或文件类型条件');
+  }
+  return rule;
+}
+function matchUserRules({ rules = [], source, item, text = '', context }) {
+  const body = String(text), locator = `${item.name || ''}\n${item.locator || ''}`.toLocaleLowerCase(), extension = require('node:path').extname(String(item.name || '')).toLowerCase();
+  const explicit = identifiers(body, context.projects || []);
+  const hits = [];
+  for (const value of rules) {
+    if (!value?.enabled || String(value.studentId) !== String(item.studentId || source.studentId || '')
+      || value.sourceId && value.sourceId !== source.id) continue;
+    let rule; try { rule = validateUserRule(value, value); } catch { continue; }
+    if (rule.sourceAgent && rule.sourceAgent !== String(item.conversationSourceAgent || '').toLowerCase()
+      || rule.conversationKind && rule.conversationKind !== item.conversationKind) continue;
+    const aliasHits = rule.projectAliases.filter(word => body.includes(word) || locator.includes(word.toLocaleLowerCase()));
+    const includeHits = rule.includeWords.filter(word => body.includes(word));
+    const excludeHits = rule.excludeWords.filter(word => body.includes(word));
+    const pathHits = rule.pathIncludes.filter(word => locator.includes(word.toLocaleLowerCase()));
+    const extensionHit = !rule.extensions.length || rule.extensions.includes(extension);
+    if (rule.includeWords.length && !includeHits.length || rule.pathIncludes.length && !pathHits.length
+      || rule.extensions.length && !extensionHit || rule.projectAliases.length && !aliasHits.length || excludeHits.length) continue;
+    hits.push({ rule, includeHits, pathHits, aliasHits, extensionHit, evidence: [...includeHits, ...pathHits, ...aliasHits, ...(rule.extensions.length ? [extension] : []), ...(rule.conversationKind ? [`类型：${rule.conversationKind}`] : []), ...(rule.sourceAgent ? [`Agent：${rule.sourceAgent}`] : [])] });
+  }
+  hits.sort((a, b) => b.rule.priority - a.rule.priority || String(a.rule.id).localeCompare(String(b.rule.id)));
+  if (!hits.length) return { status: 'none', hits: [], explicitProjectIds: explicit.map(p => p.id) };
+  const top = hits.filter(hit => hit.rule.priority === hits[0].rule.priority);
+  const signatures = new Set(top.map(hit => hit.rule.action === 'ignore' ? 'ignore' : `deliver:${hit.rule.target.studentId}:${hit.rule.target.type}:${hit.rule.target.id}:${hit.rule.target.categoryId}`));
+  if (signatures.size > 1) return { status: 'conflict', hits: top, reason: '同优先级规则给出不同动作或目标，请人工确认。', explicitProjectIds: explicit.map(p => p.id) };
+  const selected = top[0];
+  if (selected.rule.action === 'deliver' && selected.rule.target.type === 'project' && explicit.length
+    && !explicit.some(project => project.id === selected.rule.target.id)) {
+    return { status: 'conflict', hits: top, reason: '规则目标与正文中的明确项目标识矛盾，请人工确认。', explicitProjectIds: explicit.map(p => p.id) };
+  }
+  if (selected.rule.action === 'ignore' && explicit.length) {
+    return { status: 'conflict', hits: top, reason: '忽略规则与正文中的明确学习项目证据矛盾，请人工确认。', explicitProjectIds: explicit.map(p => p.id) };
+  }
+  return { status: 'matched', action: selected.rule.action, target: selected.rule.target, hit: selected, hits: top,
+    reason: `命中规则“${selected.rule.name}”：${selected.evidence.join('、') || '来源范围'}`, explicitProjectIds: explicit.map(p => p.id) };
+}
+function selectRoutingCandidates({ context, text = '', item = {}, ruleMatch = null, limit = 5 }) {
+  const projects = context.projects || [], explicit = identifiers(text, projects), scores = new Map();
+  const add = (id, points, evidence) => { const old = scores.get(id) || { id, score: 0, evidence: [] }; old.score += points; if (evidence) old.evidence.push(evidence); scores.set(id, old); };
+  for (const project of explicit) add(project.id, 100, '正文明确项目标识');
+  if (ruleMatch?.target?.type === 'project') add(ruleMatch.target.id, 120, `规则：${ruleMatch.hit?.rule?.name || ''}`);
+  const haystack = `${item.name || ''}\n${item.locator || ''}\n${text}`.toLocaleLowerCase();
+  // These equivalences and bigrams are weak retrieval hints only. They cannot
+  // exclude an authorized project or establish automatic delivery evidence.
+  const normalizeHints = value => String(value).toLocaleLowerCase().replace(/摆锤/g, '单摆').replace(/课桌/g, '学习桌');
+  const hintText = normalizeHints(haystack);
+  const commonBigrams = new Set(['研究', '实验', '设计', '项目', '资料', '学生', '学习', '分析', '模型', '记录', '测试', '进行', '使用', '关系', '影响']);
+  for (const project of projects) {
+    for (const value of [project.name, ...(project.identifiers || []), ...(project.aliases || [])].filter(Boolean)) {
+      const word = String(value).toLocaleLowerCase(); if (word.length >= 3 && haystack.includes(word)) add(project.id, 20, `名称或别名：${value}`);
+    }
+    const summaryTerms = String(project.summary || '').split(/[\s,，。；;、:：/\\|()[\]{}]+/u).filter(v => v.length >= 3).slice(0, 20);
+    const matched = summaryTerms.filter(word => String(text).includes(word)).slice(0, 5);
+    if (matched.length) add(project.id, matched.length, `简介词：${matched.join('、')}`);
+    // Weak local recall is for suggestions only; it cannot prove that projects
+    // outside the selected window are unrelated or authorize automatic routing.
+    const words = `${project.name || ''} ${project.summary || ''}`.toLocaleLowerCase().match(/[\p{Script=Han}]{2,}|[a-z0-9][a-z0-9._-]{2,}/gu) || [];
+    const fragments = new Set();
+    for (const word of words.slice(0, 30)) {
+      if (/^[\p{Script=Han}]+$/u.test(word) && word.length >= 4) {
+        for (let n = 0; n <= word.length - 3; n++) fragments.add(word.slice(n, n + 3));
+      } else if (word.length >= 3) fragments.add(word);
+    }
+    const hits = [...fragments].filter(fragment => haystack.includes(fragment)).slice(0, 5);
+    if (hits.length >= 2) add(project.id, hits.length, `本机词片段：${hits.join('、')}`);
+    const bigrams = new Set();
+    for (const word of normalizeHints(`${project.name || ''} ${project.summary || ''} ${(project.aliases || []).join(' ')}`).match(/[\p{Script=Han}]{2,}/gu) || []) {
+      for (let n = 0; n < word.length - 1; n++) if (!commonBigrams.has(word.slice(n, n + 2))) bigrams.add(word.slice(n, n + 2));
+    }
+    const hintHits = [...bigrams].filter(value => hintText.includes(value)).slice(0, 5);
+    if (hintHits.length >= 2) add(project.id, hintHits.length, `本机主题线索：${hintHits.join('、')}`);
+  }
+  const ranked = [...scores.values()].sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
+  // A small authorized scope fits in full. A weak lexical hit is a ranking
+  // hint, not permission to omit competing projects while claiming coverage.
+  if (projects.length <= limit) {
+    const seen = new Set(ranked.map(value => value.id));
+    const all = [...ranked, ...projects.filter(project => !seen.has(project.id)).map(project => ({ id: project.id, score: 0, evidence: [] }))];
+    return { candidateIds: all.map(value => value.id), candidates: all, totalProjects: projects.length,
+      complete: true, strong: ranked.some(value => value.score >= 100), reason: '' };
+  }
+  if (!ranked.length) return { candidateIds: [], candidates: [], totalProjects: projects.length, complete: projects.length <= limit,
+    reason: projects.length <= limit ? '' : '没有足够的本机证据将项目缩小到安全候选范围。' };
+  const boundary = ranked[Math.min(limit, ranked.length) - 1]?.score;
+  const tiedBeyondLimit = ranked.length > limit && ranked[limit].score === boundary;
+  if (tiedBeyondLimit) return { candidateIds: [], candidates: ranked, totalProjects: projects.length, complete: false, reason: '候选项目在截断边界上证据相同，未强行排除。' };
+  const selected = ranked.slice(0, limit);
+  const strong = selected.some(value => value.score >= 100);
+  return { candidateIds: selected.map(v => v.id), candidates: selected, totalProjects: projects.length,
+    complete: projects.length <= limit || strong && !ranked.slice(limit).some(value => value.score >= selected[selected.length - 1].score), strong,
+    reason: selected.length < projects.length ? `已由本机证据缩小为 ${selected.length} 个候选项目。` : '' };
+}
+function boundedRoutingContext(context, text) {
+  const matches = identifiers(text, context.projects || []);
+  if (matches.length > 5 || (!matches.length && context.projects.length > 5)) {
+    return { context: null, reason: '候选项目过多，无法可靠缩小范围，请确认项目。', candidateIds: matches.map(p => p.id) };
+  }
+  const selected = context.projects.length <= 5 ? context.projects : matches;
+  const compact = { ...context, profile: { summary: String(context.profile?.summary || '').slice(0, 300), source: context.profile?.source || '', confirmed: false },
+    projects: selected.map(p => ({ ...p, summary: String(p.summary || '').slice(0, 300),
+      categories: (p.categories || []).slice(0, 20), materialTerms: (p.materialTerms || []).slice(0, 12),
+      knowledgeTerms: (p.knowledgeTerms || []).slice(0, 12), historicalAssociations: [] })) };
+  if (Buffer.byteLength(JSON.stringify(compact)) > 100 * 1024) return { context: null, reason: '候选项目内容仍过多，请确认项目。', candidateIds: selected.map(p => p.id) };
+  return { context: compact, candidateIds: selected.map(p => p.id), totalProjects: context.projects.length, compressed: selected.length !== context.projects.length || Buffer.byteLength(JSON.stringify(compact)) < Buffer.byteLength(JSON.stringify(context)) };
 }
 function validateSuggestion(result, context, text) {
   const allowed = new Set(['candidates', 'sensitive', 'conflict', 'reason']);
   if (!result || !Array.isArray(result.candidates) || result.candidates.length > 3) throw Error('分类结果不符合受控合同');
   if (typeof result.sensitive !== 'boolean' || typeof result.conflict !== 'boolean' || typeof result.reason !== 'string') throw Error('分类风险字段无效');
-  // Sensitive content remains local. A project conflict is no longer itself a
-  // reason to throw away valid evidence: the host resolves it deterministically.
-  if (result.sensitive) return { candidates: [], sensitive: result.sensitive,
-    conflict: result.conflict, reason: result.reason.slice(0, 500) };
+  // Legacy sensitive flags are retained for compatibility, not a routing gate.
   if (result.conflict && result.candidates.some(c => !c || typeof c.score !== 'number'
     || typeof c.evidence !== 'string' || typeof c.reason !== 'string')) {
     return { candidates: [], sensitive: result.sensitive, conflict: true, reason: result.reason.slice(0, 500) };
@@ -96,17 +224,16 @@ function validateSuggestion(result, context, text) {
   return { candidates, sensitive: result.sensitive, conflict: result.conflict, reason: result.reason.slice(0, 500) };
 }
 function automaticTarget({ source, item, context, text, suggestion, rules = [], routingV2Enabled = true,
-  classificationAttempted = true, sensitiveLocalOnly = false }) {
-  const sensitive = risks(text) || suggestion?.sensitive;
+  classificationAttempted = true }) {
   if (!source.automatic || item.manualLocked || item.truncated || item.extractionBlocked || item.originalMissing
-    || !text.trim() || sensitive && !sensitiveLocalOnly) return null;
+    || !text.trim()) return null;
   const explicit = identifiers(text, context.projects);
   if (!routingV2Enabled && (suggestion?.conflict || explicit.length > 1)) return null;
   const projectTarget = (candidate, basis, provisional = false) => {
     const project = context.projects.find(value => value.id === candidate.id);
     if (!project) return null;
     const linkedStudentIds = [...new Set((project.studentIds || [source.studentId]).map(String).filter(Boolean))].sort();
-    if (!linkedStudentIds.length || sensitiveLocalOnly && linkedStudentIds.length > 1) return null;
+    if (!linkedStudentIds.length) return null;
     const primaryStudentId = linkedStudentIds.includes(String(source.studentId))
       ? String(source.studentId) : linkedStudentIds[0] || String(candidate.studentId || source.studentId);
     return { target: target({ ...candidate, studentId: primaryStudentId, linkedStudentIds,
@@ -129,6 +256,7 @@ function automaticTarget({ source, item, context, text, suggestion, rules = [], 
     || (project.historicalAssociations || []).some(association => association.sha256
       && association.sha256 === item.fingerprint?.sha256));
   if (sameContentProjects.length) {
+    if (sameContentProjects.length > 1) return null;
     const selected = [...sameContentProjects].sort((left, right) => String(left.id).localeCompare(String(right.id)))[0];
     return projectTarget({ studentId: source.studentId || selected.studentIds?.[0] || '', type: 'project',
       id: selected.id, categoryId: '', score: 1, evidence: '' },
@@ -151,26 +279,21 @@ function automaticTarget({ source, item, context, text, suggestion, rules = [], 
     'verified_project_identifier');
   }
   if (explicit.length > 1) {
-    if (!classificationAttempted) return null;
-    const suggested = suggestion?.candidates?.find(candidate => candidate?.type === 'project'
-      && explicit.some(project => project.id === candidate.id));
-    const selected = suggested || [...explicit].sort((left, right) => String(left.id).localeCompare(String(right.id)))[0];
-    return projectTarget({ studentId: selected.studentId || source.studentId || selected.studentIds?.[0] || '',
-      type: 'project', id: selected.id, categoryId: selected.categoryId || '', score: selected.score || 1,
-      evidence: selected.evidence || selected.identifiers?.find(value => text.includes(value)) || selected.name || selected.id },
-    suggested ? 'explicit_project_conflict_ranked' : 'explicit_project_conflict_deterministic', true);
+    return null;
   }
   const [first, second] = suggestion?.candidates || [];
   const conflictResolution = suggestion?.conflict === true;
-  if (first?.type === 'student' && first.studentId === source.studentId && first.score >= .5
+  if (conflictResolution || (second && first && first.type === 'project' && second.type === 'project' && first.score - second.score < .10)) return null;
+  const configuredMinimum = confidenceThreshold(source.confidenceThreshold ?? .85);
+  if (first?.type === 'student' && first.studentId === source.studentId && first.score >= configuredMinimum
+    && (!second || first.score - second.score >= .10)
     && first.evidence && text.includes(first.evidence)) {
     return { target: target(first), basis: 'student_raw_fallback', resolutionBasis: 'student_raw_fallback',
       provisional: true, policyVersion: ROUTING_POLICY_VERSION, matchedProjectId: '',
       primaryStudentId: source.studentId, linkedStudentIds: [source.studentId],
       confidence: first.score, evidence: first.evidence };
   }
-  const configuredMinimum = confidenceThreshold(source.confidenceThreshold ?? .85);
-  const minimum = conflictResolution ? .5 : routingV2Enabled ? .65 : configuredMinimum;
+  const minimum = configuredMinimum;
   const confidentCategory = first?.score >= configuredMinimum && first.score - (second?.score || 0) >= .10;
   if (!first || first.type !== 'project'
     || first.score < minimum
@@ -192,4 +315,4 @@ const ROUTING_SCHEMA = { type: 'object', additionalProperties: false, required: 
     },
   } },
 } };
-module.exports = { ROUTING_POLICY_VERSION, DEFAULT_SCHEDULE, EXTRACTABLE, digest, schedule, nextRun, target, sameTarget, studentScopeMatches, identifiers, risks, validateSuggestion, automaticTarget, confidenceThreshold, ROUTING_SCHEMA };
+module.exports = { ROUTING_POLICY_VERSION, DEFAULT_SCHEDULE, EXTRACTABLE, digest, schedule, nextRun, target, sameTarget, studentScopeMatches, identifiers, validateUserRule, matchUserRules, selectRoutingCandidates, boundedRoutingContext, validateSuggestion, automaticTarget, confidenceThreshold, ROUTING_SCHEMA };

@@ -33,6 +33,11 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
+object CloudSourceIntegrityPolicy {
+    fun objectId(category: String, localId: String): String =
+        if (localId == "*") localId else "$category:$localId"
+}
+
 data class CloudReportStatus(val configured: Boolean, val enabled: Boolean, val cloudStudentId: String,
     val lastSyncAt: Long, val lastError: String, val pendingServerState: String, val materialCategories: Set<String>,
     val profileFields: Set<String>, val authorizationPurpose: String, val authorizationExpiresAt: Long)
@@ -479,7 +484,8 @@ class CloudReportSync(private val context: Context) {
     }
 
     private fun setSourceIntegrity(cloudStudentId: String, category: String, objectId: String, action: String, hash: String = "") {
-        val body = JSONObject().put("category", category).put("objectId", objectId).put("action", action)
+        val body = JSONObject().put("category", category)
+            .put("objectId", CloudSourceIntegrityPolicy.objectId(category, objectId)).put("action", action)
         if (hash.isNotBlank()) body.put("contentSha256", hash)
         post(server(), "/v2/students/$cloudStudentId/source-integrity", token(), body)
     }
@@ -491,7 +497,7 @@ class CloudReportSync(private val context: Context) {
             requestMethod = "POST"; connectTimeout = 15000; readTimeout = 15000; instanceFollowRedirects = false
             doOutput = true; setFixedLengthStreamingMode(bytes.size); setRequestProperty("Content-Type", contentType)
             setRequestProperty("X-Document-Name", java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20"))
-            setRequestProperty("X-Material-Category", category); setRequestProperty("X-Material-Id", "$category:$reportId")
+            setRequestProperty("X-Material-Category", category); setRequestProperty("X-Material-Id", CloudSourceIntegrityPolicy.objectId(category, reportId))
             setRequestProperty("X-Idempotency-Key", "android:$localStudentId:$category:$reportId:${hash.take(24)}")
             if (projectId.isNotBlank()) {
                 setRequestProperty("X-Project-Id", projectId)

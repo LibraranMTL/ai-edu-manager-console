@@ -1,7 +1,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive, BookOpen, Bot, CheckCircle2, FileText, FolderOpen, HardDrive, Lightbulb,
-  Play, Power, RefreshCw, RotateCcw, Search, ShieldCheck, Users,
+  Pause, Play, Power, RefreshCw, RotateCcw, Search, ShieldCheck, Users,
 } from 'lucide-react';
 import './project-materials.css';
 
@@ -81,7 +81,8 @@ type MaterialAutomationOverview = {
   needsConfirmation: number;
   errors: number;
   digestPendingContentCount: number;
-  automation: { enabled: boolean; autoAdoptPathClassified: boolean; autoDigest: boolean; maxBatch: number };
+  automation: { enabled: boolean; processingPaused: boolean; autoAdoptPathClassified: boolean;
+    autoDigest: boolean; maxBatch: number; onWorkspaceChange?: boolean; intervalMinutes?: number };
   job: null | { jobId: string; status: string; phase: string; processed: number; total: number; message: string };
 };
 type Suggestion = {
@@ -104,7 +105,8 @@ type AdoptionResult = { ok: boolean; partial?: boolean; updated?: number; messag
 type OrganizationItem = { materialId: string; title: string; status: string; code: string; message: string; retryable: boolean; undoStatus: string };
 type OrganizationOperation = { operationId: string; trigger: string; status: string; createdAt: string; completedAt: string;
   undoStatus: string; items: OrganizationItem[]; counts: { total: number; succeeded: number; failed: number; attention: number; retryable: number; undone: number } };
-type OrganizationStatus = { ok: boolean; message?: string; configuration: { enabled: boolean; maxBatch: number; intervalMinutes: number;
+type OrganizationStatus = { ok: boolean; message?: string; configuration: { enabled: boolean; processingPaused?: boolean;
+  maxBatch: number; intervalMinutes: number;
   nextRunAt: string; lastRunAt: string; lastStatus: string; lastMessage: string }; capacity: { ok: boolean; availableBytes: number | null; reserveBytes: number; code: string };
   operations: OrganizationOperation[]; registryRevision: number };
 type CleanupInspection = { ok: boolean; message?: string; candidates: Array<{ candidateId: string; area: string; name: string; size: number; modifiedAt: string }> };
@@ -160,7 +162,8 @@ const emptyAutomationOverview: MaterialAutomationOverview = { ok: true, registry
   businessMaterialCount: 0, uniqueContentCount: 0, systemGeneratedCount: 0, acceptedCount: 0,
   autoReady: 0, autoCompleted: 0, processing: 0, needsConfirmation: 0, errors: 0,
   digestPendingContentCount: 0,
-  automation: { enabled: false, autoAdoptPathClassified: false, autoDigest: false, maxBatch: 20 }, job: null };
+  automation: { enabled: false, processingPaused: false,
+    autoAdoptPathClassified: false, autoDigest: false, maxBatch: 20 }, job: null };
 const emptyOrganization: OrganizationStatus = { ok: true,
   configuration: { enabled: false, maxBatch: 20, intervalMinutes: 1440, nextRunAt: '', lastRunAt: '', lastStatus: '', lastMessage: '' },
   capacity: { ok: true, availableBytes: null, reserveBytes: 64 * 1024 * 1024, code: '' }, operations: [], registryRevision: 0 };
@@ -309,11 +312,13 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   }, [automationOverview.automation.maxBatch, automationOverview.registryRevision, busy, project.id]);
 
   useEffect(() => {
-    if (!automationOverview.automation.enabled || automationOverview.autoReady <= 0
+    if (!automationOverview.automation.enabled || automationOverview.automation.processingPaused
+      || automationOverview.autoReady <= 0
       || autoStartedRevision.current === automationOverview.registryRevision) return;
     autoStartedRevision.current = automationOverview.registryRevision;
     void runMaterialAutomation('page_entry');
   }, [automationOverview.autoReady, automationOverview.automation.enabled,
+    automationOverview.automation.processingPaused,
     automationOverview.registryRevision, runMaterialAutomation]);
 
   useEffect(() => {
@@ -543,6 +548,31 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
     finally { setBusy(false); }
   }
 
+  async function configureProcessingPaused(processingPaused: boolean) {
+    const api = bridge();
+    if (!api?.configureProjectMaterialOrganization || busy) return;
+    if (processingPaused && !window.confirm('暂停后，此项目不会再自动分类、采用或启动 Agent 消化任务。\n\n已经运行或等待回执的任务不会强制中断，以免产生重复结果；手工查看、分类和投递仍可使用。\n\n确认暂停此项目的资料处理吗？')) return;
+    setBusy(true);
+    try {
+      const automation = automationOverview.automation;
+      const response = parseResponse<{ ok: boolean; message?: string }>(
+        await api.configureProjectMaterialOrganization(project.id, JSON.stringify({
+          enabled: automation.enabled,
+          processingPaused,
+          autoAdoptPathClassified: automation.autoAdoptPathClassified,
+          autoDigest: automation.autoDigest,
+          maxBatch: automation.maxBatch || 20,
+          onWorkspaceChange: automation.onWorkspaceChange !== false,
+          intervalMinutes: automation.intervalMinutes || organization.configuration.intervalMinutes || 1440,
+          idempotencyKey: requestId('material-processing-pause'),
+        })));
+      if (!response.ok) throw new Error(response.message || '资料处理状态未保存。');
+      setMessage(response.message || (processingPaused ? '项目资料处理已暂停。' : '项目资料处理已恢复。'));
+      await load();
+    } catch (error) { setMessage(error instanceof Error ? error.message : '资料处理状态保存失败。'); }
+    finally { setBusy(false); }
+  }
+
   async function runOrganizationNow() {
     const api = bridge();
     if (!api?.runProjectMaterialOrganization || busy) return;
@@ -707,7 +737,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   ];
 
   if (storageMode !== 'workspace-v1') return (
-    <section className="pm-shell pm-legacy" aria-label="统一项目资料">
+    <section className="pm-shell pm-legacy" aria-label="统一项目资料" data-project-report-materials tabIndex={-1}>
       <ShieldCheck size={22} />
       <div className="pm-migration-intro"><strong>统一资料视图将在受控迁移后启用</strong>
         <p>当前项目仍沿用旧资料模式。先做只读预览，再逐项复制、核验和切换；不能安全处理的文件保留原位。</p>
@@ -730,7 +760,7 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
   );
 
   return (
-    <section className="pm-shell" aria-labelledby="project-materials-heading">
+    <section className="pm-shell" aria-labelledby="project-materials-heading" data-project-report-materials tabIndex={-1}>
       <header className="pm-heading">
         <div>
           <span className="pm-eyebrow"><ShieldCheck size={15} />统一原件 · 多视角浏览</span>
@@ -745,7 +775,8 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
         </button>
       </header>
 
-      <section className="pm-automation-overview" aria-label="项目资料自动处理概况">
+      <section className={`pm-automation-overview ${automationOverview.automation.processingPaused ? 'paused' : ''}`}
+        aria-label="项目资料自动处理概况">
         <div className="pm-overview-copy">
           <span className="pm-eyebrow"><Bot size={15} />只审异常</span>
           <strong>{automationOverview.businessMaterialCount} 个资料位置 · {automationOverview.uniqueContentCount} 种内容</strong>
@@ -760,12 +791,23 @@ export function ProjectMaterialsPanel({ project }: { project: ProjectRef }) {
           <span className={automationOverview.errors ? 'error' : ''}><b>{automationOverview.errors}</b>处理异常</span>
         </div>
         <div className="pm-overview-action">
-          <button type="button" className="primary compact" onClick={() => void runMaterialAutomation('manual')}
-            disabled={busy || project.status === 'sealed'}><Play size={15} />{busy ? '正在启动…' : '立即处理'}</button>
-          <small>{automationOverview.autoReady > 0
-            ? `${automationOverview.autoReady} 份低风险资料可自动采用；每批最多 ${automationOverview.automation.maxBatch} 份。`
-            : automationOverview.processing > 0 ? `${automationOverview.digestPendingContentCount} 种内容正在等待去重消化。`
-              : '当前仅保留确需判断的异常项。'}</small>
+          <div className="pm-overview-buttons">
+            <button type="button" className="primary compact" onClick={() => void runMaterialAutomation('manual')}
+              disabled={busy || project.status === 'sealed' || automationOverview.automation.processingPaused}>
+              <Play size={15} />{busy ? '正在启动…' : '立即处理'}</button>
+            <button type="button" className="secondary compact"
+              onClick={() => void configureProcessingPaused(!automationOverview.automation.processingPaused)}
+              disabled={busy || project.status === 'sealed'}>
+              {automationOverview.automation.processingPaused ? <Play size={15} /> : <Pause size={15} />}
+              {automationOverview.automation.processingPaused ? '恢复资料处理' : '暂停资料处理'}
+            </button>
+          </div>
+          <small>{automationOverview.automation.processingPaused
+            ? '已暂停自动分类、采用和 Agent 消化；手工查看与操作不受影响。'
+            : automationOverview.autoReady > 0
+              ? `${automationOverview.autoReady} 份低风险资料可自动采用；每批最多 ${automationOverview.automation.maxBatch} 份。`
+              : automationOverview.processing > 0 ? `${automationOverview.digestPendingContentCount} 种内容正在等待去重消化。`
+                : '当前仅保留确需判断的异常项。'}</small>
         </div>
       </section>
 

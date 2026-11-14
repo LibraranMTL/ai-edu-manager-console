@@ -1,5 +1,7 @@
 'use strict';
 
+const { deriveWorkKey } = require('./task-work-identity.cjs');
+
 const DELETABLE_HISTORY_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']);
 
 function isUnstartedDisposableTask(task = {}) {
@@ -16,15 +18,18 @@ function taskRecordDeletable(task = {}) {
 }
 
 function deletionKey(task = {}) {
+  const workKey = String(task.workKey || deriveWorkKey(task) || '');
+  if (workKey) return `${String(task.kind || '')}|${workKey}`;
   return `${String(task.id || task.taskId || '')}|${String(task.idempotencyKey || '')}`;
 }
 
 function deletedTaskCandidateSuppressed(store, candidate) {
   const key = deletionKey(candidate);
-  return Boolean(key !== '|' && (store?.deletedTasks || []).some((entry) => deletionKey(entry) === key));
+  return Boolean(key !== '|' && (store?.deletedTasks || []).some((entry) =>
+    entry.suppression === 'work_key' && deletionKey(entry) === key));
 }
 
-function removeHistoricalTaskRecord(store, taskId, now = new Date().toISOString()) {
+function removeHistoricalTaskRecord(store, taskId, now = new Date().toISOString(), options = {}) {
   if (!store || !Array.isArray(store.tasks)) return { ok: false, message: '任务账本不可用。' };
   const index = store.tasks.findIndex((task) => String(task.id) === String(taskId));
   if (index < 0) return { ok: false, message: '未找到历史任务。' };
@@ -38,12 +43,14 @@ function removeHistoricalTaskRecord(store, taskId, now = new Date().toISOString(
   const tombstone = {
     taskId: String(task.id),
     idempotencyKey: String(task.idempotencyKey || ''),
+    workKey: String(task.workKey || deriveWorkKey(task) || ''),
     deletedAt: now,
     title: String(task.title || ''),
     kind: String(task.kind || ''),
     sourceType: String(task.sourceType || ''),
     sourceId: String(task.sourceId || ''),
     previousStatus: String(task.status || ''),
+    suppression: options.suppressCurrentWork === true ? 'work_key' : 'hide_only',
   };
   const deletedTasks = Array.isArray(store.deletedTasks) ? store.deletedTasks : [];
   store.deletedTasks = [tombstone, ...deletedTasks.filter((entry) => deletionKey(entry) !== deletionKey(tombstone))].slice(0, 500);

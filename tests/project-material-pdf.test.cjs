@@ -8,7 +8,7 @@ const { createCanvas, PDFDocument } = require('@napi-rs/canvas');
 const { runPdfWorker } = require('../electron/project-material-pdf.cjs');
 const { runImageOcr, createProjectMaterialExtractor } = require('../electron/project-material-extract.cjs');
 const { createProjectMaterialStore } = require('../electron/project-materials.cjs');
-const { stagePdfRuntime, auditPdfRuntime } = require('../scripts/build-project-material-pdf.cjs');
+const { stagePdfRuntime, auditPdfRuntime, verifyCanvasRuntime } = require('../scripts/build-project-material-pdf.cjs');
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-pdf-test-'));
@@ -129,6 +129,9 @@ test('staged PDF runtime uses only copied renderer dependencies and its manifest
   }
   const evidence = auditPdfRuntime(runtimeRoot, runtimeRoot);
   assert.ok(evidence.bytes < 64 * 1024 * 1024);
+  const canvasEvidence = verifyCanvasRuntime(runtimeRoot);
+  assert.match(canvasEvidence.resolved, /material-pdf-runtime[\\/]canvas[\\/]index\.js$/u);
+  assert.ok(canvasEvidence.pngBytes > 8);
   const input = await f.add(pdfFixture(['text', 'scan']));
   // A Windows native DLL remains mapped until its process exits even after
   // worker termination. Run a copied runtime in a child process so cleanup

@@ -349,9 +349,10 @@ async function processSession(rootPath, session, attempt = 1) {
   }
   const segmentsByDate = {};
   const memoriesByDate = {};
+  const timelineSession = { ...session, timelineEvents: events };
   for (const [date, groups] of Object.entries(groupedByDate)) {
-    segmentsByDate[date] = buildSegments(session, groups, recognitionByEventId, { factualOnly: true });
-    memoriesByDate[date] = buildMemory(session, date, segmentsByDate[date]);
+    segmentsByDate[date] = buildSegments(timelineSession, groups, recognitionByEventId, { factualOnly: true });
+    memoriesByDate[date] = buildMemory(timelineSession, date, segmentsByDate[date]);
   }
   const allSegments = Object.values(segmentsByDate).flat();
   for (let index = 1; index < allSegments.length; index += 1) {

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createCourseCatalogStore } = require('../electron/course-catalog-store.cjs');
+const { createCourseCatalogStore, mergeCoursesByStableId } = require('../electron/course-catalog-store.cjs');
 const { coursePartition, secureCourseWebPreferences } = require('../electron/course-browser.cjs');
 
 const root = path.resolve(__dirname, '..');
@@ -72,6 +72,16 @@ test('tenant custom courses merge beside the signed catalog and use scoped local
   assert.equal(store.state().catalog.courses.length, 2);
   assert.equal(store.state().policy.courseRules['tenant:custom-example-course'], undefined);
   assert.equal(fs.existsSync(path.join(store.customAssetsDir, filename)), true, 'deletion keeps the cover asset available for audit and recovery');
+});
+
+test('signed cloud course replaces a legacy local custom entry with the same stable ID', () => {
+  const courseId = 'tenant:custom-example-course';
+  const signed = { courseId, name: '云端签名课程', coverAsset: 'cloud-assets/signed.png' };
+  const legacy = { courseId, name: '旧本地课程', coverAsset: 'custom-assets/legacy.png' };
+  const localOnly = { courseId: 'tenant:local-only', name: '仅本地课程' };
+  const merged = mergeCoursesByStableId([signed], [legacy, localOnly]);
+  assert.deepEqual(merged.map((course) => course.courseId), [courseId, 'tenant:local-only']);
+  assert.equal(merged[0], signed);
 });
 
 test('course browser preferences enforce renderer isolation without preload or Node', () => {

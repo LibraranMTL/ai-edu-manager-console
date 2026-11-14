@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { buildControlledWorkBuddyResearchInvocation, workBuddyAuthenticationRequired, parseWorkBuddyJsonPayload } = require('./workbuddy-runtime.cjs');
+const { withExclusiveWorkBuddyProfile, workBuddyProfileAuthFailure,
+  recordWorkBuddyProfileAuthFailure, clearWorkBuddyProfileAuthFailure } = require('./workbuddy-profile-gate.cjs');
 const { hashStableFile } = require('./project-materials.cjs');
 const { check } = require('./structured-contract-check.cjs');
 const { outputSchema, verifiedOutput, publicUrl } = require('./planning-research.cjs');
@@ -142,9 +144,20 @@ function workBuddyResearchEvidence(value) {
 }
 
 async function parseWorkBuddyResearchResult(stdout, stderr, code, schema, options = {}) {
-  if (workBuddyAuthenticationRequired(stdout, stderr)) throw Object.assign(Error('WorkBuddy 联网通道未取得有效认证'), { code: 'AUTHENTICATION_REQUIRED', stage: 'not_sent' });
-  if (code !== 0) throw Object.assign(Error('WorkBuddy 联网研究执行失败'), { code: 'AGENT_FAILED', stage: 'completed' });
-  const evidence = workBuddyResearchEvidence(JSON.parse(String(stdout || '').trim()));
+  const authError = origin => Object.assign(Error('WorkBuddy 联网通道未取得有效认证'), {
+    code: 'AUTHENTICATION_REQUIRED', stage: 'possibly_sent', diagnosticOrigin: origin,
+  });
+  if (workBuddyAuthenticationRequired('', stderr)) throw authError('stderr');
+  if (code !== 0) {
+    if (workBuddyAuthenticationRequired(stdout, '')) throw authError('failed_stdout');
+    throw Object.assign(Error('WorkBuddy 联网研究执行失败'), { code: 'AGENT_FAILED', stage: 'completed' });
+  }
+  let decoded;
+  try { decoded = JSON.parse(String(stdout || '').trim()); }
+  catch (error) { if (workBuddyAuthenticationRequired(stdout, '')) throw authError('invalid_stdout'); throw error; }
+  let evidence;
+  try { evidence = workBuddyResearchEvidence(decoded); }
+  catch (error) { if (workBuddyAuthenticationRequired(stdout, '')) throw authError('rejected_envelope'); throw error; }
   // Some official CLI versions add this explanatory field outside the requested
   // contract. Only discard this known, bounded string; never relax the schema or
   // use it as evidence of WebSearch, a source URL, or authorization.
@@ -163,11 +176,12 @@ async function parseWorkBuddyResearchResult(stdout, stderr, code, schema, option
   return verifiedOutput(output, events, options.fetchedAt || new Date().toISOString());
 }
 
-async function runWorkBuddyResearch(runtime, { prompt, schema, signal, timeoutMs = 300000, spawnProcess = spawn, fetchSource } = {}) {
+async function runWorkBuddyResearchProcess(runtime, { prompt, schema, signal, timeoutMs = 300000, spawnProcess = spawn, fetchSource,beforeExecute,onStarted } = {}) {
   if (signal?.aborted) throw Object.assign(Error('研究已取消'), { code: 'RESEARCH_CANCELLED', stage: 'not_sent' });
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-workbuddy-research-'));
   const invocation = buildControlledWorkBuddyResearchInvocation(runtime, { cwd: root, command: prompt, maxTurns: 8 });
   if (!invocation) { await fs.rmdir(root).catch(() => {}); throw Error('WorkBuddy CLI 不可用'); }
+  try{await beforeExecute?.();if(signal?.aborted)throw Object.assign(Error('研究已取消'),{stage:'not_sent'});}catch(error){await fs.rmdir(root).catch(()=>{});throw error;}
   return new Promise((resolve, reject) => {
     let child, stdout = '', stderr = '', size = 0, settled = false, stopTimer, failure = null, closed = false;
     const finish = (error, value) => {
@@ -185,7 +199,7 @@ async function runWorkBuddyResearch(runtime, { prompt, schema, signal, timeoutMs
     const cancel = () => stop(Object.assign(Error('研究已取消'), { code: 'RESEARCH_CANCELLED' }));
     const timer = require('./task-active-deadlines.cjs').taskActiveDeadlines.schedule(() => stop(Object.assign(Error('WorkBuddy 联网研究超时'), { code: 'RESEARCH_TIMEOUT' })), Math.min(Math.max(timeoutMs, 1000), 360000));
     signal?.addEventListener('abort', cancel, { once: true });
-    try {
+    const start=async()=>{try {
       child = spawnProcess(invocation.executable, invocation.args, { cwd: root, env: invocation.env, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
       child.stdout.on('data', chunk => { size += chunk.length; if (size > 24 * 1024 * 1024) stop(Error('WorkBuddy 联网结果超过容量限制')); else stdout += chunk; });
       child.stderr.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-8192); });
@@ -197,8 +211,26 @@ async function runWorkBuddyResearch(runtime, { prompt, schema, signal, timeoutMs
         void parseWorkBuddyResearchResult(stdout, stderr, code, schema, { fetchSource })
           .then(value => failure ? finish(Object.assign(failure, { stopConfirmed: true })) : finish(null, value), error => finish(Object.assign(failure || error, { stopConfirmed: true })));
       });
+      if(onStarted){if(!child.pid)throw Object.assign(Error('未取得进程启动确认'),{stage:'not_sent'});await onStarted({processId:child.pid});if(settled||failure||signal?.aborted)return;}
       child.stdin.end(invocation.stdinText);
-    } catch (error) { finish(Object.assign(error, { stopConfirmed: true })); }
+    } catch (error) {if(child?.pid)stop(error);else finish(Object.assign(error, { stopConfirmed: true }));}};void start();
+  });
+}
+
+async function runWorkBuddyResearch(runtime, options = {}) {
+  return withExclusiveWorkBuddyProfile(runtime, options.signal, async () => {
+    const blocked = workBuddyProfileAuthFailure(runtime);
+    if (blocked) throw blocked;
+    try {
+      const result = await runWorkBuddyResearchProcess(runtime, options);
+      clearWorkBuddyProfileAuthFailure(runtime);
+      return result;
+    } catch (error) {
+      if (error?.code === 'AUTHENTICATION_REQUIRED' && error?.stage !== 'not_sent') {
+        recordWorkBuddyProfileAuthFailure(runtime);
+      }
+      throw error;
+    }
   });
 }
 
@@ -216,10 +248,10 @@ async function createWorkBuddyResearchSearch({ runtime, qualification, spawnProc
   const runtimeHash = runtime?.cliPath ? (await hashStableFile(runtime.cliPath)).sha256 : '';
   if (!qualification?.ready || qualification.profile !== PROFILE || runtimeHash !== String(qualification.runtimeHash || qualification.cliHash || '')) throw Object.assign(Error('WorkBuddy 联网研究合同尚未通过或运行程序已经变化'), { code: 'AGENT_POLICY_CHANGED', stage: 'not_sent' });
   if (qualification.authScope && qualification.authScope !== JSON.stringify([runtime?.configDir || '', runtime?.authVersion || 0])) throw Object.assign(Error('WorkBuddy 联网授权范围已经变化'), { code: 'AGENT_POLICY_CHANGED', stage: 'not_sent' });
-  return async ({ queryInput, timeoutMs, signal }) => {
+  return async ({ queryInput, timeoutMs, signal,beforeExecute,onStarted }) => {
     if ((await hashStableFile(runtime.cliPath)).sha256 !== runtimeHash) throw Object.assign(Error('WorkBuddy 运行程序已经变化'), { code: 'AGENT_POLICY_CHANGED', stage: 'not_sent' });
     const schema = outputSchema(queryInput.purpose);
-    return runWorkBuddyResearch(runtime, { prompt: planningPrompt(queryInput, schema), schema, timeoutMs, signal, spawnProcess });
+    return runWorkBuddyResearch(runtime, { prompt: planningPrompt(queryInput, schema), schema, timeoutMs, signal, spawnProcess,beforeExecute,onStarted });
   };
 }
 

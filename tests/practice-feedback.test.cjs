@@ -10,8 +10,9 @@ async function setup(t, options = {}) {
   let calls = 0, applications = 0;
   const api = createPracticeCards({ resolveStudentDir: async id => { if (!['a','b'].includes(id)) throw Error('学生不存在'); return path.join(root,id); },
     snapshot: async () => ({ inputFingerprint:'test',profile:{},learningSignals:['真实报告'],confirmedGrowthSignals:[],sourceIds:[] }),
-    generate: async ({ schema, input }) => {
+    generate: async ({ schema, input },scope) => {
       calls++;
+      assert.ok(['a','b'].includes(scope?.studentId),'all generation calls must carry the exact student scope');
       if (schema.required.includes('passed')) return { passed:true,languagePassed:true,reason:'已复核' };
       if (schema.required.includes('judgement')) return { judgement:'correct',summary:'最终答案正确。',correctParts:['答案正确'],issues:[],suggestions:['再做一次独立练习。'],limitations:[],answerQuotes:[input.studentAnswer],readable:true,consistent:true };
       return { title:'平均数',subject:'数学',knowledgePoint:'平均数',rationale:'报告提示复习',minutes:10,sourceRefs:['E0'],prompt:'求 $1$ 与 $3$ 的平均数，记为 $x$。',hint:'先求和',answer:'x=2',explanation:'和除以数量。', ...options.cardContent };

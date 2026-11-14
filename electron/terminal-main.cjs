@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, screen, shell } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, screen, shell } = require('electron');
 const crypto = require('crypto');
 const { captureControlBounds, loadVisibleCaptureControlWindow } = require('./capture-control-window.cjs');
 const dgram = require('dgram');
@@ -7,12 +7,27 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
-// Explicit isolation for candidate acceptance; normal installations are unchanged.
+function packagedCandidateTag() {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    return String(manifest.eduCandidateTag || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  } catch {
+    return '';
+  }
+}
+
+// Candidate packages must never be captured by a previously launched candidate.
+// Formal packages retain the established user-data location and behaviour.
+const candidateRuntimeTag = packagedCandidateTag();
 const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
 if (isolatedUserData) {
   if (!path.isAbsolute(isolatedUserData) || path.resolve(isolatedUserData) === path.parse(path.resolve(isolatedUserData)).root) throw Error('隔离用户目录必须为非根目录的绝对路径');
   fs.mkdirSync(isolatedUserData, { recursive: true });
   app.setPath('userData', path.resolve(isolatedUserData));
+} else if (candidateRuntimeTag) {
+  const candidateUserData = path.join(app.getPath('appData'), 'AI Education Student Terminal Candidates', candidateRuntimeTag);
+  fs.mkdirSync(candidateUserData, { recursive: true });
+  app.setPath('userData', candidateUserData);
 }
 const { WebContentsView, session } = require('electron');
 const {
@@ -20,6 +35,8 @@ const {
   installCourseGuards,
   secureCourseWebPreferences,
 } = require('./course-browser.cjs');
+const { loadCourseTrustPolicy } = require('./course-trust-policy.cjs');
+const { validateStudentCourseProjection, isCourseStartFallbackAllowed } = require('./student-course-trust.cjs');
 const { parseGrowthIndexMarkdown } = require('./growth-markdown-summary.cjs');
 const {
   buildTargetUploadPath,
@@ -62,6 +79,12 @@ const {
 } = require('./student-agent-lifecycle.cjs');
 const { AUTO_CAPTURE_AGENT_IDS } = require('./agent-adapter-registry.cjs');
 const { captureSaveDecision, normalizeCaptureOptions } = require('./capture-protocol.cjs');
+const { createTerminalAgentBridge } = require('./terminal-agent-bridge.cjs');
+const {
+  ACTIONS: COMPANION_ACTIONS,
+  MODE_GROUPS: COMPANION_MODE_GROUPS,
+  createCompanionPromptPacket,
+} = require('./companion-toolbar.cjs');
 
 app.setName('AI Education Student Terminal');
 
@@ -72,8 +95,16 @@ const deliveryPath = () => path.join(terminalUserData(), 'delivery-ledger.json')
 const terminalUploadQueuePath = () => path.join(terminalUserData(), 'terminal-upload-queue.json');
 const terminalUploadStagingRoot = () => path.join(terminalUserData(), 'terminal-upload-staging');
 const practiceAttemptQueuePath = () => path.join(terminalUserData(), 'practice-attempt-queue.json');
+const courseProjectionCachePath = () => path.join(terminalUserData(), 'course-projection-cache-v2.json');
+const courseTrustPolicy = loadCourseTrustPolicy({
+  resourceRoots: [path.join(__dirname, '..', 'dist'), path.join(__dirname, '..', 'public')],
+});
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
+const capturedMediaRoot = () => path.join(terminalUserData(), 'captured-media');
+const conversationImportQueuePath = () => path.join(terminalUserData(), 'conversation-import-drafts.json');
 const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
+const captureSampleLogPath = (session) => path.join(String(session?.folder || ''), 'capture-samples.jsonl');
+const captureSampleIndexPath = (session) => path.join(String(session?.folder || ''), 'capture-samples.index.json');
 let mainWindow = null;
 let autoDeliveryTimer = null;
 let autoDeliveryBusy = false;
@@ -84,9 +115,17 @@ let captureDeliveryTimer = null;
 let captureDeliveryBusy = false;
 let activeCapture = null;
 let captureControlWindow = null;
+let companionWindow = null;
+let companionPopoverWindow = null;
+let companionPopoverMode = '';
+let companionPopoverLoaded = false;
+let companionSelectedProjectId = '';
 let courseView = null;
 let activeCourse = null;
+let courseViewTop = 300;
+let courseLearningFullscreen = false;
 let effectiveCourseCache = [];
+let effectiveProjectCache = [];
 let terminalDiscoverySocket = null;
 let terminalDiscoveryError = '';
 let lastHostDiscoveryAt = '';
@@ -95,6 +134,8 @@ let pairStatusBusy = false;
 let agentCaptureDrainTimer = null;
 let agentCaptureInstallTimer = null;
 let agentCaptureBusy = false;
+let terminalAgentBridge = null;
+const pendingConversationImports = [];
 const discoveredLanHosts = new Map();
 const CAPTURE_DELIVERY_RETRY_DELAYS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
 const SENSITIVE_CAPTURE_SOURCE_PATTERN = /password|credential|secret|token|authenticator|1password|bitwarden|keepass|微信|wechat|qq|钉钉|dingtalk|飞书|lark|telegram|whatsapp|mail|邮箱|邮件/i;
@@ -113,6 +154,81 @@ function deidentifyCaptureSourceName(value = '', sourceType = 'screen') {
 function readJson(filePath, fallback) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
   catch { return fallback; }
+}
+
+function appendCaptureSample(session, input = {}) {
+  if (!session?.folder || !session?.id) return null;
+  const sampledAt = String(input.sampledAt || new Date().toISOString());
+  const sample = {
+    schema: 'edu-manager.capture-sample.v1',
+    platform: 'windows-student-terminal',
+    deviceId: String(deviceId() || ''),
+    studentId: String(session.studentId || ''),
+    sessionId: String(session.id),
+    sourceType: String(session.sourceType || 'screen'),
+    sampledAt,
+    decision: String(input.decision || 'unknown'),
+    difference: Number.isFinite(Number(input.difference)) ? Number(input.difference) : null,
+    captureItemId: String(input.captureItemId || ''),
+    paused: Boolean(input.paused),
+  };
+  if (sample.captureItemId) {
+    sample.hashAlgorithm = String(input.hashAlgorithm || '');
+    sample.contentHash = String(input.contentHash || '');
+    sample.path = String(input.path || '');
+  }
+  fs.mkdirSync(session.folder, { recursive: true });
+  fs.appendFileSync(captureSampleLogPath(session), `${JSON.stringify(sample)}\n`, 'utf8');
+  session.sampleCount = Number(session.sampleCount || 0) + 1;
+  session.lastSampledAt = sampledAt;
+  if (!sample.paused && !['paused', 'source_unavailable', 'capture_error'].includes(sample.decision)) session.lastTrustedSampleAt = sampledAt;
+  return sample;
+}
+
+function readCaptureSamples(session) {
+  const logPath = captureSampleLogPath(session);
+  try {
+    return fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter((sample) => sample && String(sample.sessionId || '') === String(session?.id || ''));
+  } catch { return []; }
+}
+
+function writeCaptureSampleIndex(session) {
+  const samples = readCaptureSamples(session);
+  const target = captureSampleIndexPath(session);
+  writeJson(target, {
+    schema: 'edu-manager.capture-sample-index.v1',
+    platform: 'windows-student-terminal',
+    deviceId: String(deviceId() || ''),
+    studentId: String(session?.studentId || ''),
+    sessionId: String(session?.id || ''),
+    sourceType: String(session?.sourceType || 'screen'),
+    startedAt: String(session?.startedAt || ''),
+    endedAt: String(session?.endedAt || ''),
+    endReason: String(session?.endReason || ''),
+    capturePolicy: {
+      mode: String(session?.options?.mode || ''),
+      sampleIntervalMs: Number(session?.options?.sampleIntervalMs || 0),
+      maximumSaveIntervalMs: Number(session?.options?.maximumSaveIntervalMs || 0),
+    },
+    counts: {
+      screenshotCount: Number(session?.count || session?.files?.length || 0),
+      candidateFrameCount: Number(session?.candidateFrameCount || 0),
+      deduplicatedCount: Number(session?.deduplicatedCount || 0),
+      sampleCount: samples.length,
+    },
+    items: (Array.isArray(session?.items) ? session.items : []).map((item) => ({
+      captureItemId: String(item.id || ''),
+      capturedAt: String(item.capturedAt || ''),
+      hashAlgorithm: String(item.hashAlgorithm || ''),
+      contentHash: String(item.contentHash || ''),
+      path: String(item.path || ''),
+    })),
+    samples,
+    generatedAt: new Date().toISOString(),
+  });
+  return target;
 }
 
 function writeJson(filePath, value) {
@@ -220,6 +336,7 @@ function readConfig() {
 function writeConfig(value) {
   const next = { ...readConfig(), ...value, updatedAt: new Date().toISOString() };
   writeJson(configPath(), next);
+  try { sendTerminalCompanionState(); } catch {}
   return next;
 }
 
@@ -297,6 +414,41 @@ function notify(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
+function parseExternalConversationImport(argv = []) {
+  for (const raw of argv.map(String)) {
+    if (raw.startsWith('ai-education-student://')) {
+      try {
+        const url = new URL(raw);
+        if (url.hostname !== 'import-conversation') continue;
+        const link = String(url.searchParams.get('url') || '').trim();
+        const text = String(url.searchParams.get('text') || '').trim();
+        if (link.startsWith('https://')) return { source: 'protocol', link, text: text.slice(0, 60_000) };
+        if (text) return { source: 'protocol', link: '', text: text.slice(0, 60_000) };
+      } catch {}
+    }
+    if (raw.startsWith('--import-conversation=')) {
+      const value = raw.slice('--import-conversation='.length).trim().replace(/^"|"$/g, '');
+      if (value.startsWith('https://')) return { source: 'command-line', link: value, text: '' };
+      if (fs.existsSync(value) && fs.statSync(value).isFile() && /\.(txt|md|json)$/i.test(value) && fs.statSync(value).size <= 5 * 1024 * 1024) {
+        return { source: 'command-line-file', link: '', text: fs.readFileSync(value, 'utf8').slice(0, 60_000), name: path.basename(value) };
+      }
+      if (value) return { source: 'command-line', link: '', text: value.slice(0, 60_000) };
+    }
+  }
+  return null;
+}
+
+function queueExternalConversationImport(argv) {
+  const payload = parseExternalConversationImport(argv);
+  if (!payload) return false;
+  pendingConversationImports.push({ ...payload, draftId: `windows-share-${crypto.randomUUID()}`, receivedAt: new Date().toISOString() });
+  if (pendingConversationImports.length > 20) pendingConversationImports.splice(0, pendingConversationImports.length - 20);
+  writeJson(conversationImportQueuePath(), { version: 1, drafts: pendingConversationImports });
+  notify('terminal:conversation-import', pendingConversationImports.at(-1));
+  if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+  return true;
+}
+
 async function requestJson(route, options = {}) {
   const config = readConfig();
   const hostUrl = normalizeHostUrl(options.hostUrl || config.hostUrl);
@@ -306,6 +458,7 @@ async function requestJson(route, options = {}) {
     headers: {
       ...(options.token || (options.deviceToken ? config.token : (config.sessionToken || config.token)) ? { Authorization: `Bearer ${options.token || (options.deviceToken ? config.token : (config.sessionToken || config.token))}` } : {}),
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
     ...(options.timeoutMs ? { signal: AbortSignal.timeout(Number(options.timeoutMs)) } : {}),
@@ -314,6 +467,7 @@ async function requestJson(route, options = {}) {
   let payload = {};
   try { payload = text ? JSON.parse(text) : {}; }
   catch { payload = { ok: false, message: text || `HTTP ${response.status}` }; }
+  if (response.status === 304 && options.allowNotModified === true) return { __notModified: true, __etag: response.headers.get('etag') || '' };
   if (!response.ok || payload.ok === false) {
     const error = new Error(payload.message || `HTTP ${response.status}`);
     error.status = response.status;
@@ -322,7 +476,7 @@ async function requestJson(route, options = {}) {
     error.payload = payload;
     throw error;
   }
-  return payload;
+  return options.returnResponseMeta ? { ...payload, __etag: response.headers.get('etag') || '' } : payload;
 }
 
 function normalizedHostScope(value = {}, hostUrl = '') {
@@ -1015,6 +1169,8 @@ async function pairWithHost(input = {}) {
 
 async function setTerminalMode(terminalMode) {
   const requested = terminalMode === 'personal' ? 'personal' : 'shared';
+  if (terminalAgentBridge) await terminalAgentBridge.stop();
+  effectiveProjectCache = [];
   const payload = await requestJson('/api/device/mode', { method: 'POST', body: { terminalMode: requested }, deviceToken: true });
   const config = readConfig();
   const autoDelivery = requested === 'shared' ? { ...(config.autoDelivery || {}), enabled: false } : config.autoDelivery;
@@ -1047,7 +1203,9 @@ async function setTerminalMode(terminalMode) {
 }
 
 async function loginStudent(loginId) {
+  if (terminalAgentBridge) await terminalAgentBridge.stop();
   const payload = await requestJson('/api/student-session/login', { method: 'POST', body: { loginId }, deviceToken: true });
+  effectiveProjectCache = Array.isArray(payload.projects) ? payload.projects : [];
   const next = writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: payload.terminalMode || readConfig().terminalMode });
   if (next.terminalMode === 'personal' && next.agentCapture?.enabled) void refreshPersonalAgentCapture();
   void runTerminalUploadQueue();
@@ -1055,7 +1213,9 @@ async function loginStudent(loginId) {
 }
 
 async function autoLoginStudent() {
+  if (terminalAgentBridge) await terminalAgentBridge.stop();
   const payload = await requestJson('/api/student-session/auto', { method: 'POST', body: {}, deviceToken: true });
+  effectiveProjectCache = Array.isArray(payload.projects) ? payload.projects : [];
   const next = writeConfig({ sessionToken: payload.token, currentStudent: payload.student || null, terminalMode: 'personal' });
   if (next.agentCapture?.enabled) void refreshPersonalAgentCapture();
   void runTerminalUploadQueue();
@@ -1063,8 +1223,10 @@ async function autoLoginStudent() {
 }
 
 async function logoutStudent() {
+  if (terminalAgentBridge) await terminalAgentBridge.stop();
   closeTerminalCourse('student_logout');
   effectiveCourseCache = [];
+  effectiveProjectCache = [];
   const config = readConfig();
   if (config.sessionToken) {
     try { await requestJson('/api/student-session/logout', { method: 'POST', body: {}, token: config.sessionToken }); }
@@ -1083,9 +1245,12 @@ async function loadRemoteState() {
   try { modePayload = await requestJson('/api/device/mode', { deviceToken: true }); }
   catch (error) {
     const cached = cacheFallbackAllowed(error) ? loadRemoteStateCache(config) : null;
-    if (cached && config.sessionToken && config.currentStudent?.id) return { ok: true, ...cached.payload,
-      offline: true, cachedAt: cached.cachedAt, message: '主机当前不可达，显示24小时内的只读授权缓存；分类、下载和证据确认已停用。',
-      config: publicConfig() };
+    if (cached && config.sessionToken && config.currentStudent?.id) {
+      effectiveProjectCache = cached.payload.projects || [];
+      return { ok: true, ...cached.payload,
+        offline: true, cachedAt: cached.cachedAt, message: '主机当前不可达，显示24小时内的只读授权缓存；分类、下载和证据确认已停用。',
+        config: publicConfig() };
+    }
     throw error;
   }
   const terminalMode = modePayload.device?.terminalMode || config.terminalMode || 'shared';
@@ -1095,6 +1260,7 @@ async function loadRemoteState() {
     catch {}
   }
   if (!config.sessionToken) {
+    effectiveProjectCache = [];
     return { ok: true, requiresLogin: true, students: [], projects: [], device: modePayload.device || null, config: publicConfig() };
   }
   try {
@@ -1106,13 +1272,17 @@ async function loadRemoteState() {
     }
     const result = { ...payload, students: payload.students || (payload.student ? [payload.student] : []),
       projects: payload.projects || [], device: modePayload.device || null };
+    effectiveProjectCache = result.projects;
     saveRemoteStateCache(result, readConfig());
     return { ...result, config: publicConfig() };
   } catch (error) {
     const cached = cacheFallbackAllowed(error) ? loadRemoteStateCache(config) : null;
-    if (cached) return { ok: true, ...cached.payload, offline: true, cachedAt: cached.cachedAt,
-      message: '主机当前不可达，显示24小时内的只读授权缓存；分类、下载和证据确认已停用。',
-      config: publicConfig() };
+    if (cached) {
+      effectiveProjectCache = cached.payload.projects || [];
+      return { ok: true, ...cached.payload, offline: true, cachedAt: cached.cachedAt,
+        message: '主机当前不可达，显示24小时内的只读授权缓存；分类、下载和证据确认已停用。',
+        config: publicConfig() };
+    }
     if ([401, 403].includes(Number(error?.status))) writeConfig({ sessionToken: '', currentStudent: null });
     return { ok: true, requiresLogin: true, students: [], projects: [], device: modePayload.device || null, config: publicConfig(), message: error.message };
   }
@@ -1123,6 +1293,62 @@ function currentStudentSession() {
   const studentId = String(config.currentStudent?.id || '').trim();
   if (!config.sessionToken || !studentId) throw new Error('请先扫码或输入学生 ID。');
   return { config, studentId };
+}
+
+function currentTerminalAgentScope() {
+  const config = readConfig();
+  return {
+    studentId: String(config.currentStudent?.id || ''),
+    deviceId: String(config.deviceId || ''),
+    hostId: String(config.hostScope?.hostId || ''),
+    dataGeneration: String(config.hostScope?.dataGeneration || ''),
+    terminalMode: String(config.terminalMode || 'shared'),
+  };
+}
+
+function getTerminalAgentBridge() {
+  if (!terminalAgentBridge) terminalAgentBridge = createTerminalAgentBridge({
+    root: path.join(terminalUserData(), 'student-agent-bridge'),
+    currentScope: currentTerminalAgentScope,
+    invoke: async (input, grantedScope) => {
+      const current = currentTerminalAgentScope();
+      for (const key of ['studentId', 'deviceId', 'hostId', 'dataGeneration']) {
+        if (!current[key] || current[key] !== grantedScope[key]) throw Object.assign(new Error('学生、设备或主机范围已经变化，请重新授权。'), { code: 'SCOPE_CHANGED' });
+      }
+      if (current.terminalMode !== 'personal') throw Object.assign(new Error('只有个人终端可以连接外部 Agent。'), { code: 'PERSONAL_TERMINAL_REQUIRED' });
+      if (input.action === 'trajectory') return { ok: true, studentId: current.studentId, ...await loadLearningTrajectory() };
+      if (input.action !== 'query' || !String(input.question || '').trim()) throw Object.assign(new Error('请输入要查询的教育问题。'), { code: 'INVALID_QUERY' });
+      const { config } = currentStudentSession();
+      return requestJson('/api/agent/knowledge/query', { method: 'POST', token: config.sessionToken, body: { scopeType: 'student', scopeId: current.studentId, scopePolicy: 'fixed_student', question: String(input.question).trim().slice(0, 2000), limit: 8 } });
+    },
+  });
+  return terminalAgentBridge;
+}
+
+async function setTerminalAgentBridge(enabled) {
+  const bridge = getTerminalAgentBridge();
+  if (!enabled) return bridge.stop();
+  const scope = currentTerminalAgentScope();
+  if (scope.terminalMode !== 'personal') throw new Error('只有个人终端可以授权外部 Agent 查询。');
+  if (!scope.studentId || !scope.deviceId || !scope.hostId || !scope.dataGeneration) throw new Error('主机身份和当前学生尚未核实。');
+  return bridge.start(scope);
+}
+
+function copyTerminalAgentBridgeConfig() {
+  const state = getTerminalAgentBridge().snapshot();
+  if (!state.enabled) throw new Error('请先启用外部 Agent 查询。');
+  const bridgeRoot = path.join(terminalUserData(), 'student-agent-bridge');
+  fs.mkdirSync(bridgeRoot, { recursive: true });
+  const durableMcpScript = path.join(bridgeRoot, 'terminal-agent-mcp.cjs');
+  const temporaryMcpScript = `${durableMcpScript}.tmp`;
+  fs.writeFileSync(temporaryMcpScript, fs.readFileSync(path.join(__dirname, 'terminal-agent-mcp.cjs')));
+  fs.copyFileSync(temporaryMcpScript, durableMcpScript);
+  fs.unlinkSync(temporaryMcpScript);
+  const stableExecutable = path.resolve(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
+  const config = { mcpServers: { 'ai-education-student': { command: stableExecutable, args: [durableMcpScript, state.descriptorFile], env: { ELECTRON_RUN_AS_NODE: '1' } } } };
+  const value = JSON.stringify(config, null, 2);
+  clipboard.writeText(value);
+  return { ok: true, message: '当前学生的 MCP 配置已复制。该授权只在本学生端运行期间有效。', config: value };
 }
 
 async function loadTerminalLearningCapabilities() {
@@ -1254,15 +1480,64 @@ async function submitTerminalInbox(input) {
 
 async function loadEffectiveCourses() {
   const { config, studentId } = currentStudentSession();
-  const payload = await requestJson(`/api/students/${encodeURIComponent(studentId)}/courses`, { token: config.sessionToken });
+  const hostId = String(config.hostScope?.hostId || '');
+  if (!hostId) throw new Error('主机身份尚未核实，不能读取课程投影。');
+  const namespace = JSON.stringify([hostId, studentId]);
+  const cache = readJson(courseProjectionCachePath(), { schema: 'edu-manager.course-projection-cache.v2', entries: {} });
+  const cached = cache?.entries?.[namespace];
+  let payload;
+  try {
+    const remote = await requestJson(`/api/v2/students/${encodeURIComponent(studentId)}/courses`, {
+      token: config.sessionToken,
+      headers: cached?.etag ? { 'If-None-Match': cached.etag } : {},
+      allowNotModified: true,
+      returnResponseMeta: true,
+    });
+    if (remote.__notModified) payload = cached?.projection;
+    else {
+      const { __etag: _etag, ...projection } = remote;
+      payload = projection;
+    }
+    if (!payload) throw new Error('主机返回304但当前主机和学生没有投影缓存。');
+    validateCourseProjection(payload, hostId, studentId);
+    if (!remote.__notModified) {
+      cache.schema = 'edu-manager.course-projection-cache.v2';
+      cache.entries = cache.entries && typeof cache.entries === 'object' ? cache.entries : {};
+      cache.entries[namespace] = { hostId, studentId, etag: remote.__etag || `"${payload.projectionRevision}"`, projection: payload, cachedAt: new Date().toISOString() };
+      writeJson(courseProjectionCachePath(), cache);
+    }
+  } catch (error) {
+    payload = cached?.projection;
+    if (!payload) throw error;
+    try { validateCourseProjection(payload, hostId, studentId); } catch { throw error; }
+  }
   effectiveCourseCache = Array.isArray(payload.courses) ? payload.courses : [];
   return payload;
 }
 
+function validateCourseProjection(payload, hostId, studentId) {
+  return validateStudentCourseProjection(payload, { hostId, studentId }, courseTrustPolicy);
+}
+
 function terminalCourseViewBounds() {
-  if (!mainWindow || mainWindow.isDestroyed()) return { x: 24, y: 174, width: 1000, height: 564 };
+  const focused = courseLearningFullscreen;
+  const inset = focused ? 0 : 24;
+  const minimumTop = focused ? 52 : 96;
+  const minimumHeight = focused ? 160 : 260;
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: inset, y: courseViewTop, width: 1000 - inset * 2, height: Math.max(minimumHeight, 738 - courseViewTop - inset) };
   const [width, height] = mainWindow.getContentSize();
-  return { x: 24, y: 174, width: Math.max(360, width - 48), height: Math.max(260, height - 198) };
+  const top = Math.min(Math.max(minimumTop, Math.round(courseViewTop)), Math.max(minimumTop, height - minimumHeight));
+  return { x: inset, y: top, width: Math.max(360, width - inset * 2), height: Math.max(minimumHeight, height - top - inset) };
+}
+
+function setTerminalCourseLearningFullscreen(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed() || !courseView) return { ok: false, message: '当前没有可全屏显示的课程。' };
+  courseLearningFullscreen = Boolean(enabled);
+  courseViewTop = courseLearningFullscreen ? 52 : 96;
+  mainWindow.setFullScreen(courseLearningFullscreen);
+  courseView.setBounds(terminalCourseViewBounds());
+  notify('terminal:course-learning-fullscreen', { enabled: courseLearningFullscreen });
+  return { ok: true, enabled: courseLearningFullscreen };
 }
 
 function closeTerminalCourse(reason = 'user') {
@@ -1271,8 +1546,13 @@ function closeTerminalCourse(reason = 'user') {
     try { courseView.webContents.close(); } catch {}
   }
   courseView = null;
+  courseViewTop = 300;
+  const wasFullscreen = courseLearningFullscreen;
+  courseLearningFullscreen = false;
+  if (wasFullscreen && mainWindow && !mainWindow.isDestroyed()) mainWindow.setFullScreen(false);
   const closed = activeCourse;
   activeCourse = null;
+  if (wasFullscreen) notify('terminal:course-learning-fullscreen', { enabled: false });
   notify('terminal:course-browser-changed', { open: false, reason, courseId: closed?.courseId || '' });
   return { ok: true, open: false };
 }
@@ -1282,10 +1562,23 @@ async function openTerminalCourse(courseId) {
   const payload = await loadEffectiveCourses();
   let course = (payload.courses || []).find((item) => item.courseId === String(courseId || ''));
   if (!course || String(payload.studentId || '') !== studentId) throw new Error('该课程未分配给当前学生或已下架。');
-  try {const pinned=await requestJson('/api/student-session/course-start',{method:'POST',body:{courseId},token:config.sessionToken});course={...course,...pinned.course};}
-  catch(error){if(error.status!==404)throw error;}
+  const leaseUntil = Date.parse(String(course.offlineOpenUntil || ''));
+  if (!Number.isFinite(leaseUntil) || leaseUntil <= Date.now()) throw new Error('课程离线打开租约已到期，请联网刷新后重试。');
+  const courseUrl = new URL(String(course.url || ''));
+  if (courseUrl.protocol !== 'https:' || courseUrl.username || courseUrl.password) throw new Error('课程入口不是受信任的 HTTPS 地址。');
+  // The signed course projection is the authority for the navigation target.
+  // `course-start` only records the launch on the host; it must never replace
+  // the already-validated URL (older hosts serialized https as `https\\://`).
+  const trustedCourseUrl = courseUrl.toString();
+  const trustedAllowedHosts = Array.isArray(course.allowedHosts) ? [...course.allowedHosts] : [];
+  try {
+    const pinned = await requestJson('/api/student-session/course-start', { method: 'POST', body: { courseId }, token: config.sessionToken });
+    course = { ...course, ...(pinned?.course || {}), url: trustedCourseUrl, allowedHosts: trustedAllowedHosts };
+  }
+  catch(error){if(!isCourseStartFallbackAllowed(error))throw error;}
   if(currentStudentSession().config.sessionToken!==config.sessionToken)throw Error('学生已切换，请重新打开课程');
   closeTerminalCourse('switch');
+  courseLearningFullscreen = false;
   const partition = coursePartition(course.courseId);
   const courseSession = session.fromPartition(partition, { cache: true });
   courseView = new WebContentsView({ webPreferences: secureCourseWebPreferences(partition) });
@@ -1302,8 +1595,19 @@ async function openTerminalCourse(courseId) {
   courseView.webContents.on('did-navigate-in-page', (_event, url) => {
     if (activeCourse?.courseId === course.courseId) activeCourse.currentUrl = url;
   });
+  courseView.webContents.on('before-input-event', (event, input) => {
+    if (courseLearningFullscreen && input.type === 'keyDown' && input.key === 'Escape') {
+      event.preventDefault();
+      setTerminalCourseLearningFullscreen(false);
+    }
+  });
   courseView.webContents.on('render-process-gone', () => closeTerminalCourse('render_process_gone'));
   await courseView.webContents.loadURL(course.url);
+  if (captureControlWindow && !captureControlWindow.isDestroyed()) {
+    captureControlWindow.setAlwaysOnTop(true, 'screen-saver');
+    captureControlWindow.moveTop();
+    captureControlWindow.showInactive();
+  }
   notify('terminal:course-browser-changed', { open: true, courseId: course.courseId, name: course.name, url: course.url });
   return { ok: true, open: true, course };
 }
@@ -1311,6 +1615,194 @@ async function openTerminalCourse(courseId) {
 async function loadLearningReports() {
   const { config, studentId } = currentStudentSession();
   return requestJson(`/api/students/${encodeURIComponent(studentId)}/reports`, { token: config.sessionToken });
+}
+
+async function loadLearningStatus() {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/learning-status', { token: config.sessionToken });
+}
+
+async function submitLearningStatus(input) {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/learning-status', { method: 'POST', token: config.sessionToken, body: input });
+}
+
+async function loadProjectComprehensiveReport(projectId) {
+  const { config, studentId } = currentStudentSession();
+  const project = (loadRemoteStateCache(config)?.payload?.projects || []).find((item) => String(item.id) === String(projectId));
+  if (project && !Array.isArray(project.studentIds)) throw new Error('项目范围无效');
+  if (project && !(project.studentIds || []).map(String).includes(studentId)) throw new Error('当前学生没有关联该项目');
+  return requestJson(`/api/student-session/projects/${encodeURIComponent(projectId)}/comprehensive-report`, { token: config.sessionToken });
+}
+
+async function listKnowledgeGrowthWeeks() {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/knowledge-growth/weeks', { token: config.sessionToken });
+}
+
+async function loadKnowledgeGrowthImage(week) {
+  const { config } = currentStudentSession();
+  if (!/^\d{4}-W\d{2}$/.test(String(week || ''))) throw new Error('周次无效');
+  return requestJson(`/api/student-session/knowledge-growth/${encodeURIComponent(week)}/image`, { token: config.sessionToken });
+}
+
+async function loadLearningTrajectory() {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/learning-trajectory', { token: config.sessionToken });
+}
+
+function decodeCapturedMedia(input = {}) {
+  const kind = String(input.kind || '');
+  const allowed = kind === 'photo'
+    ? new Map([['image/jpeg', 'jpg'], ['image/png', 'png'], ['image/webp', 'webp']])
+    : kind === 'audio'
+      ? new Map([['audio/webm', 'webm'], ['audio/ogg', 'ogg'], ['audio/wav', 'wav'], ['audio/mp4', 'm4a']])
+      : null;
+  const mimeType = String(input.mimeType || '').split(';')[0].toLowerCase();
+  if (!allowed?.has(mimeType)) throw new Error('采集资料格式不受支持。');
+  const encoded = String(input.base64 || '').replace(/^data:[^;]+;base64,/, '');
+  if (!encoded || !/^[a-zA-Z0-9+/=\r\n]+$/.test(encoded)) throw new Error('采集资料内容无效。');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('单次采集资料必须小于 20 MB。');
+  return { kind, mimeType, extension: allowed.get(mimeType), bytes };
+}
+
+async function uploadCapturedMedia(input, target) {
+  const { studentId } = currentStudentSession();
+  const media = decodeCapturedMedia(input);
+  const folder = path.join(capturedMediaRoot(), studentId);
+  fs.mkdirSync(folder, { recursive: true });
+  const id = crypto.randomUUID();
+  const label = media.kind === 'photo' ? '照片' : '录音';
+  const filePath = path.join(folder, `${label}-${Date.now()}-${id.slice(0, 8)}.${media.extension}`);
+  const temporary = `${filePath}.tmp`;
+  fs.writeFileSync(temporary, media.bytes, { flag: 'wx' });
+  fs.renameSync(temporary, filePath);
+  const result = await uploadPaths([filePath], target, {
+    sourceType: media.kind === 'photo' ? 'windows_terminal_photo' : 'windows_terminal_audio',
+    capturedAt: new Date().toISOString(),
+    mediaMimeType: media.mimeType,
+    sourceEventId: String(input.sourceEventId || `${media.kind}:${id}`),
+  });
+  return { ...result, localRecoveryPath: result.failed ? filePath : '' };
+}
+
+async function takeQuickScreenshot(sourceId, target) {
+  const source = (await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 1920, height: 1080 } }))
+    .find((item) => item.id === String(sourceId || ''));
+  if (!source) throw new Error('截屏来源已经变化，请重新选择。');
+  const type = source.id.startsWith('screen:') ? 'screen' : 'window';
+  if (type === 'window' && isSensitiveCaptureSourceName(source.name)) throw new Error('该窗口可能包含敏感信息，不能截取。');
+  const image = source.thumbnail;
+  if (!image || image.isEmpty()) throw new Error('没有取得可保存的截屏画面。');
+  const { studentId } = currentStudentSession();
+  const folder = path.join(capturedMediaRoot(), studentId);
+  fs.mkdirSync(folder, { recursive: true });
+  const filePath = path.join(folder, `快速截屏-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.png`);
+  fs.writeFileSync(filePath, image.toPNG(), { flag: 'wx' });
+  return uploadPaths([filePath], target, {
+    sourceType: 'windows_terminal_quick_screenshot',
+    capturedAt: new Date().toISOString(),
+    sourceName: deidentifyCaptureSourceName(source.name, type),
+    captureSourceType: type,
+  });
+}
+
+async function exportKnowledgeGrowthImage(input = {}, action = 'save', label = '知识增长图') {
+  const week = String(input.week || '');
+  if (!/^\d{4}-W\d{2}$/.test(week)) throw new Error('周次无效');
+  const mimeType = String(input.mimeType || '').split(';')[0].toLowerCase();
+  const extension = mimeType === 'image/svg+xml' ? 'svg' : mimeType === 'image/png' ? 'png' : '';
+  if (!extension) throw new Error(`${label}格式不受支持。`);
+  const bytes = Buffer.from(String(input.imageBase64 || ''), 'base64');
+  if (!bytes.length || bytes.length > 12 * 1024 * 1024) throw new Error(`${label}内容无效。`);
+  if (action === 'copy') {
+    const image = nativeImage.createFromBuffer(bytes);
+    if (image.isEmpty()) throw new Error('当前图片格式不能直接复制，请保存后分享。');
+    clipboard.writeImage(image);
+    return { ok: true, action, message: `${label}已复制到剪贴板。` };
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: `导出${label}`,
+    defaultPath: `${label}-${week}.${extension}`,
+    filters: [{ name: label, extensions: [extension] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  fs.writeFileSync(result.filePath, bytes);
+  if (action === 'share') shell.showItemInFolder(result.filePath);
+  return { ok: true, action, path: result.filePath, message: action === 'share' ? `${label}已导出并定位，可选择应用发送。` : `${label}已导出。` };
+}
+
+function exportStudentMaterialStatsImage(input = {}, action = 'save') {
+  return exportKnowledgeGrowthImage(input, action, '学生资料统计图');
+}
+
+async function chooseConversationFile() {
+  const selected = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: [{ name: '对话文本', extensions: ['txt', 'md', 'json'] }] });
+  if (selected.canceled || !selected.filePaths[0]) return { cancelled: true };
+  const file = selected.filePaths[0];
+  const stat = fs.statSync(file);
+  if (stat.size > 5 * 1024 * 1024) throw new Error('对话文件超过 5 MB');
+  return { cancelled: false, name: path.basename(file), text: fs.readFileSync(file, 'utf8') };
+}
+
+async function previewConversationLink(url) {
+  const { config } = currentStudentSession();
+  return requestJson('/api/student-session/conversation-link/preview', { method: 'POST', token: config.sessionToken, body: { url } });
+}
+
+async function submitTerminalConversation(input = {}) {
+  const { config, studentId } = currentStudentSession();
+  const text = String(input.text || '').trim();
+  if (!text || text.length > 60000) throw new Error('对话正文不能为空且不能超过 60000 字');
+  const target = input.target || { type: 'student', id: studentId, studentId };
+  if (!['student', 'project'].includes(target.type) || !target.id || String(target.studentId || studentId) !== studentId) throw new Error('对话目标无效');
+  const digest = crypto.createHash('sha256').update(text).digest('hex');
+  const submissionId = String(input.submissionId || `windows-conversation-${crypto.randomUUID()}`);
+  return requestJson('/api/agent/conversation/submit', { method: 'POST', token: config.sessionToken, timeoutMs: 30000, body: {
+    schema: 'edu-manager.agent-conversation-submission.v1', sourceAgent: 'windows-student-import', sourceNodeId: deviceId(),
+    submissionId, sessionId: submissionId, title: String(input.title || '导入对话').slice(0, 240),
+    scopeType: target.type, scopeId: target.id, studentHint: studentId,
+    ...(target.type === 'project' ? { targetProject: target.id } : {}),
+    messages: [{ messageId: `windows-message-${digest.slice(0, 24)}`, role: 'unknown', content: text }],
+    submittedAt: new Date().toISOString(), idempotencyKey: `windows-conversation-${digest.slice(0, 32)}-${target.type}-${target.id}`,
+  } });
+}
+
+function semanticVersionParts(value) {
+  return String(value || '').split('.').map((part) => Number(part) || 0).slice(0, 4);
+}
+
+function newerSemanticVersion(candidate, current) {
+  const left = semanticVersionParts(candidate), right = semanticVersionParts(current);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    if ((left[index] || 0) !== (right[index] || 0)) return (left[index] || 0) > (right[index] || 0);
+  }
+  return false;
+}
+
+async function checkTerminalUpdate() {
+  const response = await fetch('https://www.greatbg.com/download/edu-manager-version.json', { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`更新服务 HTTP ${response.status}`);
+  const manifest = await response.json();
+  const versionName = String(manifest.windowsTerminalVersionName || '');
+  return { ok: true, available: newerSemanticVersion(versionName, TERMINAL_VERSION), currentVersion: TERMINAL_VERSION,
+    versionName, url: String(manifest.windowsTerminalUrl || ''), sha256: String(manifest.windowsTerminalSha256 || ''),
+    size: Number(manifest.windowsTerminalSize || 0), notes: String(manifest.windowsTerminalNotes || manifest.notes || '') };
+}
+
+async function downloadTerminalUpdate(update) {
+  const url = String(update?.url || '');
+  if (!/^https:\/\//i.test(url)) throw new Error('更新下载地址无效');
+  const response = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw new Error(`下载更新 HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const actual = crypto.createHash('sha256').update(bytes).digest('hex').toUpperCase();
+  if (update.sha256 && actual !== String(update.sha256).toUpperCase()) throw new Error('更新文件 SHA-256 校验失败');
+  const target = path.join(app.getPath('downloads'), path.basename(new URL(url).pathname) || `AI-edu-manager-student-terminal-${update.versionName}.exe`);
+  fs.writeFileSync(target, bytes);
+  await shell.openPath(target);
+  return { ok: true, path: target, sha256: actual };
 }
 
 async function loadGrowthSummary() {
@@ -1788,6 +2280,8 @@ async function uploadPaths(paths, target, metadata = {}) {
       const itemMetadata = {
         ...metadata,
         captureItems: undefined,
+        captureSamples: undefined,
+        capturePolicy: undefined,
         captureItemId: captureItem?.id || (metadata.captureSessionId ? `${metadata.captureSessionId}-${index + 1}` : metadata.captureItemId),
         capturedAt: captureItem?.capturedAt || metadata.capturedAt || '',
         captureSequence: captureItem?.sequence || index + 1,
@@ -1900,6 +2394,11 @@ function notifyCaptureSessionComplete(target, metadata = {}) {
     courseUrl: String(metadata.courseUrl || ''),
     courseStartedAt: String(metadata.courseStartedAt || ''),
     courseCompletedAt: String(metadata.courseCompletedAt || ''),
+    platform: 'windows-student-terminal',
+    deviceId: String(deviceId() || ''),
+    captureMode: String(metadata.capturePolicy?.mode || ''),
+    capturePolicy: metadata.capturePolicy || null,
+    captureSamples: Array.isArray(metadata.captureSamples) ? metadata.captureSamples : [],
   });
 }
 
@@ -1927,6 +2426,12 @@ function queueCaptureDelivery(session, options = {}) {
       sequence: Number(entry.sequence || 0),
       highlighted: Boolean(entry.highlighted),
     })),
+    captureSamples: Array.isArray(session.captureSamples) ? session.captureSamples : readCaptureSamples(session),
+    capturePolicy: {
+      mode: String(session.options?.mode || ''),
+      sampleIntervalMs: Number(session.options?.sampleIntervalMs || 0),
+      maximumSaveIntervalMs: Number(session.options?.maximumSaveIntervalMs || 0),
+    },
     sourceType: 'windows_terminal_course_capture',
     sourceName: deidentifyCaptureSourceName(session.sourceName, session.sourceType),
     captureSourceType: String(session.sourceType || 'screen'),
@@ -2054,44 +2559,71 @@ function publicCaptureSession(session) {
 }
 
 async function captureFrame(session, input = {}) {
-  if (!session || session !== activeCapture || session.status !== 'capturing') return false;
-  const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
-  const source = sources.find((item) => item.id === session.sourceId);
-  if (!source || source.thumbnail.isEmpty()) return false;
-  const now = Date.now();
-  const signature = captureSignature(source.thumbnail);
-  const decision = captureSaveDecision(session, {
-    now,
-    signature,
-    force: Boolean(input.force),
-    highlight: Boolean(input.highlight),
-    options: session.options,
-  });
-  session.candidateFrameCount += 1;
-  if (!decision.save) {
-    session.deduplicatedCount += 1;
+  if (!session || session !== activeCapture) return false;
+  try {
+    if (session.status === 'paused') {
+      appendCaptureSample(session, { decision: 'paused', paused: true });
+      session.updatedAt = new Date().toISOString();
+      return false;
+    }
+    if (session.status !== 'capturing') return false;
+    const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
+    const source = sources.find((item) => item.id === session.sourceId);
+    if (!source || source.thumbnail.isEmpty()) {
+      appendCaptureSample(session, { decision: 'source_unavailable' });
+      return false;
+    }
+    const now = Date.now();
+    const signature = captureSignature(source.thumbnail);
+    const decision = captureSaveDecision(session, {
+      now,
+      signature,
+      force: Boolean(input.force),
+      highlight: Boolean(input.highlight),
+      options: session.options,
+    });
+    session.candidateFrameCount += 1;
+    if (!decision.save) {
+      appendCaptureSample(session, { sampledAt: new Date(now).toISOString(), decision: decision.reason, difference: decision.difference });
+      session.deduplicatedCount += 1;
+      session.lastDecision = decision.reason;
+      session.updatedAt = new Date(now).toISOString();
+      return false;
+    }
+    const capturedAt = new Date(now).toISOString();
+    const content = source.thumbnail.toJPEG(84);
+    const contentHash = crypto.createHash('sha1').update(content).digest('hex');
+    const itemId = `${session.id}-${session.items.length + 1}`;
+    const filename = `capture-${capturedAt.replace(/\D/g, '').slice(0, 14)}-${session.items.length + 1}.jpg`;
+    const target = path.join(session.folder, filename);
+    fs.writeFileSync(target, content);
+    session.files.push(target);
+    session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, highlighted: Boolean(input.highlight), reason: decision.reason, hashAlgorithm: 'sha1', contentHash });
+    appendCaptureSample(session, {
+      sampledAt: capturedAt,
+      decision: decision.reason === 'initial' ? 'initial' : 'saved',
+      difference: decision.difference,
+      captureItemId: itemId,
+      hashAlgorithm: 'sha1',
+      contentHash,
+      path: target,
+    });
+    session.lastContentHash = contentHash;
+    session.lastSavedSignature = signature;
+    session.lastSavedAt = now;
     session.lastDecision = decision.reason;
-    session.updatedAt = new Date(now).toISOString();
+    session.count = session.files.length;
+    session.updatedAt = new Date().toISOString();
+    notify('terminal:capture-changed', publicCaptureSession(session));
+    updateCaptureControlWindow();
+    return true;
+  } catch (error) {
+    try { appendCaptureSample(session, { decision: 'capture_error' }); } catch { /* The sample log itself may be unavailable. */ }
+    session.lastDecision = 'capture_error';
+    session.lastError = String(error?.message || error || 'capture_error');
+    session.updatedAt = new Date().toISOString();
     return false;
   }
-  const capturedAt = new Date(now).toISOString();
-  const content = source.thumbnail.toJPEG(84);
-  const contentHash = crypto.createHash('sha1').update(content).digest('hex');
-  const itemId = `${session.id}-${session.items.length + 1}`;
-  const filename = `capture-${capturedAt.replace(/\D/g, '').slice(0, 14)}-${session.items.length + 1}.jpg`;
-  const target = path.join(session.folder, filename);
-  fs.writeFileSync(target, content);
-  session.files.push(target);
-  session.items.push({ id: itemId, path: target, filename, capturedAt, sequence: session.items.length + 1, highlighted: Boolean(input.highlight), reason: decision.reason, hashAlgorithm: 'sha1', contentHash });
-  session.lastContentHash = contentHash;
-  session.lastSavedSignature = signature;
-  session.lastSavedAt = now;
-  session.lastDecision = decision.reason;
-  session.count = session.files.length;
-  session.updatedAt = new Date().toISOString();
-  notify('terminal:capture-changed', publicCaptureSession(session));
-  updateCaptureControlWindow();
-  return true;
 }
 
 async function startCapture(input = {}) {
@@ -2132,6 +2664,10 @@ async function startCapture(input = {}) {
     candidateFrameCount: 0,
     deduplicatedCount: 0,
     highlightedCount: 0,
+    sampleCount: 0,
+    lastSampledAt: '',
+    lastTrustedSampleAt: '',
+    sampleLogPath: captureSampleLogPath({ folder }),
     courseId: activeCourse?.courseId || '',
     courseProvider: activeCourse?.provider || '',
     courseUrl: activeCourse?.currentUrl || activeCourse?.url || '',
@@ -2153,6 +2689,13 @@ function stopCapture(reason = 'manual') {
   activeCapture.endedAt = new Date().toISOString();
   activeCapture.courseCompletedAt = activeCapture.endedAt;
   activeCapture.endReason = reason;
+  try {
+    activeCapture.sampleIndexPath = writeCaptureSampleIndex(activeCapture);
+    activeCapture.sampleIndexStatus = 'written';
+  } catch (error) {
+    activeCapture.sampleIndexStatus = 'write_failed';
+    activeCapture.sampleIndexError = String(error?.message || error || 'sample_index_write_failed');
+  }
   const result = publicCaptureSession(activeCapture);
   activeCapture = null;
   updateCaptureControlWindow();
@@ -2190,7 +2733,7 @@ function updateCaptureControlWindow() {
       show: false,
       webPreferences: { preload: path.join(__dirname, 'terminal-preload.cjs'), contextIsolation: true, nodeIntegration: false },
     });
-    captureControlWindow.setAlwaysOnTop(true, 'floating');
+    captureControlWindow.setAlwaysOnTop(true, 'screen-saver');
     captureControlWindow.on('closed', () => { captureControlWindow = null; });
   }
   const window = captureControlWindow;
@@ -2206,6 +2749,192 @@ function publicTailscaleStatus(status = findWindowsTailscaleInstall()) {
     version: String(status.version || ''),
     downloadUrl: TAILSCALE_WINDOWS_DOWNLOAD_URL,
   };
+}
+
+function terminalCompanionProjects() {
+  const config = readConfig();
+  const cached = loadRemoteStateCache(config);
+  const studentId = String(config.currentStudent?.id || '');
+  const projects = effectiveProjectCache.length ? effectiveProjectCache : (cached?.payload?.projects || []);
+  return projects.filter((project) => Array.isArray(project.studentIds)
+    && project.studentIds.map(String).includes(studentId) && String(project.status || '') !== 'sealed')
+    .map((project) => ({ id: String(project.id || ''), name: String(project.name || '未命名项目') }))
+    .filter((project) => project.id);
+}
+
+function terminalCompanionPopoverState() {
+  const projects = terminalCompanionProjects();
+  if (!projects.some((project) => project.id === companionSelectedProjectId)) companionSelectedProjectId = projects[0]?.id || '';
+  return {
+    mode: companionPopoverMode,
+    modeGroups: COMPANION_MODE_GROUPS,
+    actions: Object.fromEntries(Object.entries(COMPANION_ACTIONS).map(([id, item]) => [id, {
+      label: item.label,
+      summary: String(item.summary || item.task || '').slice(0, 52),
+      configMode: item.configMode || (COMPANION_MODE_GROUPS.some((group) => ['verify', 'plan'].includes(group.id) && group.actions.includes(id)) ? 'goal' : 'session'),
+    }])),
+    projects,
+    projectId: companionSelectedProjectId,
+    projectActions: [
+      { id: 'tutor', label: '项目引导', summary: '一次一个问题，围绕项目证据推进' },
+      { id: 'digest', label: '资料梳理', summary: '整理当前项目资料与待核实项' },
+      { id: 'learning_plan', label: '项目计划', summary: '形成有证据和节点的下一步计划' },
+      { id: 'learning_summary', label: '项目复盘', summary: '区分成果、问题、证据与下一步' },
+    ],
+  };
+}
+
+function sendTerminalCompanionPopoverState() {
+  if (companionPopoverLoaded && companionPopoverWindow && !companionPopoverWindow.isDestroyed()) {
+    companionPopoverWindow.webContents.send('companion-popover:state', terminalCompanionPopoverState());
+  }
+  sendTerminalCompanionState();
+}
+
+function closeTerminalCompanionPopover() {
+  companionPopoverMode = '';
+  const window = companionPopoverWindow;
+  companionPopoverWindow = null;
+  companionPopoverLoaded = false;
+  if (window && !window.isDestroyed()) window.close();
+  sendTerminalCompanionState();
+}
+
+function showTerminalCompanionPopover(mode) {
+  if (!companionWindow || companionWindow.isDestroyed()) return { ok: false, message: '学习工具条窗口已失效。' };
+  if (!['learning', 'project-tutor'].includes(mode)) return { ok: false, message: '未知工具条面板。' };
+  if (companionPopoverWindow && !companionPopoverWindow.isDestroyed() && companionPopoverMode === mode) {
+    companionPopoverWindow.show();
+    companionPopoverWindow.focus();
+    sendTerminalCompanionPopoverState();
+    return { ok: true };
+  }
+  closeTerminalCompanionPopover();
+  companionPopoverMode = mode;
+  const anchor = companionWindow.getBounds();
+  const area = screen.getDisplayMatching(anchor).workArea;
+  const size = mode === 'learning' ? { width: 370, height: 350 } : { width: 360, height: 300 };
+  const below = anchor.y + anchor.height + 6;
+  const y = below + size.height <= area.y + area.height ? below : Math.max(area.y, anchor.y - size.height - 6);
+  const x = Math.max(area.x, Math.min(anchor.x, area.x + area.width - size.width));
+  const window = new BrowserWindow({
+    x, y, ...size, frame: false, transparent: true, resizable: false, alwaysOnTop: true,
+    skipTaskbar: true, show: false, parent: companionWindow,
+    webPreferences: {
+      preload: path.join(__dirname, 'companion-popover-preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      partition: 'terminal-companion-panels',
+    },
+  });
+  companionPopoverWindow = window;
+  window.setAlwaysOnTop(true, 'screen-saver');
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', (event) => event.preventDefault());
+  window.webContents.on('did-finish-load', () => {
+    if (companionPopoverWindow !== window) return;
+    companionPopoverLoaded = true;
+    sendTerminalCompanionPopoverState();
+    window.show();
+    window.focus();
+  });
+  window.on('closed', () => {
+    if (companionPopoverWindow === window) {
+      companionPopoverWindow = null;
+      companionPopoverLoaded = false;
+      companionPopoverMode = '';
+      sendTerminalCompanionState();
+    }
+  });
+  void window.loadFile(path.join(__dirname, 'companion-popover.html')).catch(() => closeTerminalCompanionPopover());
+  return { ok: true };
+}
+
+function copyTerminalCompanionPrompt(actionId, config = {}) {
+  const current = readConfig();
+  const student = current.currentStudent;
+  if (!student?.id) return { ok: false, message: '请先进入学生空间。' };
+  const projects = terminalCompanionProjects();
+  const project = companionPopoverMode === 'project-tutor'
+    ? projects.find((item) => item.id === companionSelectedProjectId)
+    : null;
+  if (companionPopoverMode === 'project-tutor' && !project) return { ok: false, message: '请选择当前学生的关联项目。' };
+  try {
+    const target = { id: 'generic', kind: 'generic', displayName: '当前 Agent', verified: false, capabilities: { copy: true, open: false, query: false, archive: false } };
+    const packet = createCompanionPromptPacket({ actionId, student, target, scope: project ? 'project' : 'student', project, config });
+    clipboard.writeText(packet.promptText);
+    const ok = clipboard.readText().replace(/\r\n/g, '\n') === packet.promptText.replace(/\r\n/g, '\n');
+    return { ok, message: ok ? (project ? `已复制“${project.name}”项目导师提示词。` : '已复制学习模式提示词，可粘贴到当前 Agent。') : '剪贴板写入后校验失败，请重试。' };
+  } catch (error) {
+    return { ok: false, message: error.message };
+  }
+}
+
+function terminalCompanionState() {
+  const config = readConfig();
+  return {
+    visible: Boolean(companionWindow && !companionWindow.isDestroyed() && companionWindow.isVisible()),
+    connected: Boolean(config.hostUrl && config.sessionToken && config.currentStudent?.id),
+    studentId: String(config.currentStudent?.id || ''),
+    studentName: String(config.currentStudent?.name || '').slice(0, 24),
+    terminalMode: String(config.terminalMode || 'shared'),
+    agentCaptureEnabled: Boolean(config.agentCapture?.enabled),
+    popoverMode: companionPopoverMode,
+  };
+}
+
+function sendTerminalCompanionState() {
+  if (companionWindow && !companionWindow.isDestroyed()) companionWindow.webContents.send('terminal-companion:state', terminalCompanionState());
+}
+
+async function showTerminalCompanion() {
+  if (!companionWindow || companionWindow.isDestroyed()) {
+    const display = screen.getDisplayMatching(mainWindow?.getBounds() || screen.getPrimaryDisplay().workArea);
+    const width = 590, height = 54;
+    companionWindow = new BrowserWindow({
+      width, height,
+      x: display.workArea.x + Math.max(0, Math.round((display.workArea.width - width) / 2)),
+      y: display.workArea.y + 74,
+      minWidth: 420,
+      minHeight: 54,
+      maxHeight: 54,
+      frame: false,
+      transparent: true,
+      resizable: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'terminal-companion-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    companionWindow.setAlwaysOnTop(true, 'screen-saver');
+    companionWindow.on('closed', () => { closeTerminalCompanionPopover(); companionWindow = null; });
+    try {
+      await companionWindow.loadFile(path.join(__dirname, 'terminal-companion.html'));
+    } catch (error) {
+      if (companionWindow && !companionWindow.isDestroyed()) companionWindow.close();
+      return { ok: false, message: `学习工具条加载失败：${error.message}` };
+    }
+  }
+  if (!companionWindow || companionWindow.isDestroyed()) return { ok: false, message: '学习工具条窗口已失效。' };
+  companionWindow.show();
+  companionWindow.focus();
+  sendTerminalCompanionState();
+  return { ok: true, state: terminalCompanionState() };
+}
+
+async function showTerminalCompanionPanel(mode) {
+  // Do not create the child panel until the toolbar document and preload have
+  // finished loading. This removes the first-click race that made both mentor
+  // buttons look unresponsive on a fresh student-terminal launch.
+  const shown = await showTerminalCompanion();
+  if (!shown.ok) return shown;
+  return showTerminalCompanionPopover(mode);
 }
 
 function registerIpc() {
@@ -2252,9 +2981,55 @@ function registerIpc() {
   ipcMain.handle('terminal:get-agent-capture', () => refreshPersonalAgentCapture());
   ipcMain.handle('terminal:set-agent-capture', (_event, enabled) => authorizePersonalAgentCapture(Boolean(enabled)));
   ipcMain.handle('terminal:run-agent-capture', () => runAgentCaptureDrain());
-  ipcMain.handle('terminal:disconnect', () => {
+  ipcMain.handle('terminal:get-agent-bridge', () => getTerminalAgentBridge().snapshot());
+  ipcMain.handle('terminal:set-agent-bridge', (_event, enabled) => setTerminalAgentBridge(Boolean(enabled)));
+  ipcMain.handle('terminal:copy-agent-bridge-config', () => copyTerminalAgentBridgeConfig());
+  ipcMain.handle('terminal:show-companion', async () => showTerminalCompanion());
+  ipcMain.handle('terminal:show-companion-panel', async (_event, mode) => showTerminalCompanionPanel(String(mode || '')));
+  ipcMain.handle('terminal:companion-action', (event, action) => {
+    if (!companionWindow || companionWindow.isDestroyed() || event.sender !== companionWindow.webContents) throw new Error('工具条来源无效。');
+    const value = String(action || '');
+    if (value === 'hide') { closeTerminalCompanionPopover(); companionWindow.hide(); return { ok: true }; }
+    if (value === 'learning' || value === 'project-tutor') return showTerminalCompanionPopover(value);
+    if (!['collection', 'upload', 'photo', 'audio', 'screenshot', 'queue', 'agents'].includes(value)) throw new Error('未知工具条操作。');
+    closeTerminalCompanionPopover();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.webContents.send('terminal:companion-navigate', { action: value });
+    }
+    return { ok: true };
+  });
+  ipcMain.handle('companion-popover:action', (event, action, input = {}) => {
+    if (!companionPopoverWindow || companionPopoverWindow.isDestroyed() || event.sender !== companionPopoverWindow.webContents) {
+      return { ok: false, message: '面板窗口已失效。' };
+    }
+    if (action === 'close') { closeTerminalCompanionPopover(); return { ok: true }; }
+    if (action === 'resize') {
+      if (input.mode !== companionPopoverMode || !Number.isFinite(input.height)) return { ok: false };
+      const anchor = companionWindow.getBounds();
+      const area = screen.getDisplayMatching(anchor).workArea;
+      const bounds = companionPopoverWindow.getBounds();
+      const height = Math.min(Math.max(Math.ceil(input.height), 80), area.height);
+      const below = anchor.y + anchor.height + 4;
+      const y = below + height <= area.y + area.height ? below : Math.max(area.y, anchor.y - height - 4);
+      if (bounds.height !== height || bounds.y !== y) companionPopoverWindow.setBounds({ ...bounds, height, y });
+      return { ok: true };
+    }
+    if (action === 'select-project') {
+      const projectId = String(input.projectId || '');
+      if (!terminalCompanionProjects().some((project) => project.id === projectId)) return { ok: false, message: '项目范围无效。' };
+      companionSelectedProjectId = projectId;
+      sendTerminalCompanionPopoverState();
+      return { ok: true, message: '项目导师已切换到当前项目。' };
+    }
+    if (action === 'copy-mode') return copyTerminalCompanionPrompt(String(input.actionId || ''), input.config || {});
+    return { ok: false, message: '未知操作。' };
+  });
+  ipcMain.handle('terminal:disconnect', async () => {
+    if (terminalAgentBridge) await terminalAgentBridge.stop();
     closeTerminalCourse('disconnect');
     effectiveCourseCache = [];
+    effectiveProjectCache = [];
     const config = readConfig();
     if (config.currentStudent?.id) {
       try {
@@ -2346,6 +3121,26 @@ function registerIpc() {
   ipcMain.handle('terminal:learning-inbox', () => loadTerminalInbox());
   ipcMain.handle('terminal:submit-learning-inbox', (_event, input) => submitTerminalInbox(input));
   ipcMain.handle('terminal:list-learning-reports', () => loadLearningReports());
+  ipcMain.handle('terminal:get-learning-status', () => loadLearningStatus());
+  ipcMain.handle('terminal:submit-learning-status', (_event, input) => submitLearningStatus(input));
+  ipcMain.handle('terminal:get-project-comprehensive-report', (_event, projectId) => loadProjectComprehensiveReport(projectId));
+  ipcMain.handle('terminal:list-knowledge-growth-weeks', () => listKnowledgeGrowthWeeks());
+  ipcMain.handle('terminal:get-knowledge-growth-image', (_event, week) => loadKnowledgeGrowthImage(week));
+  ipcMain.handle('terminal:get-learning-trajectory', () => loadLearningTrajectory());
+  ipcMain.handle('terminal:upload-captured-media', (_event, input, target) => uploadCapturedMedia(input, target));
+  ipcMain.handle('terminal:quick-screenshot', (_event, sourceId, target) => takeQuickScreenshot(sourceId, target));
+  ipcMain.handle('terminal:export-knowledge-growth-image', (_event, input, action) => exportKnowledgeGrowthImage(input, action));
+  ipcMain.handle('terminal:export-student-material-stats-image', (_event, input, action) => exportStudentMaterialStatsImage(input, action));
+  ipcMain.handle('terminal:choose-conversation-file', () => chooseConversationFile());
+  ipcMain.handle('terminal:take-conversation-import', () => {
+    const draft = pendingConversationImports.shift() || null;
+    writeJson(conversationImportQueuePath(), { version: 1, drafts: pendingConversationImports });
+    return draft;
+  });
+  ipcMain.handle('terminal:preview-conversation-link', (_event, url) => previewConversationLink(url));
+  ipcMain.handle('terminal:submit-conversation', (_event, input) => submitTerminalConversation(input));
+  ipcMain.handle('terminal:check-update', () => checkTerminalUpdate());
+  ipcMain.handle('terminal:download-update', (_event, update) => downloadTerminalUpdate(update));
   ipcMain.handle('terminal:get-growth-summary', () => loadGrowthSummary());
   ipcMain.handle('terminal:read-learning-report', (_event, reportId) => loadLearningReport(reportId));
   ipcMain.handle('terminal:list-archive-files', () => loadArchiveFiles());
@@ -2366,6 +3161,25 @@ function registerIpc() {
   ipcMain.handle('terminal:list-courses', () => loadEffectiveCourses());
   ipcMain.handle('terminal:open-course', (_event, courseId) => openTerminalCourse(courseId));
   ipcMain.handle('terminal:close-course', () => closeTerminalCourse());
+  ipcMain.handle('terminal:set-course-learning-fullscreen', (event, enabled) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) throw new Error('课程窗口来源无效。');
+    return setTerminalCourseLearningFullscreen(enabled);
+  });
+  ipcMain.handle('terminal:set-course-view-top', (event, top) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) throw new Error('课程窗口来源无效。');
+    const value = Number(top);
+    if (!Number.isFinite(value)) throw new Error('课程视图位置无效。');
+    const [, height] = mainWindow.getContentSize();
+    const minimumTop = courseLearningFullscreen ? 52 : 96;
+    const minimumHeight = courseLearningFullscreen ? 160 : 260;
+    courseViewTop = Math.min(Math.max(minimumTop, Math.round(value)), Math.max(minimumTop, height - minimumHeight));
+    if (courseView) courseView.setBounds(terminalCourseViewBounds());
+    if (captureControlWindow && !captureControlWindow.isDestroyed()) {
+      captureControlWindow.setAlwaysOnTop(true, 'screen-saver');
+      captureControlWindow.moveTop();
+    }
+    return { ok: true, top: courseViewTop };
+  });
   ipcMain.handle('terminal:list-capture-sources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
     return sources.map((source) => {
@@ -2396,6 +3210,7 @@ function registerIpc() {
     }
     if (action === 'pause') {
       activeCapture.status = 'paused';
+      appendCaptureSample(activeCapture, { decision: 'paused', paused: true });
       activeCapture.updatedAt = new Date().toISOString();
       notify('terminal:capture-changed', publicCaptureSession(activeCapture));
       updateCaptureControlWindow();
@@ -2403,6 +3218,7 @@ function registerIpc() {
     }
     if (action === 'resume') {
       activeCapture.status = 'capturing';
+      appendCaptureSample(activeCapture, { decision: 'resumed', paused: false });
       activeCapture.updatedAt = new Date().toISOString();
       notify('terminal:capture-changed', publicCaptureSession(activeCapture));
       updateCaptureControlWindow();
@@ -2424,6 +3240,8 @@ function registerIpc() {
     courseStartedAt: input?.courseStartedAt || '',
     courseCompletedAt: input?.courseCompletedAt || '',
     expectedItemCount: Array.isArray(input?.captureItems) ? input.captureItems.length : 0,
+    captureSamples: Array.isArray(input?.captureSamples) ? input.captureSamples : [],
+    capturePolicy: input?.capturePolicy || null,
     startedAt: input?.startedAt || input?.courseStartedAt || '',
     endedAt: input?.endedAt || input?.courseCompletedAt || '',
     sourceName: input?.sourceName || '',
@@ -2451,21 +3269,56 @@ function createWindow() {
   mainWindow.on('resize', () => {
     if (courseView) courseView.setBounds(terminalCourseViewBounds());
   });
+  mainWindow.on('leave-full-screen', () => {
+    if (!courseLearningFullscreen) return;
+    courseLearningFullscreen = false;
+    courseViewTop = 96;
+    if (courseView) courseView.setBounds(terminalCourseViewBounds());
+    notify('terminal:course-learning-fullscreen', { enabled: false });
+  });
   mainWindow.on('closed', () => {
     if (courseView) {
       try { courseView.webContents.close(); } catch {}
       courseView = null;
       activeCourse = null;
     }
+    courseLearningFullscreen = false;
     mainWindow = null;
   });
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    queueExternalConversationImport(argv);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    queueExternalConversationImport([url]);
+  });
+}
+
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
+  const portableExecutable = String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim();
+  if (portableExecutable) app.setAsDefaultProtocolClient('ai-education-student', path.resolve(portableExecutable));
+  else if (!app.isPackaged && process.argv[1]) app.setAsDefaultProtocolClient('ai-education-student', process.execPath, [path.resolve(process.argv[1])]);
+  else app.setAsDefaultProtocolClient('ai-education-student');
+  const savedDrafts = readJson(conversationImportQueuePath(), { drafts: [] });
+  pendingConversationImports.splice(0, pendingConversationImports.length,
+    ...(Array.isArray(savedDrafts.drafts) ? savedDrafts.drafts.slice(-20) : []));
   recoverTerminalUploadQueue(terminalUploadQueuePath());
   registerIpc();
   startTerminalDiscovery();
   createWindow();
+  queueExternalConversationImport(process.argv);
   autoDeliveryTimer = setInterval(() => { void runAutoDelivery(); }, 15000);
   terminalUploadTimer = setInterval(() => { void runTerminalUploadQueue(); }, 15000);
   captureDeliveryTimer = setInterval(() => { void runCaptureDeliveryQueue(); }, 15000);
@@ -2487,6 +3340,9 @@ app.on('before-quit', () => {
   if (agentCaptureDrainTimer) clearInterval(agentCaptureDrainTimer);
   if (agentCaptureInstallTimer) clearInterval(agentCaptureInstallTimer);
   if (activeCapture?.timer) clearInterval(activeCapture.timer);
+  if (companionPopoverWindow && !companionPopoverWindow.isDestroyed()) companionPopoverWindow.destroy();
+  if (companionWindow && !companionWindow.isDestroyed()) companionWindow.destroy();
+  if (terminalAgentBridge) void terminalAgentBridge.stop();
   stopTerminalDiscovery();
 });
 

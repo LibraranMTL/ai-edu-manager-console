@@ -9,6 +9,14 @@ async function main() {
   const adapterId = process.argv.includes('--workbuddy') ? 'workbuddy' : 'codex';
   const caseIndex = process.argv.indexOf('--case'), selectedCase = caseIndex >= 0 ? process.argv[caseIndex + 1] : '';
   let runtime = adapterId === 'workbuddy' ? require('../electron/workbuddy-runtime.cjs').discoverWorkBuddyRuntime(executable, { findExecutable: () => process.execPath }) : null;
+  if (process.argv.includes('--host-auth')) {
+    if (adapterId !== 'workbuddy') throw Error('Host authorization is supported only for WorkBuddy');
+    const directory = path.join(process.env.APPDATA, 'edu-manager-launcher', 'classification-auth');
+    const auth = require('../electron/classification-auth.cjs').createClassificationAuth({ directory });
+    const descriptor = await auth.read('workbuddy');
+    if (!descriptor.root || !descriptor.cliPath) throw Error('WorkBuddy host authorization descriptor is incomplete');
+    runtime = auth.apply(runtime, descriptor);
+  }
   const profileIndex = process.argv.indexOf('--isolated-profile');
   const profile = profileIndex >= 0 ? JSON.parse(await fs.readFile(path.resolve(process.argv[profileIndex + 1]), 'utf8')) : null;
   if (profile) {
@@ -20,13 +28,13 @@ async function main() {
       mode: 'node', nodePath: process.execPath, desktopSessionAvailable: false };
   }
   const context = { studentId: 'synthetic-student-a', projects: [
-    { id: 'synthetic-physics-42', name: '合成物理实验', categories: [] },
-    { id: 'synthetic-biology-73', name: '合成生物观察', categories: [] },
+    { id: 'synthetic-physics-42', name: '合成物理实验', studentIds: ['synthetic-student-a'], categories: [] },
+    { id: 'synthetic-biology-73', name: '合成生物观察', studentIds: ['synthetic-student-a'], categories: [] },
   ] };
   const source = { id: 'synthetic-folder', automatic: true, studentId: context.studentId };
   const report = { schema: 'edu-manager.smart-inbox-live-agent.v1', fixture: 'synthetic-only', adapter: adapterId, executable,
     scope: selectedCase ? 'selected-case-not-full-suite' : 'full-suite', selectedCase: selectedCase || undefined,
-    runtimeKind: profile ? process.argv.includes('--bundled-cli') ? 'desktop-bundled-cli-with-independent-official-login' : profile.provider : 'installed-cli',
+    runtimeKind: profile ? process.argv.includes('--bundled-cli') ? 'desktop-bundled-cli-with-independent-official-login' : profile.provider : process.argv.includes('--host-auth') ? 'host-authorized-cli' : 'installed-cli',
     executableSha256: (await hashStableFile(runtime?.cliPath || executable)).sha256, startedAt: new Date().toISOString(), runs: [], cases: [], passed: false };
   const persist = () => fs.writeFile(reportFile, JSON.stringify(report, null, 2));
   await fs.mkdir(path.dirname(reportFile), { recursive: true }); await persist();

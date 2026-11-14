@@ -6,6 +6,30 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 object LearningStudioPolicy {
+    fun readableAttempt(payload: JSONObject): String = buildString {
+        val items = payload.optJSONObject("evidenceSnapshot")?.optJSONObject("result")?.optJSONArray("items")
+        if (items != null) for (index in 0 until items.length()) {
+            val question = items.optJSONObject(index)?.optString("question").orEmpty()
+            if (question.isNotBlank()) append("题目 ${index + 1}\n$question\n\n")
+        }
+        val answer = payload.optJSONObject("answer")
+        val text = answer?.optString("text").orEmpty()
+        if (text.isNotBlank()) append("我的作答\n$text\n\n")
+        else if (answer?.optJSONObject("material") != null) append("我的作答\n已归档作答文件\n\n")
+        else append("我的作答\n暂无可显示的作答内容\n\n")
+        val snapshot = payload.optJSONObject("evidenceSnapshot")
+        if (snapshot?.optString("answerPolicy") == "exact" && items?.length() == 1 && text.isNotBlank()) {
+            val item = items.optJSONObject(0)
+            val expected = item?.optString("answer").orEmpty().trim()
+            if (expected.isNotEmpty()) {
+                append(if (text.trim() == expected) "答案比对：与参考答案一致。\n" else "答案比对：与参考答案不一致。\n")
+                append("参考答案：$expected\n")
+                item?.optString("rationale").orEmpty().takeIf(String::isNotBlank)?.let { append("解析：$it\n") }
+                append("\n")
+            }
+        }
+        append("状态：已记录；尚未形成掌握程度结论。")
+    }
     val fields = mapOf(
         "cards" to listOf("question", "answer", "rationale"),
         "topics" to listOf("title", "question", "method", "steps", "resources", "risks", "studentBasis"),
@@ -147,6 +171,10 @@ class ContentSourceResolver(private val context: Context) {
                 project.paths.entityPath, project.paths.summaryPath, project.paths.qaPath, project.paths.synthesisPath, project.paths.reportPath).map { project.knowledgeRootUri to it }
         }
         require(roots.any { (root, path) -> path.isNotBlank() && root == row.rootUri && row.logicalPath.startsWith("${path.trimEnd('/')}/") }) { "来源已迁移或不在当前授权目录，请重新索引" }
+        if (row.projectId.isNotBlank()) {
+            LocalProjectMaterialService(context).requireGeneratedKnowledgeCurrent(row.projectId, row.logicalPath)
+            ProjectOutcomeService(context).requireOutcomeSourcesCurrent(row.projectId, row.logicalPath)
+        }
         val document = requireNotNull(SafWorkspaceStore(context, android.net.Uri.parse(row.rootUri)).document(row.logicalPath)) { "原件缺失，请重新扫描" }
         require(document.isFile && document.canRead()) { "原件读取授权已失效" }
         val metadata = JSONObject(row.payload)

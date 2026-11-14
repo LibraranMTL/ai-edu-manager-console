@@ -26,6 +26,17 @@ test('Windows student terminal is packaged separately from the host', () => {
   }
 });
 
+test('Windows student candidates isolate their Electron single-instance scope without changing formal releases', () => {
+  const releaseScript = read('scripts', 'build-windows-terminal-release.cjs');
+  const main = read('electron', 'terminal-main.cjs');
+  assert.match(releaseScript, /candidateTag \? \{ eduCandidateTag: candidateTag \} : \{\}/);
+  assert.match(main, /function packagedCandidateTag\(\)/);
+  assert.match(main, /AI Education Student Terminal Candidates/);
+  assert.match(main, /app\.setPath\('userData', candidateUserData\)/);
+  assert.match(main, /if \(isolatedUserData\)[\s\S]*else if \(candidateRuntimeTag\)/);
+  assert.match(main, /const hasSingleInstanceLock = app\.requestSingleInstanceLock\(\)/);
+});
+
 test('host validates project uploads and records traceable terminal provenance', () => {
   const source = read('electron', 'main.cjs');
   assert.match(source, /handleProjectMaterialUpload\(request, response, projectId, url\)/);
@@ -43,7 +54,7 @@ test('host quick and source-directory imports can target student raw or an activ
   assert.match(main, /function importFiles\(studentKey, targetJson = ''\)/);
   assert.match(preload, /importFiles\(studentName, targetJson\)/);
   assert.match(ui, /importFiles\?\.\(student\.id, JSON\.stringify\(materialImportTargetForStudent\(student\)\)\)/);
-  assert.match(main, /importMaterialSourceFiles\(studentId, pathsJson, targetJson = ''\)/);
+  assert.match(main, /importMaterialSourceFiles\(studentId, pathsJson, targetJson = '', options = \{\}\)/);
   assert.match(main, /target\.type === 'project'/);
   assert.match(main, /targetProject\?\.status === 'sealed'/);
   assert.match(main, /triggerReason: 'host_manual_import'/);
@@ -53,10 +64,8 @@ test('host quick and source-directory imports can target student raw or an activ
   assert.match(ui, /导入位置/);
   assert.match(ui, /project\.status !== 'sealed'/);
   assert.doesNotMatch(ui, /导入后统一复制到当前学生原始资料库/);
-  const sourcePanel = ui.indexOf('<strong>资料来源目录</strong>');
-  const visibleTarget = ui.indexOf('<span>导入位置</span>', sourcePanel);
-  const resultsCondition = ui.indexOf('{materialSourceFiles.length > 0', sourcePanel);
-  assert.ok(sourcePanel > 0 && visibleTarget > sourcePanel && resultsCondition > visibleTarget, 'source-directory target selector should be visible before scan results');
+  assert.doesNotMatch(ui, /<strong>资料来源目录<\/strong>/);
+  assert.match(ui, /打开所选导入位置/);
 });
 
 test('Android terminal exposes target selection and upload button state feedback', () => {

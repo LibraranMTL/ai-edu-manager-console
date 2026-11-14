@@ -39,6 +39,8 @@ object LegacyTaskCodec {
 internal interface TaskLedgerStore {
     fun <T> transaction(block: () -> T): T
     fun all(): List<JSONObject>
+    fun pageAfter(afterId: String, limit: Int): List<JSONObject> = all().filter { it.getString("id") > afterId }
+        .sortedBy { it.getString("id") }.take(limit)
     fun scoped(studentId: String, projectIds: List<String>, limit: Int): List<JSONObject>
     fun hasActive(studentId: String, projectIds: List<String>): Boolean
     fun exact(id: String): JSONObject?
@@ -78,8 +80,11 @@ internal class RoomTaskLedgerStore(context: Context, private val db: BusinessDat
         dao.interrupted(BusinessDatabase.processSession).forEach { row ->
             val current = JSONObject(row.payload)
             // Unknown model/write results are never automatically retried after process loss.
-            val next = TaskProtocol.envelope(JSONObject(current.toString()).put("status", "failed")
-                .put("error", JSONObject().put("code", "process_interrupted").put("message", "上次进程中断，结果未知；请核对已有产物后从原入口恢复"))
+            val automation = current.optString("kind").startsWith("automation_")
+            val next = TaskProtocol.envelope(JSONObject(current.toString()).put("status", if (automation) "waiting_result" else "failed")
+                .put("error", JSONObject().put("code", "process_interrupted")
+                    .put("classification", if (automation) "execution_unknown" else "interrupted")
+                    .put("message", "上次进程中断，结果未知；先核对已有产物和回执，不会自动重试"))
                 .put("autoRetry", false).put("completedAt", Timestamp.now()), current)
             replace(current, next)
             event(JSONObject().put("id", "event-${java.util.UUID.randomUUID()}").put("taskId", row.id)
@@ -90,6 +95,7 @@ internal class RoomTaskLedgerStore(context: Context, private val db: BusinessDat
         LegacyTaskCodec.projectId(task), task.getString("status"), task.optString("updatedAt"), 0,
         BusinessDatabase.processSession, task.toString())
     override fun all() = dao.all().map { JSONObject(it.payload) }
+    override fun pageAfter(afterId: String, limit: Int) = dao.pageAfter(afterId, limit.coerceIn(1, 500)).map { JSONObject(it.payload) }
     override fun scoped(studentId: String, projectIds: List<String>, limit: Int) = dao.scoped(studentId, projectIds, limit.coerceIn(1, 200)).map { JSONObject(it.payload) }
     override fun hasActive(studentId: String, projectIds: List<String>) = dao.hasActive(studentId, projectIds)
     override fun exact(id: String) = dao.exact(id)?.let { JSONObject(it.payload) }

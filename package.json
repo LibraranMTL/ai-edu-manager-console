@@ -1,6 +1,6 @@
 {
   "name": "edu-manager-launcher",
-  "version": "0.21.6",
+  "version": "0.23.7",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -10,12 +10,15 @@
     "build": "pnpm clean:dist && vite build",
     "build:terminal": "vite build --config vite.terminal.config.ts",
     "build:cloud-web": "vite build --config cloud-report-web/vite.config.ts",
+    "build:cloud-candidate": "node scripts/build-cloud-candidate.cjs",
     "dev:cloud-web": "vite --config cloud-report-web/vite.config.ts",
     "test": "node --test tests/*.test.cjs cloud-report-service/*.test.cjs",
     "test:windows": "node scripts/run-windows-tests.cjs",
     "test:infrastructure": "node --test tests/windows-artifact-budget.test.cjs tests/windows-low-risk-infrastructure.test.cjs tests/windows-release-staging-contract.test.cjs",
     "typecheck": "tsc --noEmit --pretty false",
     "audit:resources": "node scripts/audit-windows-resources.cjs --strict",
+    "verify:release-website": "node scripts/verify-release-website-parity.cjs",
+    "sync:web-manuals:android": "node scripts/sync-windows-host-web-manual.cjs --android-clients-only",
     "audit:structural-performance": "node scripts/audit-structural-performance-candidate.cjs",
     "baseline:windows": "node scripts/verify-windows-build-baseline.cjs",
     "verify:low-risk": "pnpm typecheck && pnpm audit:resources && pnpm test:infrastructure && pnpm benchmark:assets:smoke",
@@ -29,7 +32,20 @@
     "acceptance:windows:ordinary": "node scripts/verify-windows-ordinary-hardware.cjs",
     "preview": "vite preview --host 0.0.0.0",
     "desktop": "electron .",
-    "build:win": "pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && node scripts/build-windows-release.cjs",
+    "benchmark:tasks:release": "node --expose-gc scripts/benchmark-task-incremental.cjs",
+    "acceptance:p0:red": "node --expose-gc scripts/acceptance-p0-red-gate.cjs --expect=red",
+    "acceptance:p0:green": "node --expose-gc scripts/acceptance-p0-red-gate.cjs --expect=green",
+    "acceptance:p0:sample": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sample-p0-live-runtime.ps1",
+    "acceptance:p0:timeline": "node scripts/capture-p0-task-timeline.cjs",
+    "acceptance:p0:provenance": "node scripts/capture-p0-provenance.cjs",
+    "acceptance:p0:evidence": "node scripts/check-p0-evidence-readiness.cjs --stage=evidence",
+    "acceptance:p0:provenance:gate": "node scripts/check-p0-evidence-readiness.cjs --stage=provenance",
+    "acceptance:p0:correctness": "node scripts/check-p0-evidence-readiness.cjs --stage=correctness",
+    "acceptance:p0:stability": "node scripts/check-p0-evidence-readiness.cjs --stage=stability",
+    "acceptance:p0:causal": "node scripts/check-p0-evidence-readiness.cjs --stage=causal",
+    "acceptance:p0:release": "node scripts/check-p0-evidence-readiness.cjs --stage=release",
+    "test:p0:evidence": "node --test tests/p0-evidence-gate.test.cjs tests/p0-task-timeline-capture.test.cjs tests/p0-flow-timeline.test.cjs tests/p0-provenance-classification.test.cjs tests/p0-process-tree.test.cjs tests/p0-runtime-fixture.test.cjs tests/p0-live-runtime-sampler.test.cjs tests/p0-causal-ablation-runner.test.cjs tests/source-control-audit.test.cjs",
+    "build:win": "pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm verify:release-website && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts/build-windows-release.cjs",
     "build:win-terminal": "pnpm test && node scripts/build-windows-terminal-release.cjs",
     "license-admin:desktop": "electron tools/license-admin-app",
     "build:license-admin": "node scripts/build-license-admin-qr-vendor.cjs && electron-builder --projectDir tools/license-admin-app --win portable --x64"
@@ -66,12 +82,15 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "shared/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "electron/invoke-agent.ps1",
       "electron/capture-timeline-ocr.ps1",
-      "electron/project-knowledge-guard.ps1"
+      "electron/project-knowledge-guard.ps1",
+      "electron/practice-print-gdi.ps1",
+      "electron/windows-firewall.ps1"
     ],
     "win": {
       "artifactName": "AI-edu-manager-console-Windows-${version}.${ext}",

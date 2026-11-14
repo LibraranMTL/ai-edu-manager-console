@@ -12,7 +12,8 @@ test('task center refresh is asynchronous, cached and does not block the rendere
   assert.match(preload, /ipcRenderer\.invoke\('bridge:getTaskCenterAsync'/);
   assert.match(main, /ipcMain\.handle\('bridge:getTaskCenterAsync'/);
   assert.match(main, /taskCenterSnapshotCache/);
-  assert.match(main, /await taskIoClient\.request\(taskStorePath\(\), op/);
+  assert.match(main, /taskIoClient\.request\(taskStorePath\(\), op/);
+  assert.match(main,/await Promise\.all\(\[taskIoClient\.request\(taskStorePath\(\), op/);
   const worker = fs.readFileSync(path.join(root, 'electron', 'task-io-worker.cjs'), 'utf8');
   assert.match(worker, /if \(cache\?\.key === key\) return cache\.value/);
   assert.match(preload, /ipcRenderer\.invoke\('bridge:getTaskPage'/);
@@ -40,7 +41,7 @@ test('active audit events are appended incrementally while legacy archives stay 
   const writer = fs.readFileSync(path.join(root, 'electron', 'task-store-writer.cjs'), 'utf8');
   const store = fs.readFileSync(path.join(root, 'electron', 'task-state-store.cjs'), 'utf8');
   assert.match(writer, /createTaskStateStore/);
-  assert.match(writer, /state\.store\.appendEvent\(event\)/);
+  assert.match(writer, /store\.appendEvent\(query\.event\)/);
   assert.match(store, /CREATE TABLE IF NOT EXISTS task_events/);
   assert.match(store, /Historical event-archives/);
   assert.match(main, /taskStoreGuard.appendEvent\(event\)/);
@@ -49,8 +50,8 @@ test('active audit events are appended incrementally while legacy archives stay 
 test('task ledger writes individual SQLite rows and Agent diagnostics render only after Advanced is opened', () => {
   const writer = fs.readFileSync(path.join(root, 'electron', 'task-store-writer.cjs'), 'utf8');
   const store = fs.readFileSync(path.join(root, 'electron', 'task-state-store.cjs'), 'utf8');
-  assert.match(writer, /state\.store\.writeSnapshot\(value\)/);
-  assert.match(store, /ON CONFLICT\(task_id\) DO UPDATE/);
+  assert.match(writer, /store\.applyDelta\(query\)/);
+  assert.match(fs.readFileSync(path.join(root,'electron/task-sql-store.cjs'),'utf8'), /ON CONFLICT\(task_id\) DO UPDATE/);
   assert.doesNotMatch(writer, /writeFile/);
   assert.match(renderer, /className="task-center-advanced"/);
   assert.match(renderer, /taskAdvancedOpen && <div className="task-adapter-grid">/);

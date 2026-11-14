@@ -172,11 +172,22 @@ async function dispatchAgent({ policy, profile, requested = '', attempt, handoff
   const fixed = requested && !['auto', 'smart', 'rule', 'confirm'].includes(requested);
   const providers = fixed ? allowed.filter(id => id === requested) : allowed;
   const attempts = [];
+  let lastProviderDeferral = null;
   if (!policy.enabled || fixed && !providers.length) return { ok: false, code: 'AGENT_SCOPE_DENIED', message: '此任务未授权可用执行器，请前往 AI 接入与调度中心设置。', attempts };
   for (const providerId of providers) {
     if (current && !current(policy)) return { ok: false, code: 'AGENT_POLICY_CHANGED', message: '执行期间授权已变化，请重新检查任务。', attempts };
     await record({ providerId, attempts: [...attempts], stage: 'qualifying' });
     const result = await attempt(providerId);
+    if (result?.deferred) {
+      const deferScope = result.deferScope === 'provider' ? 'provider' : 'global';
+      const entry = { providerId, code: result.code || 'RESOURCE_DEFERRED',
+        stage: deferScope === 'provider' ? 'provider_deferred' : 'global_deferred' };
+      attempts.push(entry);
+      await record({ providerId, attempts: [...attempts], stage: entry.stage });
+      if (deferScope === 'global') return { ...result, ok: false, attempts };
+      lastProviderDeferral = { ...result, ok: false };
+      continue;
+    }
     const safe = PRE_SEND.has(result.code) && !result.executionId && !result.task?.executionId
       && !['possibly_sent', 'sent', 'accepted', 'unknown'].includes(result.stage);
     const entry = { providerId, code: result.code || '', stage: result.ok ? 'accepted' : safe ? 'not_sent' : 'unknown' };
@@ -184,6 +195,10 @@ async function dispatchAgent({ policy, profile, requested = '', attempt, handoff
     await record({ providerId, attempts: [...attempts], stage: entry.stage });
     if (result.ok || !safe) return { ...result, attempts };
   }
+  // A busy provider is a routing condition, so other automatic providers may
+  // be tried. If all providers are merely busy, keep the task automatic and
+  // scheduled; do not downgrade it to a desktop handoff.
+  if (lastProviderDeferral) return { ...lastProviderDeferral, attempts };
   if (policy.desktopHandoff && PROFILES[profile].handoff && (!current || current(policy))) {
     await record({ providerId: 'manual', attempts: [...attempts], stage: 'desktop_handoff' });
     return { ...await handoff(), attempts };

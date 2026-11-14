@@ -6,12 +6,16 @@ import org.json.JSONObject
 import java.io.FileNotFoundException
 import java.util.UUID
 
+internal object CloudSyncReceiptPolicy {
+    fun accepts(status: String) = status in setOf("configured", "queued", "network_recovered", "delivered", "withdrawn", "failed")
+}
+
 /** Append-only, student-scoped user-facing sync receipts. Protocol traces stay out of the ordinary UI. */
 class CloudSyncReceiptStore(context: Context) {
     private val state = PrivateStateStore(context)
 
     fun append(studentId: String, status: String, sourceId: String, detail: String = ""): JSONObject = synchronized(LOCK) {
-        require(status in setOf("queued", "network_recovered", "delivered", "withdrawn", "failed"))
+        require(CloudSyncReceiptPolicy.accepts(status)) { "不支持的云同步回执状态：$status" }
         StudentIndexRepository(appContext).requireExact(studentId)
         val now = Timestamp.now()
         val row = JSONObject().put("studentId", studentId).put("sourceId", sourceId.ifBlank { "sync:${UUID.randomUUID()}" })

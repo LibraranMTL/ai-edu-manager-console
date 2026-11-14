@@ -16,7 +16,7 @@ async function fixture(t) {
   let engine;
   const capture = createCaptureInbox({ resolveStudentDir: async id => { if (!['a', 'b'].includes(id)) throw Error('forbidden'); return path.join(root, id); }, deliver: () => { throw Error('legacy importer must not run'); } });
   const host = { directory: path.join(root, 'state'), stableAgeMs: 0, forbiddenRoots: () => [dest], automaticAllowed: () => true,
-    beginBatch: taskHost.beginBatch, endBatch: taskHost.endBatch,
+    beginBatch: taskHost.beginBatch, endBatch: taskHost.endBatch, settleItems: taskHost.settleItems,
     context: async id => { if (!['a', 'b'].includes(id)) throw Error('forbidden'); return { studentId: id, projects: [{ id: `project-${id}`, name: '实验项目', categories: [] }] }; },
     validateTarget: async t => { if (!['a', 'b'].includes(t.studentId) || t.id !== `project-${t.studentId}`) throw Error('forbidden target'); return t; },
     extract: async item => { calls.extract.push(item.studentId); return { text: await fs.readFile(item.snapshotPath, 'utf8'), warnings: [] }; },
@@ -27,6 +27,7 @@ async function fixture(t) {
     acknowledge: async (source, item) => { if (source.type === 'share') await capture.acknowledgeStored(source.studentId, item.locator, item.fingerprint.sha256, item.receipt, item.target); },
   };
   engine = createSmartInbox(host); await engine.init();
+  taskHost.context.smartInboxHostRuntime = { engine };
   const download = createDownloadInbox({ dataDir: path.join(root, 'download-state'), stableAgeMs: 0, validateTarget: host.validateTarget,
     forbiddenRoots: () => [dest], deliver: () => { throw Error('legacy importer must not run'); } });
   await download.configure(folder);
@@ -55,7 +56,8 @@ test('wrong confirmed student can be explicitly corrected and reclassified; old 
   assert.equal(next.studentId, 'b'); assert.equal(next.proposedTarget.id, 'project-b');
   assert.deepEqual(f.calls.classify, ['a', 'b']); assert.deepEqual(f.calls.extract, ['a', 'b']);
   assert.equal(next.studentCorrections[0].from, 'a'); assert.equal((await f.engine.sources()).sources[0].studentId, '');
-  assert.ok(f.taskHost.disk().tasks.every(task => task.status === 'succeeded'));
+  assert.ok(f.taskHost.disk().tasks.every(task => task.status === 'reviewing'
+    && task.businessOutcome === 'needs_user_action'));
 });
 test('delivered staging original can be reassigned and automatically reclassified after snapshot release', async t => {
   const f = await fixture(t);

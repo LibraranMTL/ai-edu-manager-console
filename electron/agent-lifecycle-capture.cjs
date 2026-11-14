@@ -116,6 +116,8 @@ function normalizeLifecycleEnvelope(value = {}) {
     action,
     status,
     title: `${sourceAgent} 授权会话`,
+    workspacePath: text(payload.cwd || payload.workspacePath || payload.context?.cwd, 2000),
+    repositoryPath: text(payload.repositoryPath || payload.git_root || payload.context?.repositoryPath, 2000),
     occurredAt,
     eventId: `lifecycle-event-${stableHash(
       sourceAgent === 'codex' && nativeEventId

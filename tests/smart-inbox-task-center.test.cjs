@@ -8,6 +8,24 @@ const { createTaskHost } = require('./helpers/smart-inbox-task-host.cjs');
 const { createSmartInbox } = require('../electron/smart-inbox.cjs');
 const { validateTaskTransition } = require('../electron/task-protocol.cjs');
 const source = { id: 'synthetic-source', name: 'Synthetic', studentId: 'synthetic-student' };
+test('source retry targets original safe item IDs and leaves unknown and unrelated items untouched',async t=>{
+ const {root}=await fixture(t),folder=path.join(root,'resume-input'),directory=path.join(root,'resume-inbox');await fs.mkdir(folder);
+ for(const name of ['a','b','c'])await fs.writeFile(path.join(folder,name+'.txt'),'synthetic');
+ const options={directory,stableAgeMs:0,forbiddenRoots:()=>[],automaticAllowed:()=>false,acquire:()=>null,
+  context:async studentId=>({studentId,projects:[]})};
+ let engine=createSmartInbox(options);const s=await engine.updateSource({folder,name:'Synthetic',enabled:true,studentId:source.studentId,automatic:true});
+ await engine.requestScan(s.id);await engine.tick();const rows=(await engine.list()).rows;await engine.close();
+ const a=rows.find(r=>r.name==='a.txt'),b=rows.find(r=>r.name==='b.txt'),c=rows.find(r=>r.name==='c.txt');
+ const file=path.join(directory,'items',b.id+'.json'),unknown=JSON.parse(await fs.readFile(file,'utf8'));
+ unknown.status='execution_unknown';unknown.execution={id:'original-execution'};await fs.writeFile(file,JSON.stringify(unknown));
+ engine=createSmartInbox({...options,acquire:()=>()=>{}});t.after(()=>engine.close());
+ assert.equal(typeof engine.requestResume,'function');
+ await engine.updateSource({...s,enabled:false});
+ const blocked=await engine.requestResume(s.id,[a.id],{automatic:true});assert.equal(blocked.queued,false);assert.equal(blocked.reason,'automation_disabled');
+ const result=await engine.requestResume(s.id,[a.id,b.id]);assert.deepEqual(result.itemIds,[a.id]);assert.deepEqual(result.protectedItemIds,[b.id]);
+ await engine.tick();await engine.tick();
+ assert.equal((await engine.detail(a.id)).status,'review');assert.equal((await engine.detail(b.id)).status,'execution_unknown');assert.equal((await engine.detail(c.id)).status,'pending');
+});
 
 test('resource wait and failed batch resume existing discoveries, preserve history and clear stale source error', async t => {
   const { root, host } = await fixture(t);
@@ -19,6 +37,7 @@ test('resource wait and failed batch resume existing discoveries, preserve histo
   await host.service.flush();
   const engine = createSmartInbox({ directory: path.join(root, 'inbox'), stableAgeMs: 0,
     forbiddenRoots: () => [], automaticAllowed: () => true,
+    context: async studentId => ({ studentId, projects: [] }),
     acquire: () => busy ? null : () => { releases++; },
     beginBatch: async (...args) => { if (fail) throw Error('synthetic registration failure'); return host.beginBatch(...args); },
     endBatch: host.endBatch,
@@ -26,7 +45,7 @@ test('resource wait and failed batch resume existing discoveries, preserve histo
     classify: () => { throw Error('shared source must never call Agent'); },
   });
   t.after(() => engine.close());
-  const s = await engine.updateSource({ folder, enabled: true, studentId: '', automatic: true });
+  const s = await engine.updateSource({ folder, enabled: true, studentId: source.studentId, automatic: true });
   await engine.requestScan(s.id); await engine.tick();
   assert.equal((await engine.list()).rows[0].status, 'pending');
   assert.equal(host.disk().tasks.length, 1, 'resource wait creates no batch');
@@ -75,7 +94,7 @@ test('actual async storage barrier blocks processing; disk failure never registe
   let release, reached;
   const entered = new Promise(r => { reached = r; });
   const { host } = await fixture(t, { beforeRequest: async (_file, op) => {
-    if (op === 'store_write') { reached(); await new Promise((resolve, reject) => { release = reject; }); }
+    if (op === 'store_delta') { reached(); await new Promise((resolve, reject) => { release = reject; }); }
   } });
   const pending = host.beginBatch(source, true);
   const rejected = assert.rejects(pending, /disk full|暂停/);
@@ -94,6 +113,7 @@ for (const bound of [false, true]) test(`discovery -> actual task center -> ${bo
   const engine = createSmartInbox({ directory: path.join(root, 'inbox'), stableAgeMs: 0,
     forbiddenRoots: () => [destination], automaticAllowed: () => true,
     acquire: () => () => { released++; }, beginBatch: host.beginBatch, endBatch: host.endBatch,
+    settleItems: host.settleItems,
     context: async () => ({ studentId: source.studentId, projects: [{ id: target.id, categories: [] }] }),
     validateTarget: async () => ({}),
     extract: async () => {
@@ -107,16 +127,22 @@ for (const bound of [false, true]) test(`discovery -> actual task center -> ${bo
       return { ok: true, path: file, recordId: item.operationId };
     },
   });
+  host.context.smartInboxHostRuntime = { engine };
   t.after(() => engine.close());
   const s = await engine.updateSource({ folder, name: 'Synthetic', enabled: true, automatic: true,
     studentId: bound ? source.studentId : '', target: bound ? target : null });
   await engine.requestScan(s.id); await engine.tick();
   const rows = await engine.list({ status: bound ? 'delivered' : 'pending' });
   assert.equal(rows.total, 1); assert.equal(rows.rows[0].status, bound ? 'delivered' : 'review');
-  assert.equal(host.disk().tasks[0].status, 'succeeded');
+  assert.equal(rows.rows[0].automationDisposition, bound ? '' : 'unassigned');
+  assert.equal(host.disk().tasks.length, bound ? 1 : 0, 'unassigned discovery must not create a task-center row');
+  if (bound) {
+    assert.equal(host.disk().tasks[0].status, 'succeeded');
+    assert.equal(host.disk().tasks[0].businessOutcome, 'completed');
+  }
   assert.equal(extracts, bound ? 1 : 0); assert.equal(deliveries, bound ? 1 : 0); assert.equal(modelCalls, 0);
   await engine.requestScan(s.id); await engine.tick();
-  assert.equal(host.disk().tasks.length, 1); assert.equal(released, 1);
+  assert.equal(host.disk().tasks.length, bound ? 1 : 0); assert.equal(released, bound ? 1 : 0);
   assert.equal(await fs.readFile(path.join(folder, 'synthetic.txt'), 'utf8'), '项目编号 synthetic-project');
   if (!bound) {
     const row = (await engine.list()).rows[0];
@@ -124,7 +150,7 @@ for (const bound of [false, true]) test(`discovery -> actual task center -> ${bo
     assert.equal(result.results[0].ok, true); await engine.tick();
     const delivered = await engine.list({ status: 'delivered' });
     assert.equal(delivered.total, 1, JSON.stringify((await engine.list()).rows));
-    assert.equal(host.disk().tasks.length, 2); assert.ok(host.disk().tasks.every(t => t.status === 'succeeded'));
+    assert.equal(host.disk().tasks.length, 1); assert.ok(host.disk().tasks.every(t => t.status === 'succeeded'));
     assert.equal(modelCalls, 1); assert.equal(deliveries, 1);
   }
 });

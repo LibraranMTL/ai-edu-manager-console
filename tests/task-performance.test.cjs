@@ -68,6 +68,15 @@ test('automatic task presentation separates queued work from real user action', 
   const approval = taskPresentation({ status: 'pending', trigger: 'event', executionMode: 'adapter', approval: { required: true, status: 'pending' } });
   assert.equal(approval.userGroup, 'needs_help'); assert.equal(approval.automationState, 'approval_required');
 });
+test('paused project material work remains automatic but clearly explains the project pause', () => {
+  const presentation = taskPresentation({ status: 'pending', kind: 'project_digest', trigger: 'manual',
+    executionMode: 'adapter', automaticExecution: false, automationSuspended: true,
+    automationSuspendedAt: 'project_material_processing_paused' });
+  assert.equal(presentation.userGroup, 'automatic');
+  assert.equal(presentation.phaseLabel, '资料处理已暂停');
+  assert.match(presentation.automationReason, /项目已暂停资料处理/);
+  assert.equal(presentation.requiresUserAction, false);
+});
 test('automatic dispatch policy admits only safe due work', () => {
   const base = { id: 'one', kind: 'student_digest', status: 'pending', trigger: 'event', executionMode: 'adapter', attempt: 0 };
   assert.equal(automaticTaskDispatchDecision(base, { kinds: AUTOMATIC_TASK_KINDS }).eligible, true);
@@ -75,6 +84,9 @@ test('automatic dispatch policy admits only safe due work', () => {
   assert.equal(automaticTaskDispatchDecision({ ...base, status: 'waiting_result' }, { kinds: AUTOMATIC_TASK_KINDS }).reason, 'not_waiting_dispatch');
   assert.equal(automaticTaskDispatchDecision({ ...base, approval: { required: true, status: 'pending' } }, { kinds: AUTOMATIC_TASK_KINDS, approvalRequired: true }).reason, 'approval_required');
   assert.equal(automaticTaskDispatchDecision({ ...base, trigger: 'manual', automaticExecution: false }, { kinds: AUTOMATIC_TASK_KINDS }).reason, 'manual_only');
+  assert.equal(automaticTaskDispatchDecision({ ...base, automationSuspended: true,
+    automationSuspendedAt: 'project_material_processing_paused' }, { kinds: AUTOMATIC_TASK_KINDS }).reason,
+  'project_material_processing_paused');
 });
 test('progress buffering never changes ordering, crosses execution identities, or revives completed tasks', () => {
   const buffer = createTaskProgressBuffer(), store = fixtures(3);
@@ -95,17 +107,22 @@ test('progress buffering never changes ordering, crosses execution identities, o
 test('worker reads are asynchronous, deduplicated, and do not fabricate an empty corrupt store', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-task-query-'));
   const client = createTaskIoClient();
-  t.after(async () => { client.close(); await fs.rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(root, { recursive: true, force: true }); });
   const file = path.join(root, 'tasks.json');
   assert.equal((await client.request(file)).ready, false);
   await fs.writeFile(file, JSON.stringify(fixtures(1000)));
+  assert.equal((await client.request(file)).ready, false, 'page never falls back to migration JSON');
+  assert.equal((await client.request(file, 'store_open')).ok, true);
   const a = client.request(file, 'list', { page: 2 }), b = client.request(file, 'list', { page: 2 });
   assert.equal(a, b);
   assert.equal((await a).tasks.length, 20);
   assert.equal((await client.request(file, 'detail', { id: 'task-1' })).task.input.privatePrompt.startsWith('not-in-summary'), true);
   assert.equal((await client.request(file, 'statuses', { ids: ['task-1'] })).tasks.length, 1);
   await fs.writeFile(file, '{broken');
-  const failed = await client.request(file);
+  assert.equal((await client.request(file)).tasks.length, 20, 'frozen JSON is not authoritative');
+  const corrupt = path.join(root, 'corrupt', 'tasks.json');
+  await fs.mkdir(path.dirname(corrupt)); await fs.writeFile(corrupt, '{broken');
+  const failed = await client.request(corrupt, 'store_open');
   assert.equal(failed.ok, false); assert.equal(failed.tasks, undefined);
 });
 test('incremental receipt scanner waits for stable files, bounds batches, and reuses parsed content', async t => {
@@ -194,7 +211,8 @@ test('main page reads have no business scans and shutdown releases the added res
   const renderer = await fs.readFile(path.join(__dirname, '../src/main.tsx'), 'utf8');
   const body = source.slice(source.indexOf('async function getTaskPage('), source.indexOf('function getTaskStatuses('));
   assert.doesNotMatch(body, /buildTaskCenterCandidates|syncAgentTaskResults|refreshAdapterCapabilities|enforceTaskTimeouts/);
-  assert.match(source, /startDigestWorkflowMonitor\(\);\s*startTaskReadMaintenance\(\);/);
+  assert.match(source, /if \(tasksReady\) startTaskReadMaintenance\(\);/);
+  assert.match(source, /setTimeout\(\(\) => \{ startDigestWorkflowMonitor\(\); \}, 10_000\)/);
   assert.match(source, /taskIoClient\.close\(\)/);
   assert.match(source, /heavyTaskRetryQueue\.close\(\)/);
   assert.match(source, /automaticTaskWakeQueue\.close\(\)/);
@@ -206,7 +224,8 @@ test('main page reads have no business scans and shutdown releases the added res
   assert.match(source, /task\.kind !== 'maintenance_lint' \|\| item\.size <= 2 \* 1024 \* 1024/);
   const maintenance = source.slice(source.indexOf('async function maintainTaskReadModel('), source.indexOf('async function getTaskPage('));
   assert.doesNotMatch(maintenance, /executeTaskByAdapter|refreshAdapterCapabilities/);
-  assert.match(maintenance, /setImmediate\(resolve\)/);
+  assert.match(maintenance, /await taskSourceQueue\.drain\(\)/);
+  assert.doesNotMatch(maintenance, /taskCenterCandidateBatches/);
   const wake = source.slice(source.indexOf('async function resumeAutomaticTaskWake('), source.indexOf('async function reopenTaskHandoff('));
   assert.doesNotMatch(wake, /runUnifiedTaskScheduler|runProjectAutomationSweep|buildTaskCenterCandidates|refreshAdapterCapabilities/);
   assert.match(wake, /automaticTaskWakeDecision\(task\)/);

@@ -1,0 +1,29 @@
+{
+  "schema": "edu.p0.candidate-provenance.v1",
+  "generatedAt": "2026-10-31T00:40:00+08:00",
+  "workspace": {
+    "commit": "bc1b6d0fe9750d401cd25fe20fd89f0f1923686e",
+    "sourceTreeHash": "38F6FF32CBCEC282178B57D47E7D83B0A1CAD373D46629D3E43F8DF7C0E6E1F6"
+  },
+  "candidate": {
+    "tag": "agent-closure-r1",
+    "exe": {
+      "sha256": "30BB8F8FECB96720DC035344C8DBA2BAE14DB218143755D0548CBB4C66744B16"
+    },
+    "asar": {
+      "sha256": "F4C453CF69B37325D06FE72D8539AC2FA196C43AA644CFFA5E91C069BEB08C58"
+    }
+  },
+  "chains": {
+    "originalCandidate": {
+      "status": "not_applicable_new_candidate"
+    },
+    "diagnosticCandidate": {
+      "status": "built_from_recorded_source_tree",
+      "candidateSha256": "30BB8F8FECB96720DC035344C8DBA2BAE14DB218143755D0548CBB4C66744B16"
+    }
+  },
+  "mapping": {
+    "status": "exact_build_audit_mapping"
+  }
+}

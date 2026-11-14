@@ -449,10 +449,11 @@ function createPlanningGuidanceService(options) {
 
   function getResearchCapabilityStatus() {
     const providers = researchProviders().map((provider) => ({
-      id: cleanText(provider.id, 80), label: cleanText(provider.label || provider.id, 120), available: Boolean(provider.available), authorized: Boolean(provider.authorized), webResearch: Boolean(provider.webResearch && typeof provider.search === 'function'), structuredResult: Boolean(provider.structuredResult && typeof provider.search === 'function'), healthMessage: cleanText(provider.healthMessage, 300),
+      id: cleanText(provider.id, 80), label: cleanText(provider.label || provider.id, 120), available: Boolean(provider.available), authorized: Boolean(provider.authorized), webResearch: Boolean(provider.webResearch && typeof provider.search === 'function'), structuredResult: Boolean(provider.structuredResult && typeof provider.search === 'function'), healthPending: Boolean(provider.healthPending), healthMessage: cleanText(provider.healthMessage, 300),
     }));
     const usable = providers.filter((item) => item.available && item.authorized && item.webResearch && item.structuredResult);
-    return { ok: true, available: usable.length > 0, providers, usableProviderIds: usable.map((item) => item.id), checkedAt: iso(now()), message: usable.length ? `可用联网研究执行器：${usable.map((item) => item.label).join('、')}` : '未发现已登录并接通研究接口的执行器。请登录 Codex CLI 后重试。' };
+    const checking = providers.filter((item) => item.healthPending);
+    return { ok: true, available: usable.length > 0, checking: checking.length > 0, providers, usableProviderIds: usable.map((item) => item.id), checkingProviderIds: checking.map((item) => item.id), checkedAt: iso(now()), message: usable.length ? `可用联网研究执行器：${usable.map((item) => item.label).join('、')}` : checking.length ? '正在核对联网研究执行器状态，任务将保留在自动队列。' : '未发现已登录并接通研究接口的执行器。请登录 Codex CLI 后重试。' };
   }
 
   function getGuidancePlan(studentId) {
@@ -497,7 +498,7 @@ function createPlanningGuidanceService(options) {
     const capabilities = getResearchCapabilityStatus();
     const checkedAt = iso(now());
     const baseReceipt = { ...researchExecutionContext(request), id: `guidance-check-${Date.now()}-${snapshot.inputFingerprint.slice(0, 8)}`, taskType: 'guidance_research_check', studentId: String(student.id), trigger: cleanText(request.trigger || 'manual', 40), checkedAt, inputFingerprint: guidanceInputFingerprint };
-    const provider = researchProviders().find((item) => capabilities.usableProviderIds.includes(item.id) && typeof item.search === 'function');
+    const provider = researchProviders().find((item) => (!request.providerId||item.id===request.providerId)&&capabilities.usableProviderIds.includes(item.id) && typeof item.search === 'function');
     if (!provider) {
       const receipt = { ...baseReceipt, status: 'unavailable', code: 'RESEARCH_CAPABILITY_UNAVAILABLE', message: capabilities.message };
       store.checks = [receipt, ...(store.checks || [])].slice(0, 200);
@@ -511,7 +512,7 @@ function createPlanningGuidanceService(options) {
       queryInput.focusAreas = preferences.focusAreas;
       queryInput.purpose = 'guidance';
       authorizeResearch(studentId);
-      const raw = await provider.search({ schema: 'research.search.request.v1', queryInput: JSON.parse(redact(queryInput, student)), timeoutMs: 300_000, signal: request.signal });
+      const raw = await provider.search({ schema: 'research.search.request.v1', queryInput: JSON.parse(redact(queryInput, student)), timeoutMs: 300_000, signal: request.signal,beforeExecute:request.beforeExecute,onStarted:request.onStarted,onStage:request.onStage,executionContext:request.executionContext });
       authorizeResearch(studentId);
       if (request.signal?.aborted) throw Object.assign(new Error('研究已取消，历史版本不受影响。'), { code: 'RESEARCH_CANCELLED' });
       const currentStudent = requireStudent(studentId);
@@ -566,7 +567,7 @@ function createPlanningGuidanceService(options) {
       return { ok: true, unchanged: false, current: version, receipt, capability: capabilities, message: '已生成新的联网核验规划版本。' };
     } catch (error) {
       store = readStore(requireStudent(studentId));
-      const receipt = { ...baseReceipt, status: 'failed', code: cleanText(error.code || 'RESEARCH_FAILED', 80), message: cleanText(error.message, 500) };
+      const receipt = { ...baseReceipt, status: 'failed', stage:error.stage,code: cleanText(error.code || 'RESEARCH_FAILED', 80), message: cleanText(error.message, 500) };
       store.checks = [receipt, ...(store.checks || [])].slice(0, 200);
       writeStore(student, store);
       return { ok: false, retainedPrevious: Boolean(store.guidanceVersions[0]), current: store.guidanceVersions[0] || null, capability: capabilities, receipt, message: `${receipt.message} ${store.guidanceVersions[0] ? '已保留上一有效版本。' : '尚未生成规划版本。'}` };
@@ -606,11 +607,11 @@ function createPlanningGuidanceService(options) {
     const base = { ...researchExecutionContext(request), id: `competition-check-${crypto.randomUUID()}`, taskType: 'competition_research_check', studentId: String(student.id), checkedAt, inputFingerprint: snapshot.inputFingerprint, trigger: cleanText(request.trigger || 'manual', 40) };
     try {
       const capability = getResearchCapabilityStatus();
-      const provider = researchProviders().find(x => capability.usableProviderIds.includes(x.id));
+      const provider = researchProviders().find(x => (!request.providerId||x.id===request.providerId)&&capability.usableProviderIds.includes(x.id));
       if (!provider) throw new Error(capability.message);
       const queryInput = JSON.parse(redact({ ...deidentifyResearchInput(student, snapshot), purpose: 'competition_recommendation' }, student));
       authorizeResearch(studentId);
-      const raw = await provider.search({ schema: 'research.search.request.v1', queryInput, timeoutMs: 180000, signal: request.signal });
+      const raw = await provider.search({ schema: 'research.search.request.v1', queryInput, timeoutMs: 180000, signal: request.signal,beforeExecute:request.beforeExecute,onStarted:request.onStarted,onStage:request.onStage,executionContext:request.executionContext });
       authorizeResearch(studentId);
       if (request.signal?.aborted) throw new Error('比赛研究已取消');
       const latestStudent = requireStudent(studentId);
@@ -633,7 +634,7 @@ function createPlanningGuidanceService(options) {
       return { ...getCompetitionRecommendations(studentId), current: version, receipt, message: receipt.message };
     } catch (error) {
       store = readStore(requireStudent(studentId));
-      const receipt = { ...base, status: 'failed', code: cleanText(error.code || 'COMPETITION_RESEARCH_FAILED', 80), message: cleanText(error.message, 500) };
+      const receipt = { ...base, status: 'failed', stage:error.stage,code: cleanText(error.code || 'COMPETITION_RESEARCH_FAILED', 80), message: cleanText(error.message, 500) };
       store.checks = [receipt, ...(store.checks || [])].slice(0, 200); writeStore(student, store);
       return { ...getCompetitionRecommendations(studentId), ok: false, receipt, message: `${receipt.message}；未完成最新联网核验，保留历史版本。` };
     }
@@ -645,9 +646,9 @@ function createPlanningGuidanceService(options) {
     const check = store.checks.find(x => x.taskType === 'guidance_research_check');
     return { ok: true, ...researchContent.shareDocument(kind, value, student, check) };
   }
-  function competitionTaskCandidates() {
+  function competitionTaskCandidates(studentId = '') {
     const candidates = [];
-    for (const student of listStudents()) {
+    for (const student of listStudents().filter(student => !studentId || String(student.id) === String(studentId))) {
       const store = readStore(student);
       if (store.competitionPreferences?.automaticMonthlyCheck === false) continue;
       const snapshot = evidenceSnapshot(student);
@@ -684,10 +685,10 @@ function createPlanningGuidanceService(options) {
     return { ok: true, preferences: store.preferences, message: '规划更新偏好已保存。' };
   }
 
-  function taskCandidates() {
+  function taskCandidates(studentId = '') {
     const result = [];
     const projectList = listProjects();
-    for (const student of listStudents()) {
+    for (const student of listStudents().filter(student => !studentId || String(student.id) === String(studentId))) {
       const store = readStore(student);
       const snapshot = evidenceSnapshot(student, projectList);
       const topicCurrent = store.topicSets?.[0];
@@ -698,7 +699,7 @@ function createPlanningGuidanceService(options) {
         result.push({ taskType: 'guidance_plan_refresh', studentId: String(student.id), sourceName: student.name, due: true, idempotencyKey: `guidance_plan_refresh:${student.id}:${snapshot.inputFingerprint}:${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, '0')}` });
       }
     }
-    return [...result, ...competitionTaskCandidates()];
+    return [...result, ...competitionTaskCandidates(studentId)];
   }
 
   function getStudentOverview() {

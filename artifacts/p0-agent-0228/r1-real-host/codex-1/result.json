@@ -1,0 +1,106 @@
+{
+  "schema": "edu.p0.real-host-agent-success.v1",
+  "provider": "codex",
+  "fixture": "synthetic-only",
+  "formalStudentDataTouched": false,
+  "passed": true,
+  "attempts": [
+    {
+      "providerId": "codex",
+      "attempts": [],
+      "stage": "qualifying"
+    },
+    {
+      "providerId": "codex",
+      "attempts": [
+        {
+          "providerId": "codex",
+          "code": "",
+          "stage": "accepted"
+        }
+      ],
+      "stage": "accepted"
+    }
+  ],
+  "startedAt": "2026-10-30T16:24:39.428Z",
+  "isolation": {
+    "mode": "host-mediated-no-tools",
+    "passed": false,
+    "degraded": true,
+    "reason": "os_sandbox_unavailable",
+    "details": {
+      "exitCode": 1,
+      "diagnostic": "windows sandbox failed: runner failed during SpawnChild: CreateProcessAsUserW failed: 2 (系统找不到指定的文件。) | cwd=C:\\Users\\bxw00\\AppData\\Local\\Temp\\edu-material-probe-F9WBhV | cmd=windows -c \"sandbox_mode=\\\"read-only\\\"\" -- powershell.exe -NoProfile -NonInteractive -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwB0AG8AcAAnADsAIAAkAHIAZQBzAHUAbAB0AHMAPQBAACgAZgBvAHIAZQBhAGMAaAAoACQAcAAgAGkAbgAgAEAAKAAnAEMAOgBcAFUAcwBlAHIAcwBcAGIAeAB3ADAAMABcAEEAcABwAEQAYQB0AGEAXABMAG8AYwBhAGwAXABUAGUAbQBwAFwAZQBkAHUALQBtAGEAdABlAHIAaQBhAGwALQBwAHIAbwBiAGUALQBGADkAVwBCAGgAVgBcAG8AcgBpAGcAaQBuAGEAbAAuAHQAeAB0ACcALAAnAEMAOgBcAFUAcwBlAHIAcwBcAGIAeAB3ADAAMABcAEEAcABwAEQAYQB0AGEAXABMAG8AYwBhAGwAXABUAGUAbQBwAFwAZQBkAHUALQBtAGEAdABlAHIAaQBhAGwALQBwAHIAbwBiAGUALQBGADkAVwBCAGgAVgBcAGsAbgBvAHcAbABlAGQAZwBlAC4AbQBkACcAKQApACAAewAgACQAYgBlAGYAbwByAGUAPQBbAEkATwAuAEYAaQBsAGUAXQA6ADoAUgBlAGEAZABBAGwAbABUAGUAeAB0ACgAJABwACkAOwAgACQAZABlAG4AaQBlAGQAPQAkAGYAYQBsAHMAZQA7ACAAdAByAHkAIAB7ACAAWwBJAE8ALgBGAGkAbABlAF0AOgA6AFcAcgBpAHQAZQBBAGwAbABUAGUAeAB0ACgAJABwACwAJwBVAE4ARQBYAFAARQBDAFQARQBEAF8AVwBSAEkAVABFACcAKQAgAH0AIABjAGEAdABjAGgAIAB7ACAAJABkAGUAbgBpAGUAZAA9ACQAdAByAHUAZQAgAH0AOwAgAEAAewByAGUAYQBkAD0AKAAkAGIAZQBmAG8AcgBlACAALQBlAHEAIAAnAFMAWQBOAFQASABFAFQASQBDACAAUABSAE8AQgBFACcAKQA7AGQAZQBuAGkAZQBkAD0AJABkAGUAbgBpAGUAZAB9ACAAfQApADsAIABAAHsAcgBlAHMAdQBsAHQAcwA9ACQAcgBlAHMAdQBsAHQAcwB9AHwAQwBvAG4AdgBlAHIAdABUAG8ALQBKAHMAbwBuACAALQBDAG8AbQBwAHIAZQBzAHMAIAAtAEQAZQBwAHQAaAAgADQA | env_u16_len=6542 | si_flags=256 | creation_flags=134743040 (Windows error 2)\n",
+      "result": {}
+    }
+  },
+  "originalUnchanged": true,
+  "hostCommitted": true,
+  "outputBytes": 313,
+  "resultAttempts": [
+    {
+      "providerId": "codex",
+      "code": "",
+      "stage": "accepted"
+    }
+  ],
+  "processedVersion": 1,
+  "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+  "workKey": "p0-synthetic-codex-digest",
+  "sourceVersion": "material-2bc586a7-84e1-428f-ab1d-7768fa9ebdfc:v1",
+  "batchId": "batch-add22caa-472c-4eee-858f-42ff41f72eeb",
+  "acceptanceProcessId": 18228,
+  "outputArtifact": "codex-e2e-artifact.md",
+  "receiptArtifact": "codex-e2e-receipt.json",
+  "lifecycle": [
+    {
+      "type": "claim",
+      "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+      "at": "2026-10-30T16:24:39.599Z"
+    },
+    {
+      "type": "send_intent",
+      "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+      "at": "2026-10-30T16:24:39.601Z"
+    },
+    {
+      "type": "started",
+      "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+      "at": "2026-10-30T16:24:45.104Z",
+      "processId": 11332
+    },
+    {
+      "type": "receipt",
+      "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+      "at": "2026-10-30T16:25:00.062Z"
+    },
+    {
+      "type": "settled",
+      "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+      "at": "2026-10-30T16:25:01.614Z",
+      "businessOutcome": "completed",
+      "settlementState": "settled"
+    }
+  ],
+  "sessionSummary": {
+    "ok": true,
+    "sessionRunId": "p0-synthetic-codex-cf6ad31a-6920-4317-b37a-80b4f7ac557a",
+    "automaticStarted": 1,
+    "automaticStartedWorkItems": 1,
+    "automaticSucceeded": 1,
+    "automaticFailed": 0,
+    "executionUnknown": 0,
+    "claimedNotStarted": 0,
+    "historicalSettledThisRun": 0,
+    "noWork": 0,
+    "manualFallbacks": 0,
+    "byExecutor": [
+      {
+        "providerId": "codex",
+        "started": 1,
+        "succeeded": 1
+      }
+    ]
+  },
+  "finishedAt": "2026-10-30T16:25:01.617Z"
+}

@@ -1,0 +1,20 @@
+{
+  "synthetic": true,
+  "results": [
+    {
+      "count": 40000,
+      "durationMs": 642.757,
+      "responseBytes": 617,
+      "mainEventLoopMaxMs": 12.042239,
+      "mainHeapDeltaMB": 0.18618011474609375
+    },
+    {
+      "count": 100000,
+      "durationMs": 1504.0404,
+      "responseBytes": 620,
+      "mainEventLoopMaxMs": 12.918783,
+      "mainHeapDeltaMB": 0.10457611083984375
+    }
+  ],
+  "passed": true
+}

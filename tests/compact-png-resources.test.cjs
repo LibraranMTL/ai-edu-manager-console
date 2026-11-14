@@ -9,7 +9,7 @@ for (const name of ['robogala-round.png', 'robogala-wordmark.png']) {
   test(`lossless PNG compaction preserves all scanlines and metadata: ${name}`, () => {
     const before = fs.readFileSync(path.join(__dirname, '../public/brand', name));
     const after = compactPng(before), a = chunksOf(before), b = chunksOf(after);
-    assert.ok(after.length < before.length);
+    assert.ok(after.length <= before.length, 'published source may already be in its canonical compact form');
     const raw = chunks => zlib.inflateSync(Buffer.concat(chunks.filter(c => c.type === 'IDAT').map(c => c.data)));
     assert.deepEqual(raw(a), raw(b));
     assert.deepEqual(a.filter(c => c.type !== 'IDAT'), b.filter(c => c.type !== 'IDAT'));

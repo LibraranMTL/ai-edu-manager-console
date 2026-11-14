@@ -19,6 +19,23 @@ object LocalProjectMaterialPolicy {
     private val dependencyExtensions = setOf("html", "htm", "mhtml", "css", "js", "mjs", "cjs", "xml",
         "dwg", "dxf", "step", "stp", "blend", "psd", "indd", "prproj")
 
+    /** Choose an existing logical category, never a physical move; ambiguous names use only a generic folder. */
+    fun automaticCategory(filename: String, actual: Map<String, String>): Pair<String, String>? {
+        if (!isSafeOrdinaryFile(filename) || isDependencyProtected(filename)) return null
+        val name = filename.substringAfterLast('/').lowercase()
+        val keywords = mapOf("reference" to listOf("参考", "文献", "reference", "source"),
+            "design" to listOf("方案", "设计", "design", "proposal"),
+            "progress" to listOf("进展", "过程", "记录", "日志", "progress", "log"),
+            "deliverable" to listOf("成果", "提交", "交付", "报告", "deliverable", "final"),
+            "team" to listOf("团队", "成员", "协作", "team"))
+        val hits = keywords.filterValues { words -> words.any(name::contains) }.keys
+        val unique = hits.singleOrNull()?.takeIf { it in actual }
+        if (unique != null) return unique to "filename_unique"
+        val generic = actual.entries.singleOrNull { it.value == "其他资料" }?.key
+            ?: actual.entries.singleOrNull { it.value == "资料" }?.key
+        return generic?.let { it to if (hits.size > 1) "generic_ambiguous" else "generic_unclassified" }
+    }
+
     fun safeFilename(value: String): String {
         val cleaned = value.trim().replace(Regex("[\\/:*?\"<>|\\p{Cntrl}]"), "_")
             .trimEnd('.', ' ').take(180)

@@ -3,9 +3,10 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { assertFormalRuntimeAccepted } = require('./lib/windows-formal-release-gate.cjs');
 
 function installerConfig(version, output, icon, candidateTag = '') {
-  const artifactSuffix = candidateTag ? `-${candidateTag}` : '';
+  const artifactSuffix = candidateTag && candidateTag !== version ? `-${candidateTag}` : '';
   return {
     appId: 'com.qxmatrix.edumanager.desktop',
     productName: 'AI Education Manager Console',
@@ -74,6 +75,14 @@ async function main() {
   const runtimeExe = path.join(unpacked, 'AI Education Manager Console.exe');
   const runtimeAsar = path.join(unpacked, 'resources', 'app.asar');
   if (!fs.existsSync(runtimeExe) || !fs.existsSync(runtimeAsar)) throw new Error('Accepted runtime payload is incomplete.');
+  const runtimeAsarSha256 = sha256(runtimeAsar);
+  if (!candidateTag) {
+    assertFormalRuntimeAccepted({
+      runtimeAsarSha256,
+      acceptanceIndexPath: process.env.EDU_WINDOWS_ACCEPTANCE_INDEX
+        || path.join(repo, 'artifacts', 'p0-agent-0228', 'acceptance-index.json'),
+    });
+  }
   const before = treeHashes(unpacked);
   const config = installerConfig(version, output, path.join(repo, 'public', 'brand', 'robogala.ico'), candidateTag);
   const { build, Platform, Arch } = require('electron-builder');
@@ -83,12 +92,12 @@ async function main() {
   for (const [file, hash] of Object.entries(before)) {
     if (after[file] !== hash) throw new Error(`Accepted runtime was modified during packaging: ${file}`);
   }
-  const installer = path.join(output, `AI-edu-manager-console-Windows-${version}${candidateTag ? `-${candidateTag}` : ''}-Setup.exe`);
+  const installer = path.join(output, `AI-edu-manager-console-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}-Setup.exe`);
   const report = {
     version, candidateTag, createdAt: new Date().toISOString(),
     status: candidateTag ? 'local-candidate-installer' : 'local-user-accepted-installer',
     sourceAudit: auditPath, sourceControl: audit.sourceControl,
-    sourcePortable: source, runtimeAsarSha256: sha256(runtimeAsar),
+    sourcePortable: source, runtimeAsarSha256,
     unchangedRuntimeFiles: Object.keys(before).length,
     installer: { path: installer, bytes: fs.statSync(installer).size, sha256: sha256(installer) },
     config, published: false, installedOnDevelopmentMachine: false, temporary,

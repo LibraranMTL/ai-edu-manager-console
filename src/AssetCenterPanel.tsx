@@ -1,6 +1,7 @@
 import React, { memo } from 'react';
 import { AlertTriangle, Archive, FileText, LinkIcon, ListChecks, RefreshCw, ShieldCheck, UserRound } from 'lucide-react';
 import { MarkdownView } from './MarkdownView';
+import { WeeklyKnowledgeGrowthCard } from './WeeklyKnowledgeGrowthCard';
 
 type AssetCenterPanelProps = { model: any; actions: any };
 
@@ -27,7 +28,7 @@ const AssetTrendChart = memo(function AssetTrendChart({ trend }: { trend?: any }
   const pointsFor = (field: string) => days.map((day: any, index: number) => `${xFor(index)},${yFor(day[field])}`).join(' ');
   const yTicks = Array.from(new Set<number>([0, Math.ceil(maxValue / 2), maxValue])).sort((a, b) => a - b);
   return <section className="asset-trend-panel" aria-labelledby="asset-trend-title">
-    <div className="asset-trend-heading"><div><strong id="asset-trend-title">最近 7 天资产变化</strong><span>按文件首次登记和引用首次建立的本地日期统计</span></div><div className="asset-trend-totals" aria-label="最近七天合计"><span className="asset-trend-added">新增资产 <b>{trend?.addedTotal ?? 0}</b></span><span className="asset-trend-references">新增引用 <b>{trend?.referenceTotal ?? 0}</b></span></div></div>
+    <div className="asset-trend-heading"><div><strong id="asset-trend-title">最近 7 天资产变化</strong><span>按文件首次登记和引用首次建立的本地日期统计；显示所选学生的全部文件，不受来源、类型及重复文件筛选影响</span></div><div className="asset-trend-totals" aria-label="最近七天合计"><span className="asset-trend-added">新增资产 <b>{trend?.addedTotal ?? 0}</b></span><span className="asset-trend-references">新增引用 <b>{trend?.referenceTotal ?? 0}</b></span></div></div>
     {days.length ? <div className="asset-trend-chart-wrap"><svg className="asset-trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="最近7天新增资产和新增引用次数曲线图">
       {yTicks.map(tick => <g key={`tick-${tick}`}><line className="asset-trend-gridline" x1={padding.left} x2={width - padding.right} y1={yFor(tick)} y2={yFor(tick)} /><text className="asset-trend-axis-label" x={padding.left - 9} y={yFor(tick) + 4} textAnchor="end">{tick}</text></g>)}
       <polyline className="asset-trend-line asset-trend-line-added" points={pointsFor('added')} /><polyline className="asset-trend-line asset-trend-line-references" points={pointsFor('references')} />
@@ -49,6 +50,7 @@ export const AssetCenterPanel = memo(function AssetCenterPanel({ model: m, actio
     </div>
     <div className="notice muted asset-scope-notice">统计口径：资产、引用、治理和指纹卡片按{m.assetStudentFilter === 'all' ? '全部学生' : '所选学生'}及来源/类型筛选统计；{m.assetQueryActive ? `搜索词只进一步限定“当前查询资产”为 ${m.assetIndex.queryTotal ?? 0} 个，筛选范围原有 ${m.assetIndex.scopeTotal ?? 0} 个。` : '当前未叠加搜索词。'}</div>
     <AssetTrendChart trend={m.assetScopedTrend} />
+    <WeeklyKnowledgeGrowthCard model={m} actions={a} />
     <div className="workflow-rail asset-workflow">{m.assetWorkflowSteps.map((step: any, index: number) => <div className="workflow-step" key={step.title}><span className="workflow-index">{index + 1}</span><strong>{step.title}</strong><em>{step.value}</em><small>{step.detail}</small></div>)}</div>
     <div className="actions"><button className="secondary" onClick={() => void a.refreshAssets()}><RefreshCw size={18} />刷新资产</button><button className="primary" onClick={() => void a.rebuildAssets()} disabled={Boolean(m.assetBusyAction)}><Archive size={18} />{m.assetBusyAction === 'rebuild' ? '正在补建…' : '扫描并补建资产索引'}</button>{m.assetRebuildJob && ['running', 'queued', 'cancelling'].includes(m.assetRebuildJob.status) && <button className="secondary" onClick={() => void a.cancelRebuild(m.assetRebuildJob.jobId)} disabled={m.assetRebuildJob.status === 'cancelling'}>{m.assetRebuildJob.status === 'cancelling' ? '正在取消…' : '取消补建'}</button>}<button className="secondary" onClick={() => void a.analyzeAssets()} disabled={Boolean(m.assetBusyAction)}><ListChecks size={18} />{m.assetBusyAction === 'analyze' ? '正在分析…' : '生成治理建议'}</button></div>
     <div className="form-grid compact-grid">

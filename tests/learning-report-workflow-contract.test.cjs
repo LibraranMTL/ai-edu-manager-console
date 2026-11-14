@@ -15,11 +15,17 @@ test('all four learning reports have idempotent weekly or monthly tasks', () => 
     assert.match(main, new RegExp(`${kind}: new Set\\(\\['read', 'create_draft'\\]\\)`));
   }
   assert.match(main, /function taskMonthRange/);
-  assert.match(main, /idempotencyKey: `\$\{kind\}:\$\{normalized\.id\}:\$\{period\.key\}:\$\{growthFingerprint \|\| 'growth-pending'\}`/);
+  assert.match(main, /idempotencyKey: `\$\{kind\}:\$\{normalized\.id\}:\$\{period\.key\}:\$\{growthFingerprint \|\| 'growth-pending'\}:\$\{learningState\.learningStateFingerprint\}`/);
+  assert.match(main, /taskStableId\(kind, 'student', normalized\.id, period\.key\)/);
+  assert.match(main, /actionCycleKey: `weekly_action:\$\{normalized\.id\}:\$\{week\.key\}`/);
   assert.match(main, /periodicKinds\.has\(task\.kind\)/);
   assert.match(main, /automaticTaskWakeDecision\(task\)\.eligible/);
-  assert.match(main, /scheduleAutomaticTaskWakeups\(due\.map/);
+  assert.match(main, /taskStoreGuard\.listRunnableTasks/);
+  assert.match(main, /scheduleAutomaticTaskWakeups\(\[task\.id\],'fallback_scan'/);
   assert.match(main, /new Set\(\['published', 'current', 'updated', 'active'\]\)\.has\(reportStatus\)/);
+  assert.match(main, /fiveDimensionSnapshot: learningState\.fiveDimensionSnapshot/);
+  assert.doesNotMatch(main, /roleProjections|roleProjectionPolicy/);
+  assert.match(main, /学生端和教师端使用同一份完整学情资料/);
 });
 
 test('periodic reports read bounded learning candidates without promoting them to citeable evidence', () => {

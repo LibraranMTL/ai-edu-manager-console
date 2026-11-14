@@ -62,6 +62,10 @@ function nextCatalogVersion(baseVersion = '', date = new Date()) {
 }
 
 function createCoursePackage(options = {}) {
+  const privateKey = String(options.privateKey || '').trim();
+  const keyId = String(options.keyId || '').trim();
+  if (!privateKey || !/^[a-z0-9][a-z0-9_-]{2,79}$/i.test(keyId)) throw new Error('发布 v3 课程包必须提供部署侧 RSA 私钥和有效 keyId。');
+  const publicKey = String(options.publicKey || crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }));
   const drafts = Array.isArray(options.drafts) ? options.drafts : [];
   const deletedCourseIds = [...new Set((Array.isArray(options.deletedCourseIds) ? options.deletedCourseIds : []).map((item) => String(item || '').trim()).filter(Boolean))];
   if (!drafts.length && !deletedCourseIds.length) throw new Error('没有可发布的平台课程变更。');
@@ -103,15 +107,19 @@ function createCoursePackage(options = {}) {
     catalogVersion,
     issuedAt,
     minHostVersion: String(options.minHostVersion || '0.15.7'),
-    keyId: '',
+    keyId,
     courses,
   };
-  const catalog = {
+  const catalogToSign = {
     ...unsignedCatalog,
     checksum: catalogChecksum(unsignedCatalog),
     signature: '',
   };
-  const checked = validateCatalogPackage(catalog, { hostVersion: options.hostVersion || '999.0.0' });
+  const catalog = {
+    ...catalogToSign,
+    signature: crypto.sign('RSA-SHA256', Buffer.from(catalogSignaturePayload(catalogToSign)), privateKey).toString('base64'),
+  };
+  const checked = validateCatalogPackage(catalog, { hostVersion: options.hostVersion || '999.0.0', publicKey, requireSignature: true });
   if (!checked.ok) throw new Error(`平台课程目录完整性回验失败：${checked.message}`);
 
   const tempBase = path.resolve(options.tempRoot || path.join(os.tmpdir(), 'ai-edu-course-packages'));
@@ -141,6 +149,15 @@ function createCoursePackage(options = {}) {
     };
     const manifestPath = path.join(stage, 'manifest.json');
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    const manifestCanonical = canonicalize(manifest);
+    const packageSignature = {
+      schema: COURSE_PACKAGE_SIGNATURE_SCHEMA,
+      keyId,
+      algorithm: 'RSA-SHA256',
+      manifestSha256: sha256Buffer(Buffer.from(manifestCanonical)),
+      signature: crypto.sign('RSA-SHA256', Buffer.from(manifestCanonical), privateKey).toString('base64'),
+    };
+    fs.writeFileSync(path.join(stage, 'signature.json'), `${JSON.stringify(packageSignature, null, 2)}\n`, 'utf8');
     const outputPath = path.resolve(options.outputPath);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     // Windows bsdtar uses the output extension to select the archive format.
@@ -148,7 +165,7 @@ function createCoursePackage(options = {}) {
     // the product-specific `.edu-coursepkg` name.
     const temporary = `${outputPath}.new.zip`;
     if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
-    runTar(['-a', '-c', '-f', temporary, 'manifest.json', 'catalog.json', 'assets'], stage);
+    runTar(['-a', '-c', '-f', temporary, 'manifest.json', 'signature.json', 'catalog.json', 'assets'], stage);
     if (!fs.existsSync(temporary) || fs.statSync(temporary).size <= 0) throw new Error('课程签名包没有生成有效文件。');
     fs.copyFileSync(temporary, outputPath);
     fs.rmSync(temporary, { force: true });
@@ -189,6 +206,23 @@ function verifyCoursePackage(packagePath, options = {}) {
     runTar(['-xf', path.resolve(packagePath)], stage);
     const manifest = JSON.parse(fs.readFileSync(path.join(stage, 'manifest.json'), 'utf8'));
     if (![COURSE_PACKAGE_SCHEMA, LEGACY_COURSE_PACKAGE_SCHEMA].includes(manifest.schema)) throw new Error('课程包 Schema 不受支持。');
+    const signaturePath = path.join(stage, 'signature.json');
+    if (manifest.schema === COURSE_PACKAGE_SCHEMA && !fs.existsSync(signaturePath)) throw new Error('v3 课程包缺少发布者签名。');
+    if (manifest.schema === LEGACY_COURSE_PACKAGE_SCHEMA && !fs.existsSync(signaturePath) && options.allowLegacyUnsigned !== true) {
+      throw new Error('旧版无签名课程包默认禁止导入。');
+    }
+    let trustedPublicKey = '';
+    if (fs.existsSync(signaturePath)) {
+      const signatureRecord = JSON.parse(fs.readFileSync(signaturePath, 'utf8'));
+      if (signatureRecord.schema !== COURSE_PACKAGE_SIGNATURE_SCHEMA || signatureRecord.algorithm !== 'RSA-SHA256') throw new Error('课程包签名格式不受支持。');
+      const keyId = String(signatureRecord.keyId || '');
+      trustedPublicKey = String(options.publicKeys?.get?.(keyId) || (String(options.keyId || '') === keyId ? options.publicKey : '') || '');
+      if (!trustedPublicKey) throw new Error(`课程包发布密钥不受信任：${keyId || '空'}`);
+      const manifestCanonical = canonicalize(manifest);
+      if (sha256Buffer(Buffer.from(manifestCanonical)) !== String(signatureRecord.manifestSha256 || '')) throw new Error('课程包清单签名哈希不匹配。');
+      const signature = Buffer.from(String(signatureRecord.signature || ''), 'base64');
+      if (!signature.length || !crypto.verify('RSA-SHA256', Buffer.from(manifestCanonical), trustedPublicKey, signature)) throw new Error('课程包发布者签名验证失败。');
+    }
     const declared = Array.isArray(manifest.files) ? manifest.files : [];
     if (new Set(declared.map((file) => String(file?.path || ''))).size !== declared.length) throw new Error('课程签名包文件清单包含重复路径。');
     const archivedPayloadFiles = files.filter((entry) => !['manifest.json', 'signature.json'].includes(entry)).sort();
@@ -208,7 +242,11 @@ function verifyCoursePackage(packagePath, options = {}) {
       }
     }
     const catalog = JSON.parse(fs.readFileSync(path.join(stage, 'catalog.json'), 'utf8'));
-    const checked = validateCatalogPackage(catalog, { hostVersion: options.hostVersion || '0.0.0' });
+    const checked = validateCatalogPackage(catalog, {
+      hostVersion: options.hostVersion || '0.0.0',
+      publicKey: trustedPublicKey,
+      requireSignature: manifest.schema === COURSE_PACKAGE_SCHEMA,
+    });
     if (!checked.ok) throw new Error(checked.message);
     if (checked.catalog.catalogVersion !== manifest.catalogVersion) throw new Error('课程目录版本与签名包清单不一致。');
     const assets = [];

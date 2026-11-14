@@ -5,6 +5,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8');
+const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 const controlCenter = fs.readFileSync(path.join(root, 'src', 'GlobalAgentControlCenter.tsx'), 'utf8');
 const preload = fs.readFileSync(path.join(root, 'electron', 'preload.cjs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
@@ -12,19 +13,21 @@ const capability = fs.readFileSync(path.join(root, 'electron', 'agent-capability
 const planning = fs.readFileSync(path.join(root, 'electron', 'planning-guidance.cjs'), 'utf8');
 
 test('Windows v1.2 exposes exactly eight fixed first-level menu labels', () => {
-  const labels = ['首页', '收集与整理', '学情与学习', '项目与成果', '规划与指导', '知识与协作', '精选课程', '系统设置'];
+  const labels = ['学情工作台', '收集与整理', '学情与学习', '项目与成果', '规划与指导', '知识与协作', '精选课程', '系统设置'];
   labels.forEach((label) => assert.match(renderer, new RegExp(`label: '${label}'|>${label}<`)));
   assert.match(renderer, /v12-fixed-navigation/);
   assert.match(renderer, /项目知识管理/);
 });
 
 test('page tabs preserve requested information architecture and construction states', () => {
-  ['收集总览', '资料导入', '拍照上传', '屏幕采集', '录音采集', 'AI对话采集', '对话分享资料箱', 'Agent会话自动采集', '分享采集', '资料整理'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  ['收集总览', '资料导入', '拍照上传', '屏幕采集', '录音采集', '对话采集', '对话分享资料箱', 'Agent会话自动采集', '分享采集', '资料整理'].forEach((label) => assert.match(renderer, new RegExp(label)));
   const collectionTabs = renderer.slice(renderer.indexOf('collection: ['), renderer.indexOf('learning: ['));
-  assert.match(collectionTabs, /id: 'ai-conversation', label: 'AI对话采集'/);
+  assert.match(collectionTabs, /id: 'ai-conversation', label: '对话采集'/);
+  assert.match(renderer, /collection-page-tabs/);
+  assert.match(styles, /\.collection-page-tabs\s*\{[\s\S]*grid-template-columns:\s*repeat\(7,\s*minmax\(0,\s*1fr\)\)/);
   assert.doesNotMatch(collectionTabs, /id: 'conversation-collection'/);
   assert.doesNotMatch(collectionTabs, /id: 'session-auto-capture'/);
-  ['学情报告', '云端文档', '知识点掌握', '学习资料', '学习卡片'].forEach((label) => assert.match(renderer, new RegExp(label)));
+  ['学情报告', '云端学情报告', '云端学习资料', '知识点掌握', '学习资料', '学习卡片'].forEach((label) => assert.match(renderer, new RegExp(label)));
   ['选题建议', '新建项目', '项目知识管理', '成长模型'].forEach((label) => assert.match(renderer, new RegExp(label)));
   ['规划总览', '升学路径', '择校建议', '专业探索', '职业发展', '更新记录与设置'].forEach((label) => assert.match(renderer, new RegExp(label)));
   assert.match(renderer, /请先选择或新建学生档案/);
@@ -53,7 +56,7 @@ test('learning report navigation and compact controls match the requested layout
   const mastery = renderer.slice(masteryStart, renderer.indexOf("activeSection === 'cloud-documents'", masteryStart));
   assert.match(mastery, /activeSection === 'growth' && <div className="actions growth-primary-action">/);
   assert.equal((mastery.match(/刷新轨迹/g) || []).length, 1);
-  const reports = renderer.slice(renderer.indexOf("activeSection === 'reports' && selectedStudent"), renderer.indexOf('learning-report-layout'));
+  const reports = renderer.slice(renderer.indexOf("activeSection === 'reports' && activePageTab !== 'learning-state' && selectedStudent"), renderer.indexOf('learning-report-layout'));
   assert.match(reports, /<details className="advanced-options reports-advanced-options">\s*<summary>高级<\/summary>\s*<div className="archive-grid">/);
 });
 

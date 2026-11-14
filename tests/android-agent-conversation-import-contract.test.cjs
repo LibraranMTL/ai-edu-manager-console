@@ -84,12 +84,14 @@ test('student public link preview is host mediated and bounded before submit', (
 });
 
 test('student candidate and teacher release expose their expected Android versions', () => {
-  assert.match(student, /VERSION_NAME = "0\.6\.26"/u);
-  assert.match(student, /VERSION_CODE = 96/u);
-  assert.match(studentManifest, /android:versionName="0\.6\.26"/u);
-  assert.match(teacher, /VERSION_NAME = "0\.1\.4"/u);
-  assert.match(teacher, /VERSION_CODE = 5/u);
-  assert.match(teacherManifest, /android:versionName="0\.1\.4"/u);
+  assert.match(student, /VERSION_NAME = "0\.6\.33"/u);
+  assert.match(student, /VERSION_CODE = 103/u);
+  assert.match(studentManifest, /android:versionName="0\.6\.33"/u);
+  assert.match(studentManifest, /android:versionCode="103"/u);
+  assert.match(teacher, /VERSION_NAME = "0\.1\.5"/u);
+  assert.match(teacher, /VERSION_CODE = 6/u);
+  assert.match(teacherManifest, /android:versionName="0\.1\.5"/u);
+  assert.match(teacherManifest, /android:versionCode="6"/u);
 });
 
 test('the minimal Android payload is accepted by the live host normalizer', () => {

@@ -158,7 +158,7 @@ test('actual recovery IPC plus preload reject other windows and child frames eve
 
 test('actual background scheduler entry points skip without claiming tasks while archive is blocked', async (t) => {
   const f = await fixture(t); const runtime = createProjectArchiveRuntime(); await block(runtime, f.file);
-  const scope = { projectArchiveRuntime: runtime };
+  const scope = { projectArchiveRuntime: runtime, executionPlaneReadyAt: 0 };
   for (const name of ['runUnifiedTaskScheduler', 'runGrowthRefreshQueue', 'processDirectDeliveryQueue', 'publishStudentArchiveSync']) { bind(scope, name); assert.equal((await scope[name]()).reason, 'archive_busy'); }
   bind(scope, 'refreshStudentArchiveSyncWatchers'); assert.equal(scope.refreshStudentArchiveSyncWatchers(), undefined);
 });
@@ -216,12 +216,14 @@ test('student archive watcher defers publication during recovery and retains the
   const f = await fixture(t); const runtime = createProjectArchiveRuntime(); await block(runtime, f.file);
   const timers = []; const published = [];
   const scope = { projectArchiveRuntime: runtime, studentArchiveSyncTimers: new Map(),
+    resourceCoordinator: { run: (_resources, work) => Promise.resolve().then(work) },
     setTimeout: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; }, clearTimeout() {},
     publishStudentArchiveSync: (studentId) => published.push(studentId), appendHostTimeline: () => { throw new Error('busy must not become sync failure'); } };
   bind(scope, 'scheduleStudentArchiveSync'); scope.scheduleStudentArchiveSync('s-original', 1000);
   timers[0].callback(); assert.equal(timers.length, 2); assert.equal(timers[1].delay, 30000); assert.deepEqual(published, []);
   assert.equal(scope.studentArchiveSyncTimers.get('s-original'), timers[1]);
   await runtime.recover(async () => ({ ready: true })); timers[1].callback();
+  await tick();
   assert.deepEqual(published, ['s-original']); assert.equal(scope.studentArchiveSyncTimers.size, 0);
 });
 

@@ -9,6 +9,22 @@ const {
   validateCatalogPackage,
 } = require('./course-catalog.cjs');
 const { imageExtension, sha256Buffer, verifyCoursePackage } = require('./course-package-v2.cjs');
+const { verifySigned: verifyPublicCourseManifest } = require('./public-course-sync.cjs');
+
+function mergeCoursesByStableId(platformCourses = [], customCourses = []) {
+  const merged = new Map();
+  for (const course of Array.isArray(platformCourses) ? platformCourses : []) {
+    merged.set(course.courseId, course);
+  }
+  for (const course of Array.isArray(customCourses) ? customCourses : []) {
+    // A signed cloud course is authoritative when the same stable ID is still
+    // present in the legacy local custom catalog. Keep the local entry only as
+    // an offline fallback until its ID has appeared in the signed catalog.
+    if (!merged.has(course.courseId)) merged.set(course.courseId, course);
+  }
+  return [...merged.values()];
+}
+const { loadCourseTrustPolicy } = require('./course-trust-policy.cjs');
 
 function readJson(filePath, fallback = null) {
   try {
@@ -40,12 +56,16 @@ function createCourseCatalogStore(options = {}) {
   const customCatalogPath = path.join(root, 'tenant-custom-courses.json');
   const customAssetsDir = path.join(root, 'custom-assets');
   const platformAssetsDir = path.join(root, 'platform-assets');
+  const publicContentCacheDir = path.join(root, 'public-content');
+  const cloudAssetsDir = path.join(publicContentCacheDir, 'assets');
   const platformPackagesDir = path.join(root, 'platform-packages');
   const platformPackageIndexPath = path.join(platformPackagesDir, 'index.json');
   const publications = options.enablePublications ? require('./course-publications.cjs').createCoursePublications(path.join(root, 'publications')) : null;
   const publicKeyPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'public-key.pem')));
   const packagedCatalogPath = existingPath(resourceRoots.map((item) => path.join(item, 'course-catalog', 'catalog.json')));
   const publicKey = publicKeyPath ? fs.readFileSync(publicKeyPath, 'utf8') : '';
+  const configuredTrustKeys = Array.isArray(options.trustedCourseKeys) ? options.trustedCourseKeys : [];
+  const trustPolicy = loadCourseTrustPolicy({ resourceRoots, required: false });
 
   function keyFingerprint(pem) {
     const der = crypto.createPublicKey(pem).export({ type: 'spki', format: 'der' });
@@ -58,7 +78,8 @@ function createCourseCatalogStore(options = {}) {
     if (!/^[a-z0-9][a-z0-9_-]{2,79}$/i.test(keyId) || !pem.includes('PUBLIC KEY')) throw new Error('课程公钥 keyId 或格式无效。');
     const fingerprint = keyFingerprint(pem);
     if (input.fingerprint && String(input.fingerprint).toLowerCase() !== fingerprint) throw new Error(`课程公钥 ${keyId} 的指纹不一致。`);
-    return { keyId, publicKey: `${pem}\n`, fingerprint, status: input.status === 'revoked' ? 'revoked' : 'active', importedAt: String(input.importedAt || new Date().toISOString()) };
+    const status = ['active', 'transition', 'revoked'].includes(input.status) ? input.status : 'active';
+    return { keyId, publicKey: `${pem}\n`, fingerprint, status, importedAt: String(input.importedAt || new Date().toISOString()) };
   }
 
   function trustedCourseKeys() {
@@ -67,13 +88,21 @@ function createCourseCatalogStore(options = {}) {
     if (publicKey && packagedCatalog?.keyId) {
       try { keys.push(normalizeCourseTrustKey({ keyId: packagedCatalog.keyId, publicKey, importedAt: 'packaged' })); } catch { /* Fail closed. */ }
     }
+    for (const issuer of trustPolicy?.issuers || []) keys.push(normalizeCourseTrustKey({ ...issuer, importedAt: trustPolicy.policyRevision }));
+    for (const configured of configuredTrustKeys) {
+      try { keys.push(normalizeCourseTrustKey(configured)); } catch { /* Invalid explicit anchors fail closed. */ }
+    }
     const byId = new Map();
-    for (const item of keys) byId.set(item.keyId, item);
+    for (const item of keys) {
+      const current = byId.get(item.keyId);
+      if (current && current.fingerprint !== item.fingerprint) throw new Error(`课程公钥 ${item.keyId} 存在冲突，已拒绝加载。`);
+      if (!current || item.status === 'revoked' || current.status === 'active') byId.set(item.keyId, item);
+    }
     return [...byId.values()];
   }
 
   function publicKeys() {
-    return new Map(trustedCourseKeys().filter((item) => item.status !== 'revoked').map((item) => [item.keyId, item.publicKey]));
+    return new Map(trustedCourseKeys().filter((item) => ['active', 'transition'].includes(item.status)).map((item) => [item.keyId, item.publicKey]));
   }
 
   function publicKeyFor(keyId) {
@@ -88,7 +117,7 @@ function createCourseCatalogStore(options = {}) {
   }
 
   function checkedCatalog(candidate) {
-    return validateCatalogPackage(candidate || {}, { hostVersion: appVersion, publicKey: publicKeyFor(candidate?.keyId) || publicKey });
+    return validateCatalogPackage(candidate || {}, { hostVersion: appVersion, publicKey: publicKeyFor(candidate?.keyId), requireSignature: true });
   }
 
   function loadLastGood() {
@@ -96,11 +125,29 @@ function createCourseCatalogStore(options = {}) {
     return checked.ok ? checked.catalog : null;
   }
 
+  function loadCloudCatalog() {
+    const active = readJson(path.join(publicContentCacheDir, 'active.json'));
+    if (active?.schema !== 'edu-manager.public-course-cache.v1' || !active.manifest || !active.catalog) return null;
+    try {
+      verifyPublicCourseManifest(active.manifest, publicKeys());
+      if (active.manifest.manifestRevision !== active.catalog.manifestRevision) return null;
+      for (const asset of active.manifest.assets || []) {
+        const extension = asset.mimeType === 'image/png' ? 'png' : asset.mimeType === 'image/webp' ? 'webp' : asset.mimeType === 'image/jpeg' ? 'jpg' : '';
+        if (!extension) return null;
+        const target = path.join(cloudAssetsDir, `${asset.sha256}.${extension}`);
+        if (!fs.existsSync(target) || fs.statSync(target).size !== Number(asset.bytes) || sha256Buffer(fs.readFileSync(target)) !== asset.sha256) return null;
+      }
+      return active.catalog;
+    } catch { return null; }
+  }
+
   function ensureCatalog() {
+    const cloudCatalog = loadCloudCatalog();
+    if (cloudCatalog) return cloudCatalog;
     let lastGood = loadLastGood();
     const packaged = readJson(packagedCatalogPath);
     if (packaged) {
-      const result = applyCatalogCandidate(packaged, { lastGood }, { hostVersion: appVersion, publicKey: publicKeyFor(packaged.keyId) || publicKey });
+      const result = applyCatalogCandidate(packaged, { lastGood }, { hostVersion: appVersion, publicKey: publicKeyFor(packaged.keyId), requireSignature: true });
       if (result.ok && (!lastGood || result.catalog.catalogVersion !== lastGood.catalogVersion)) {
         writeJsonAtomic(lastGoodPath, result.catalog);
         lastGood = result.catalog;
@@ -145,11 +192,15 @@ function createCourseCatalogStore(options = {}) {
         ? `${platformCatalog?.catalogVersion || 'tenant-custom'}+custom.${customVersion || '1'}`
         : platformCatalog.catalogVersion,
       issuedAt: platformCatalog?.issuedAt || customCatalog.updatedAt || new Date(0).toISOString(),
+      manifestRevision: platformCatalog?.manifestRevision || '',
+      cloudFreshUntil: platformCatalog?.cloudFreshUntil || '',
+      synchronizedAt: platformCatalog?.synchronizedAt || '',
+      tombstones: Array.isArray(platformCatalog?.tombstones) ? platformCatalog.tombstones : [],
       minHostVersion: platformCatalog?.minHostVersion || '0.0.0',
       keyId: platformCatalog?.keyId || '',
       checksum: platformCatalog?.checksum || '',
       signature: platformCatalog?.signature || '',
-      courses: [...(platformCatalog?.courses || []), ...customCatalog.courses],
+      courses: mergeCoursesByStableId(platformCatalog?.courses || [], customCatalog.courses),
     };
   }
 
@@ -197,7 +248,8 @@ function createCourseCatalogStore(options = {}) {
     const lastGood = loadLastGood();
     const result = applyCatalogCandidate(candidate, { lastGood }, {
       hostVersion: appVersion,
-      publicKey: publicKeyFor(candidate?.keyId) || publicKey,
+      publicKey: publicKeyFor(candidate?.keyId),
+      requireSignature: true,
       allowRollback: importOptions.allowRollback === true,
     });
     if (result.ok) writeJsonAtomic(lastGoodPath, result.catalog);
@@ -288,7 +340,7 @@ function createCourseCatalogStore(options = {}) {
     const archived = archivedPackageForVersion(platformCatalog?.catalogVersion);
     if (!platformCatalog || !archived) throw new Error('当前已发布版本没有可重新导出的原始课程包；请先发布或导入一次平台课程包。');
     const source = path.join(platformPackagesDir, archived.filename);
-    const verified = verifyCoursePackage(source, { hostVersion: appVersion, tempRoot: path.join(root, 'package-temp') });
+    const verified = verifyCoursePackage(source, { hostVersion: appVersion, tempRoot: path.join(root, 'package-temp'), publicKeys: publicKeys() });
     if (!verified.ok || verified.catalog?.catalogVersion !== platformCatalog.catalogVersion) throw new Error(`归档课程包完整性校验失败：${verified.message || '目录版本不一致'}`);
     const target = path.resolve(outputPath);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -309,6 +361,7 @@ function createCourseCatalogStore(options = {}) {
     const verified = verifyCoursePackage(filePath, {
       hostVersion: appVersion,
       tempRoot: path.join(root, 'package-temp'),
+      publicKeys: publicKeys(),
     });
     if (!verified.ok) {
       audit({ action: 'signed_course_package_rejected', ok: false, message: verified.message || '' });
@@ -363,6 +416,10 @@ function createCourseCatalogStore(options = {}) {
       const candidate = path.resolve(platformAssetsDir, path.basename(normalized));
       return candidate.startsWith(`${path.resolve(platformAssetsDir)}${path.sep}`) && fs.existsSync(candidate) ? candidate : '';
     }
+    if (/^cloud-assets\/[a-f0-9]{64}\.(png|jpg|jpeg|webp)$/i.test(normalized)) {
+      const candidate = path.resolve(cloudAssetsDir, path.basename(normalized));
+      return candidate.startsWith(`${path.resolve(cloudAssetsDir)}${path.sep}`) && fs.existsSync(candidate) ? candidate : '';
+    }
     if (/^catalog-assets\/[a-z0-9][a-z0-9._-]+\.(png|jpg|jpeg|webp)$/i.test(normalized)) {
       const candidate = existingPath(resourceRoots.map((item) => path.join(item, ...normalized.split('/'))));
       if (!candidate) return '';
@@ -375,7 +432,7 @@ function createCourseCatalogStore(options = {}) {
 
   function assetPathByFilename(assetName) {
     const filename = path.basename(String(assetName || ''));
-    return assetPath(`custom-assets/${filename}`) || assetPath(`platform-assets/${filename}`) || assetPath(`catalog-assets/${filename}`);
+    return assetPath(`custom-assets/${filename}`) || assetPath(`platform-assets/${filename}`) || assetPath(`cloud-assets/${filename}`) || assetPath(`catalog-assets/${filename}`);
   }
 
   function mergeCustomCourses(incoming = [], mergeOptions = {}) {
@@ -435,6 +492,8 @@ function createCourseCatalogStore(options = {}) {
     assetPath,
     assetPathByFilename,
     publications,
+    publicContentCacheDir,
+    publicKeys,
     startPublishedCourse: (courseId, student) => {
       const course = coursesForStudent(student).find(c => c.courseId === courseId);
       if (!course) throw Error('课程未分配给当前学生或已停止新使用');
@@ -456,6 +515,7 @@ function createCourseCatalogStore(options = {}) {
     publicKey,
     publicKeyFor,
     trustedCourseKeys: () => trustedCourseKeys().map(({ publicKey: _publicKey, ...item }) => item),
+    trustPolicyRevision: () => trustPolicy?.policyRevision || 'packaged-single-key-legacy',
     readCustomCatalog,
     readPolicy,
     savePolicy,
@@ -467,6 +527,7 @@ function createCourseCatalogStore(options = {}) {
 
 module.exports = {
   createCourseCatalogStore,
+  mergeCoursesByStableId,
   readJson,
   writeJsonAtomic,
 };

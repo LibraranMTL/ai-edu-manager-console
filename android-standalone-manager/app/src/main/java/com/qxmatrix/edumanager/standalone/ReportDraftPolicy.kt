@@ -30,7 +30,9 @@ object ReportDraftPolicy {
             val candidate = candidates.getValue(section)
             val citedIds = citationIds(candidate)
             val invalidIds = citedIds.filterNot(allowedIds::contains)
-            val needsCitation = candidate.isNotBlank() && !isConservativeOnly(candidate) && !citationPattern.containsMatchIn(candidate)
+            val needsCitation = candidate.isNotBlank() && citationUnits(candidate).any { unit ->
+                !isConservativeOnly(unit) && !citationPattern.containsMatchIn(unit)
+            }
             val allConservativeDespiteEvidence = allowedIds.isNotEmpty() && modelReturnedOnlyConservativeText && isConservativeOnly(candidate)
             if (candidate.isNotBlank() && invalidIds.isEmpty() && !needsCitation && !allConservativeDespiteEvidence) {
                 output.put(section, candidate); adopted += 1
@@ -51,6 +53,22 @@ object ReportDraftPolicy {
     private fun citationIds(value: String): List<String> = citationPattern.findAll(value).flatMap { match ->
         match.groupValues[1].split(Regex("[,，、\\s]+")).asSequence().map(String::trim).filter(String::isNotBlank)
     }.toList()
+
+    /** A citation in one paragraph or bullet must not authorize unrelated claims in another. */
+    private fun citationUnits(value: String): List<String> {
+        val units = mutableListOf<String>(); val current = StringBuilder()
+        fun flush() { current.toString().trim().takeIf(String::isNotBlank)?.let(units::add); current.clear() }
+        value.lines().forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) flush()
+            else {
+                if (Regex("^(?:[-*+]\\s+|\\d+[.)、]\\s+)").containsMatchIn(trimmed)) flush()
+                if (current.isNotEmpty()) current.append(' ')
+                current.append(trimmed.replace(Regex("^(?:[-*+]\\s+|\\d+[.)、]\\s+)"), ""))
+            }
+        }
+        flush(); return units
+    }
 
     private fun sectionValue(sections: JSONObject?, expected: String): String {
         if (sections == null) return ""

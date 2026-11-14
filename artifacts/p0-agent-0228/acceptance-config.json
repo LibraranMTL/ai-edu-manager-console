@@ -1,0 +1,59 @@
+{
+  "provenance": "r1-provenance.json",
+  "realAgentRuns": {
+    "workbuddy": ["r1-real-host/workbuddy-1", "r1-real-host/workbuddy-2", "r1-real-host/workbuddy-3"],
+    "codex": ["r1-real-host/codex-1", "r1-real-host/codex-2", "r1-real-host/codex-3"]
+  },
+  "recoveryEvidence": "r1-real-host/failure-matrix/result.json",
+  "formalPerformance": "formal-performance.json",
+  "matrix": {
+    "A1": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A2": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A3": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A4": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A5": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A6": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A7": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A8": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A9": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A10": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A11": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A12": { "evidence": "acceptance/matrix-contract-results.json" },
+    "A13": { "evidence": "formal-performance.json" },
+    "A14": { "evidence": "r1-real-host/workbuddy-1/result.json" },
+    "A15": { "evidence": "formal-performance.json" },
+    "B1": { "evidence": "acceptance/matrix-contract-results.json" },
+    "B2": { "evidence": "acceptance/matrix-contract-results.json" },
+    "B3": { "evidence": "acceptance/matrix-contract-results.json" },
+    "B4": { "evidence": "acceptance/matrix-contract-results.json" },
+    "B5": { "evidence": "acceptance/matrix-contract-results.json" },
+    "B6": { "evidence": "acceptance/matrix-contract-results.json" },
+    "B7": { "evidence": "acceptance/matrix-contract-results.json" },
+    "C1": { "evidence": "acceptance/matrix-contract-results.json" },
+    "C2": { "evidence": "research-timeout-real-host.json", "jsonPointer": "classification.disposition", "expected": "safe_retry" },
+    "C3": { "evidence": "research-timeout-real-host-unconfirmed.json", "jsonPointer": "classification.disposition", "expected": "execution_unknown" },
+    "C4": { "evidence": "r1-real-host/packaged-research-fallback-cached/summary.json" },
+    "C5": { "evidence": "acceptance/matrix-contract-results.json" }
+  },
+  "packaging": [
+    {
+      "kind": "portable",
+      "path": "release/windows/candidates/agent-closure-r1/AI-edu-manager-console-Windows-0.22.8-agent-closure-r1.exe",
+      "authenticodeStatus": "NotSigned",
+      "localVerified": true
+    },
+    {
+      "kind": "zip",
+      "path": "release/windows/candidates/agent-closure-r1/AI-edu-manager-console-Windows-0.22.8-agent-closure-r1.zip",
+      "authenticodeStatus": "NotSigned",
+      "localVerified": true
+    },
+    {
+      "kind": "installer",
+      "path": "release/windows/candidates/agent-closure-r1/installer/AI-edu-manager-console-Windows-0.22.8-agent-closure-r1-Setup.exe",
+      "authenticodeStatus": "NotSigned",
+      "localVerified": true
+    }
+  ],
+  "installUpgradeVerified": true
+}

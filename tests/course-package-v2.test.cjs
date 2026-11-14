@@ -47,7 +47,7 @@ function publishableDraft() {
   };
 }
 
-test('platform publisher creates and verifies an installable integrity course package', () => {
+test('platform publisher creates and verifies an installable publisher-signed course package', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'course-package-v2-'));
   const resourceRoot = path.join(temp, 'resources');
   const userDataDir = path.join(temp, 'user-data');
@@ -58,6 +58,7 @@ test('platform publisher creates and verifies an installable integrity course pa
   const built = createSignedCoursePackage({
     privateKey,
     publicKey,
+    keyId: 'course-test-key',
     drafts: [publishableDraft()],
     baseCatalog: { catalogVersion: '', courses: [] },
     issuedAt: '2026-08-01T08:00:00.000Z',
@@ -67,12 +68,12 @@ test('platform publisher creates and verifies an installable integrity course pa
   });
   assert.equal(built.ok, true);
   assert.equal(fs.existsSync(outputPath), true);
-  const verified = verifySignedCoursePackage(outputPath, { publicKey, hostVersion: '0.15.7' });
+  const verified = verifySignedCoursePackage(outputPath, { publicKeys: new Map([['course-test-key', publicKey]]), hostVersion: '0.15.7' });
   assert.equal(verified.ok, true, verified.message);
   assert.equal(verified.catalog.courses[0].courseId, 'platform:package-test');
   assert.match(verified.catalog.courses[0].coverAsset, /^platform-assets\/[a-f0-9]{64}\.png$/);
 
-  const store = createCourseCatalogStore({ userDataDir, appVersion: '0.15.7', resourceRoots: [resourceRoot] });
+  const store = createCourseCatalogStore({ userDataDir, appVersion: '0.15.7', resourceRoots: [resourceRoot], trustedCourseKeys: [{ keyId: 'course-test-key', publicKey }] });
   const imported = store.importSignedCoursePackage(outputPath);
   assert.equal(imported.ok, true, imported.message);
   assert.equal(store.state().platformCatalog.catalogVersion, '2026.08.01.1');
@@ -97,6 +98,7 @@ test('course package rejects drafts that did not pass rights validation', () => 
   assert.throws(() => createSignedCoursePackage({
     privateKey,
     publicKey,
+    keyId: 'course-test-key',
     drafts: [{ ...publishableDraft(), validation: { ok: false, issues: ['版权未确认'] } }],
     baseCatalog: { catalogVersion: '', courses: [] },
     outputPath: path.join(temp, 'invalid.edu-coursepkg'),
@@ -115,6 +117,7 @@ test('course package downgrade is blocked unless a platform rollback explicitly 
     createSignedCoursePackage({
       privateKey,
       publicKey,
+      keyId: 'course-test-key',
       drafts: [publishableDraft()],
       baseCatalog: { catalogVersion: '', courses: [] },
       issuedAt: '2026-08-01T08:00:00.000Z',
@@ -126,7 +129,7 @@ test('course package downgrade is blocked unless a platform rollback explicitly 
   };
   const older = build('2026.08.01.1');
   const newer = build('2026.08.01.2');
-  const store = createCourseCatalogStore({ userDataDir: path.join(temp, 'user-data'), appVersion: '0.15.7', resourceRoots: [resourceRoot] });
+  const store = createCourseCatalogStore({ userDataDir: path.join(temp, 'user-data'), appVersion: '0.15.7', resourceRoots: [resourceRoot], trustedCourseKeys: [{ keyId: 'course-test-key', publicKey }] });
   assert.equal(store.importSignedCoursePackage(newer).ok, true);
   const blocked = store.importSignedCoursePackage(older);
   assert.equal(blocked.ok, false);
@@ -141,7 +144,7 @@ test('catalog versions increment within the same UTC release day', () => {
   assert.equal(nextCatalogVersion('2026.07.31.9', new Date('2026-08-01T12:00:00Z')), '2026.08.01.1');
 });
 
-test('course package verification no longer depends on a receiver signing key', () => {
+test('course package rejects an unknown or wrong receiver trust key', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'course-package-key-rotation-'));
   const oldPair = keys();
   const newPair = keys();
@@ -162,18 +165,29 @@ test('course package verification no longer depends on a receiver signing key', 
     hostVersion: '0.15.7',
   });
   assert.equal(accepted.ok, true, accepted.message);
-  const keyIndependent = verifySignedCoursePackage(outputPath, {
+  const unknownKey = verifySignedCoursePackage(outputPath, {
     publicKeys: new Map([['course-key-2026-a', oldPair.publicKey]]),
     hostVersion: '0.15.7',
   });
-  assert.equal(keyIndependent.ok, true, keyIndependent.message);
+  assert.equal(unknownKey.ok, false);
+  assert.match(unknownKey.message, /不受信任/);
+  const wrongKey = verifySignedCoursePackage(outputPath, {
+    publicKeys: new Map([['course-key-2026-b', oldPair.publicKey]]),
+    hostVersion: '0.15.7',
+  });
+  assert.equal(wrongKey.ok, false);
+  assert.match(wrongKey.message, /签名验证失败/);
 });
 
 test('platform publisher can publish a deletion-only catalog revision', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'course-package-delete-'));
+  const { privateKey, publicKey } = keys();
   const existing = publishableDraft().course;
   const outputPath = path.join(temp, 'delete.edu-coursepkg');
   const built = createSignedCoursePackage({
+    privateKey,
+    publicKey,
+    keyId: 'course-test-key',
     drafts: [],
     deletedCourseIds: [existing.courseId],
     baseCatalog: { catalogVersion: '2026.08.01.1', courses: [existing] },
@@ -183,7 +197,7 @@ test('platform publisher can publish a deletion-only catalog revision', () => {
     resolveAssetPath: () => imagePath,
   });
   assert.equal(built.catalog.courses.length, 0);
-  const verified = verifySignedCoursePackage(outputPath, { hostVersion: '0.15.9' });
+  const verified = verifySignedCoursePackage(outputPath, { publicKeys: new Map([['course-test-key', publicKey]]), hostVersion: '0.15.9' });
   assert.equal(verified.ok, true, verified.message);
   assert.equal(verified.catalog.courses.length, 0);
 });

@@ -56,7 +56,7 @@ test('v1 schema upgrades in place, keeps a snapshot, and backfills consistent SH
   const upgraded = createAssetIndexStore({ dbPath: value.dbPath, legacyJsonPath: value.legacyJsonPath });
   try {
     const store = upgraded.initialize();
-    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 4);
+    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 5);
     assert.equal(store.getAssetDetail('asset-v1').sha256, fingerprint.sha256);
     assert.equal(store.getAssetDetail('asset-v1').references[0].state, 'active');
     assert.equal(store.getAssetDetail('asset-v1').references[0].availabilityState, 'unchecked');
@@ -64,6 +64,7 @@ test('v1 schema upgrades in place, keeps a snapshot, and backfills consistent SH
     assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v2-')).length, 1);
     assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v3-')).length, 1);
     assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v4-')).length, 1);
+    assert.equal(fs.readdirSync(value.root).filter(name => name.includes('.pre-schema-v5-')).length, 1);
   } finally {
     upgraded.close();
     fs.rmSync(value.root, { recursive: true, force: true });

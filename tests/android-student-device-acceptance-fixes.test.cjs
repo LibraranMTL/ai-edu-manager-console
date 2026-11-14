@@ -67,16 +67,34 @@ test('structured planning is capability gated and rendered from host sections on
   for (const section of ['pathways', 'majors', 'careers']) assert.match(planning, new RegExp(section));
 });
 
-test('0.6.26 is the formal Android student release while other public platforms stay unchanged', () => {
+test('Android student source and public release metadata remain aligned with the current client set', () => {
   const manifest = read('android-tablet-terminal/AndroidManifest.xml');
   const build = read('android-tablet-terminal/build.ps1');
   const formal = read('release/edu-manager-version.json');
-  assert.match(manifest, /android:versionCode="96"/u);
-  assert.match(manifest, /android:versionName="0\.6\.26"/u);
-  assert.match(build, /AI-edu-manager-tablet-terminal-0\.6\.26\.apk/u);
-  assert.match(formal, /"tabletTerminalVersionCode": 96/u);
-  assert.match(formal, /"tabletTerminalVersionName": "0\.6\.26"/u);
-  assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.26\.apk/u);
-  assert.match(formal, /"windowsVersionName": "0\.21\.6"/u);
-  assert.match(formal, /"standaloneVersionName": "1\.3\.4"/u);
+  assert.match(manifest, /android:versionCode="103"/u);
+  assert.match(manifest, /android:versionName="0\.6\.33"/u);
+  assert.match(build, /\$versionName = '0\.6\.33'/u);
+  assert.match(build, /AI-edu-manager-tablet-terminal-\$versionName\.apk/u);
+  assert.match(formal, /"tabletTerminalVersionCode": 103/u);
+  assert.match(formal, /"tabletTerminalVersionName": "0\.6\.33"/u);
+  assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.33\.apk/u);
+  assert.match(formal, /"teacherTerminalVersionName": "0\.1\.5"/u);
+  assert.match(formal, /"windowsVersionName": "0\.23\.7"/u);
+  assert.match(formal, /"windowsTerminalVersionName": "0\.18\.9"/u);
+  assert.match(formal, /"standaloneVersionName": "1\.3\.7"/u);
+});
+
+test('Android student refreshes its scoped v2 course projection every sixty seconds', () => {
+  assert.match(activity, /COURSE_PROJECTION_PREFIX = "course_projection_v2_trust1_"/u);
+  assert.match(activity, /courseRefreshHandler\.postDelayed\(courseRefreshRunnable, 60_000L\)/u);
+  assert.match(activity, /courseRefreshHandler\.removeCallbacks\(courseRefreshRunnable\)/u);
+  assert.match(activity, /\/api\/v2\/students\//u);
+});
+
+test('Android student release build fails closed without its existing upgrade certificate', () => {
+  const build = read('android-tablet-terminal/build.ps1');
+  assert.match(build, /EDU_ANDROID_STUDENT_KEYSTORE/u);
+  assert.match(build, /EDU_ANDROID_STUDENT_KEYSTORE_PASSWORD/u);
+  assert.match(build, /42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB/u);
+  assert.doesNotMatch(build, /-genkeypair/u);
 });

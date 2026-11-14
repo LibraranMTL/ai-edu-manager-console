@@ -9,6 +9,7 @@ const {
   normalizeProfile, profileRevisionId, sha256, stableJson,
 } = require('./v2-contract.cjs');
 const { normalizeRemoteProjectResult } = require('./remote-result-contract.cjs');
+const { verifyWindowsProductLicense } = require('./product-license.cjs');
 
 const REPORT_TYPES = new Set(['learning_profile', 'learning_change', 'weekly_action', 'stage_summary']);
 const MAX_REPORT_BYTES = 2 * 1024 * 1024;
@@ -47,13 +48,18 @@ function validId(value) {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{8,96}$/.test(value);
 }
 
-function createService({ dataDir, adminToken, now = () => Date.now(), maxStudentBytes = DEFAULT_MAX_STUDENT_BYTES, allowLegacyTestCredentials = false }) {
+function createService({ dataDir, adminToken, now = () => Date.now(), maxStudentBytes = DEFAULT_MAX_STUDENT_BYTES,
+  allowLegacyTestCredentials = false, publicOrigin = 'https://www.greatbg.com/edu-cloud', trustedLicenseIssuers = { issuers: [] } }) {
   if (allowLegacyTestCredentials && !process.env.NODE_TEST_CONTEXT) throw new Error('Legacy credentials are restricted to node:test migration fixtures');
   if (!dataDir || !adminToken || String(adminToken).length < 24) {
     throw new Error('dataDir and a 24+ character adminToken are required');
   }
   if (!Number.isSafeInteger(maxStudentBytes) || maxStudentBytes <= 0) {
     throw new Error('maxStudentBytes must be a positive safe integer');
+  }
+  const oauthIssuer = String(publicOrigin || '').replace(/\/+$/, '');
+  if (!/^https:\/\/[^/]+(?:\/[^?#]*)?$/i.test(oauthIssuer) && !/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/[^?#]*)?$/i.test(oauthIssuer)) {
+    throw new Error('publicOrigin must be HTTPS or a loopback development URL');
   }
   fs.mkdirSync(dataDir, { recursive: true });
   const objectDir = path.join(dataDir, 'objects');
@@ -88,6 +94,17 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       code_hash TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id),
       expires_at INTEGER NOT NULL, consumed_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS source_auto_bindings (
+      binding_hash TEXT PRIMARY KEY,
+      license_id TEXT NOT NULL,
+      product_device_id TEXT NOT NULL,
+      source_device_id TEXT NOT NULL REFERENCES devices(id),
+      student_id TEXT NOT NULL REFERENCES students(id),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      revoked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS source_auto_license ON source_auto_bindings(license_id,revoked_at,created_at);
     CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id),
       origin_device_id TEXT NOT NULL REFERENCES devices(id), origin_platform TEXT NOT NULL, report_type TEXT NOT NULL,
@@ -134,7 +151,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     CREATE TABLE IF NOT EXISTS v2_grants (
       device_id TEXT NOT NULL REFERENCES devices(id), student_id TEXT NOT NULL REFERENCES students(id),
       scope TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', fields_json TEXT NOT NULL DEFAULT '[]',
-      object_scope_json TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, expires_at INTEGER,
+      object_scope_json TEXT NOT NULL DEFAULT '[]', purpose TEXT NOT NULL DEFAULT 'document_sync', created_at INTEGER NOT NULL, expires_at INTEGER,
       revoked_at INTEGER, policy_version INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY(device_id, student_id, scope, category)
     );
@@ -182,6 +199,59 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       UNIQUE(target_device_id,idempotency_key)
     );
     CREATE INDEX IF NOT EXISTS cloud_inbox_target ON cloud_inbox_submissions(target_device_id,status,created_at,submission_id);
+    CREATE TABLE IF NOT EXISTS cloud_inbox_attachments (
+      submission_id TEXT NOT NULL REFERENCES cloud_inbox_submissions(submission_id),
+      attachment_id TEXT NOT NULL, display_name TEXT NOT NULL, content_type TEXT NOT NULL,
+      content_sha256 TEXT NOT NULL, byte_size INTEGER NOT NULL, object_name TEXT NOT NULL,
+      created_at INTEGER NOT NULL, PRIMARY KEY(submission_id,attachment_id)
+    );
+    CREATE TABLE IF NOT EXISTS health_records (
+      revision_id TEXT PRIMARY KEY, health_record_id TEXT NOT NULL,
+      student_id TEXT NOT NULL REFERENCES students(id), origin_device_id TEXT NOT NULL REFERENCES devices(id),
+      display_name TEXT NOT NULL, content_type TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+      byte_size INTEGER NOT NULL, object_name TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+      created_at INTEGER NOT NULL, deleted_at INTEGER,
+      UNIQUE(student_id,origin_device_id,idempotency_key)
+    );
+    CREATE INDEX IF NOT EXISTS health_records_student ON health_records(student_id,health_record_id,created_at,revision_id);
+    CREATE TABLE IF NOT EXISTS material_current (
+      student_id TEXT NOT NULL REFERENCES students(id), material_category TEXT NOT NULL,
+      material_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '', scope_fingerprint TEXT NOT NULL DEFAULT '',
+      revision_id TEXT NOT NULL UNIQUE, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(student_id,material_category,material_id,project_id,scope_fingerprint)
+    );
+    CREATE INDEX IF NOT EXISTS material_current_revision ON material_current(revision_id);
+    CREATE TABLE IF NOT EXISTS material_index_jobs (
+      revision_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, claimed_at INTEGER,
+      updated_at INTEGER NOT NULL, error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS material_index_jobs_ready ON material_index_jobs(status,available_at,updated_at);
+    CREATE TABLE IF NOT EXISTS material_search_documents (
+      revision_id TEXT PRIMARY KEY, content_sha256 TEXT NOT NULL,
+      extracted_text TEXT NOT NULL, extraction_status TEXT NOT NULL, page_count INTEGER NOT NULL DEFAULT 0,
+      indexed_at INTEGER NOT NULL
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS material_search_fts USING fts5(
+      revision_id UNINDEXED, display_name, body, tokenize='unicode61'
+    );
+    CREATE TABLE IF NOT EXISTS oauth_clients (
+      client_id TEXT PRIMARY KEY, owner_device_id TEXT NOT NULL REFERENCES devices(id), client_name TEXT NOT NULL,
+      redirect_uris_json TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+      code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+      session_id TEXT NOT NULL REFERENCES remote_agent_sessions(session_id), redirect_uri TEXT NOT NULL,
+      code_challenge TEXT NOT NULL, scope TEXT NOT NULL, created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, consumed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS oauth_authorization_codes_expiry ON oauth_authorization_codes(expires_at,consumed_at);
+    CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+      token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES oauth_clients(client_id),
+      session_id TEXT NOT NULL REFERENCES remote_agent_sessions(session_id), scope TEXT NOT NULL,
+      audience TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS oauth_access_tokens_session ON oauth_access_tokens(session_id,expires_at,revoked_at);
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}'
     );
@@ -211,6 +281,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   if (!documentColumns.has('idempotency_key')) db.exec("ALTER TABLE documents ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''");
   if (!documentColumns.has('project_id')) db.exec("ALTER TABLE documents ADD COLUMN project_id TEXT NOT NULL DEFAULT ''");
   if (!documentColumns.has('scope_fingerprint')) db.exec("ALTER TABLE documents ADD COLUMN scope_fingerprint TEXT NOT NULL DEFAULT ''");
+  const v2GrantColumns = new Set(db.prepare('PRAGMA table_info(v2_grants)').all().map(column => column.name));
+  if (!v2GrantColumns.has('purpose')) db.exec("ALTER TABLE v2_grants ADD COLUMN purpose TEXT NOT NULL DEFAULT 'document_sync'");
   db.exec('CREATE INDEX IF NOT EXISTS documents_v2_material ON documents(student_id,material_category,material_id,created_at,revision_id)');
   const remoteSessionColumns = new Set(db.prepare('PRAGMA table_info(remote_agent_sessions)').all().map(column => column.name));
   for (const [column, sql] of [
@@ -230,6 +302,41 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     .run('cloud-contract-v2', now(), JSON.stringify({ contractVersion: 2, legacyContractSupported: true }));
   db.prepare('INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
     .run('cloud-student-archive-v1', now(), JSON.stringify({ recoverable: true, physicalObjectsRetained: true }));
+  const materialIndexMigrationExists = Boolean(db.prepare('SELECT 1 FROM schema_migrations WHERE id=?')
+    .get('cloud-material-index-c4'));
+  if (!materialIndexMigrationExists) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(`
+        INSERT OR IGNORE INTO material_current(student_id,material_category,material_id,project_id,scope_fingerprint,revision_id,updated_at)
+        SELECT d.student_id,d.material_category,d.material_id,d.project_id,d.scope_fingerprint,d.revision_id,d.created_at
+        FROM documents d
+        WHERE d.revision_id!='' AND d.deleted_at IS NULL AND NOT EXISTS (
+          SELECT 1 FROM documents newer
+          WHERE newer.student_id=d.student_id AND newer.material_category=d.material_category
+            AND newer.material_id=d.material_id AND newer.project_id=d.project_id
+            AND newer.scope_fingerprint=d.scope_fingerprint AND newer.deleted_at IS NULL
+            AND (newer.created_at>d.created_at OR (newer.created_at=d.created_at AND newer.revision_id>d.revision_id))
+        );
+        INSERT OR IGNORE INTO material_index_jobs(revision_id,status,attempts,available_at,updated_at)
+        SELECT c.revision_id,'pending',0,0,0 FROM material_current c
+        LEFT JOIN material_search_documents s ON s.revision_id=c.revision_id
+        WHERE s.revision_id IS NULL;
+      `);
+      db.prepare('INSERT INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
+        .run('cloud-material-index-c4', now(), JSON.stringify({ currentRevisionPointer: true, asynchronousExtraction: true, currentOnlyIndex: true }));
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  db.prepare('INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
+    .run('cloud-oauth-pkce-v1', now(), JSON.stringify({ authorizationCode: true, pkceMethod: 'S256', publicClients: true }));
+  db.prepare('INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
+    .run('cloud-health-records-c2', now(), JSON.stringify({ independentObjectScope: true, explicitReadWriteGrant: true }));
+  db.prepare('INSERT OR IGNORE INTO schema_migrations(id,applied_at,detail_json) VALUES(?,?,?)')
+    .run('cloud-inbox-attachments-c5', now(), JSON.stringify({ contentAddressedObjects: true, leaseProtectedDownload: true }));
   if (!db.prepare('SELECT 1 FROM admin_identity WHERE id=?').get('admin_local')) {
     const salt = crypto.randomBytes(32).toString('hex');
     db.prepare('INSERT INTO admin_identity VALUES(?,?,?)').run('admin_local', salt, crypto.scryptSync(adminToken, salt, 32).toString('hex'));
@@ -247,10 +354,25 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       .get('cloud-contract-v2');
     const studentArchiveMigration = db.prepare('SELECT id,applied_at AS appliedAt FROM schema_migrations WHERE id=?')
       .get('cloud-student-archive-v1');
+    const materialIndexMigration = db.prepare('SELECT id,applied_at AS appliedAt FROM schema_migrations WHERE id=?')
+      .get('cloud-material-index-c4');
+    const oauthMigration = db.prepare('SELECT id,applied_at AS appliedAt FROM schema_migrations WHERE id=?')
+      .get('cloud-oauth-pkce-v1');
+    const healthMigration = db.prepare('SELECT id,applied_at AS appliedAt FROM schema_migrations WHERE id=?')
+      .get('cloud-health-records-c2');
+    const inboxAttachmentMigration = db.prepare('SELECT id,applied_at AS appliedAt FROM schema_migrations WHERE id=?')
+      .get('cloud-inbox-attachments-c5');
     return { contractVersion: 2, legacyContractSupported: true, migrationId: 'cloud-contract-v2',
       applied: Boolean(migration), appliedAt: migration?.appliedAt || 0,
       studentArchive: { migrationId: 'cloud-student-archive-v1', applied: Boolean(studentArchiveMigration),
-        appliedAt: studentArchiveMigration?.appliedAt || 0 } };
+        appliedAt: studentArchiveMigration?.appliedAt || 0 },
+      materialIndex: { migrationId: 'cloud-material-index-c4', applied: Boolean(materialIndexMigration),
+        appliedAt: materialIndexMigration?.appliedAt || 0 },
+      oauthPkce: { migrationId: 'cloud-oauth-pkce-v1', applied: Boolean(oauthMigration), appliedAt: oauthMigration?.appliedAt || 0 },
+      healthRecords: { migrationId: 'cloud-health-records-c2', applied: Boolean(healthMigration),
+        appliedAt: healthMigration?.appliedAt || 0 },
+      inboxAttachments: { migrationId: 'cloud-inbox-attachments-c5', applied: Boolean(inboxAttachmentMigration),
+        appliedAt: inboxAttachmentMigration?.appliedAt || 0 } };
   }
   function atomic(action) {
     db.exec('BEGIN IMMEDIATE');
@@ -389,7 +511,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     return { revoked: true };
   }
   function hasGrant(deviceId, studentId, scope) {
-    return Boolean(db.prepare("SELECT 1 FROM grants g JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND g.student_id=? AND g.scope=? AND g.revoked_at IS NULL AND s.archived_at IS NULL AND (g.scope!='cloud_document.read' OR (g.expires_at IS NOT NULL AND g.expires_at>?))")
+    return Boolean(db.prepare("SELECT 1 FROM grants g JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND g.student_id=? AND g.scope=? AND g.revoked_at IS NULL AND g.enabled=1 AND s.archived_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?)")
       .get(deviceId, studentId, scope, now()));
   }
   function requireGrant(deviceId, studentId, scope) {
@@ -401,7 +523,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function studentUsedBytes(studentId) {
     const reports = db.prepare('SELECT COALESCE(SUM(byte_size),0) AS bytes FROM reports WHERE student_id=?').get(studentId).bytes;
     const documents = db.prepare('SELECT COALESCE(SUM(byte_size),0) AS bytes FROM documents WHERE student_id=?').get(studentId).bytes;
-    return reports + documents;
+    const health = db.prepare('SELECT COALESCE(SUM(byte_size),0) AS bytes FROM health_records WHERE student_id=? AND deleted_at IS NULL').get(studentId).bytes;
+    return reports + documents + health;
   }
   function studentStorage(token, studentId) {
     if (!isAdmin(token)) fail(401, '管理员凭据无效');
@@ -424,7 +547,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     audit(actorId, `grant.issue.${scope}`, studentId, deviceId);
     return { deviceId, studentId, scope, active: true, expiresAt };
   }
-  function grantV2(deviceId, studentId, scope, { category = '', fields = [], objectScope = [], actorId = 'admin_local' } = {}) {
+  function grantV2(deviceId, studentId, scope, { category = '', fields = [], objectScope = [], purpose = 'document_sync', expiresAt: requestedExpiresAt = null, actorId = 'admin_local' } = {}) {
     if (!studentExists(studentId)) fail(404, '学生不存在');
     if (!V2_SCOPES.includes(scope)) fail(400, 'v2 许可范围无效');
     const device = db.prepare('SELECT kind FROM devices WHERE id=? AND revoked_at IS NULL').get(deviceId);
@@ -435,15 +558,23 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     if (!scope.startsWith('material.') && category) fail(400, '该许可不接受资料类别');
     const normalizedFields = scope.startsWith('student_profile.') ? checkedFields(fields) : [];
     const normalizedObjects = [...new Set((Array.isArray(objectScope) ? objectScope : []).map(String).filter(Boolean))].sort();
-    const expiresAt = scope.endsWith('.read') ? now() + READ_GRANT_LIFETIME_MS : null;
-    db.prepare(`INSERT INTO v2_grants(device_id,student_id,scope,category,fields_json,object_scope_json,created_at,expires_at,revoked_at,policy_version)
-      VALUES(?,?,?,?,?,?,?,?,NULL,1)
+    const normalizedPurpose = String(purpose || 'document_sync');
+    if (!['document_sync', 'expert_interpretation'].includes(normalizedPurpose)) fail(400, '授权用途无效');
+    let expiresAt = scope.endsWith('.read') ? now() + READ_GRANT_LIFETIME_MS : null;
+    if (scope.endsWith('.write') && requestedExpiresAt !== null && requestedExpiresAt !== undefined) {
+      expiresAt = Number(requestedExpiresAt);
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= now() + 5 * 60 * 1000 || expiresAt > now() + 365 * 24 * 60 * 60 * 1000) {
+        fail(400, '上传授权有效期无效');
+      }
+    }
+    db.prepare(`INSERT INTO v2_grants(device_id,student_id,scope,category,fields_json,object_scope_json,purpose,created_at,expires_at,revoked_at,policy_version)
+      VALUES(?,?,?,?,?,?,?,?,?,NULL,1)
       ON CONFLICT(device_id,student_id,scope,category) DO UPDATE SET fields_json=excluded.fields_json,
-      object_scope_json=excluded.object_scope_json,created_at=excluded.created_at,expires_at=excluded.expires_at,revoked_at=NULL,
+      object_scope_json=excluded.object_scope_json,purpose=excluded.purpose,created_at=excluded.created_at,expires_at=excluded.expires_at,revoked_at=NULL,
       policy_version=v2_grants.policy_version+1`)
-      .run(deviceId, studentId, scope, category, JSON.stringify(normalizedFields), JSON.stringify(normalizedObjects), now(), expiresAt);
+      .run(deviceId, studentId, scope, category, JSON.stringify(normalizedFields), JSON.stringify(normalizedObjects), normalizedPurpose, now(), expiresAt);
     audit(actorId, `grant.v2.issue.${scope}${category ? `.${category}` : ''}`, studentId, deviceId);
-    return { deviceId, studentId, scope, category, fields: normalizedFields, objectScope: normalizedObjects, expiresAt };
+    return { deviceId, studentId, scope, category, fields: normalizedFields, objectScope: normalizedObjects, purpose: normalizedPurpose, expiresAt };
   }
   function v2Grant(deviceId, studentId, scope, category = '') {
     const row = db.prepare(`SELECT g.* FROM v2_grants g JOIN students s ON s.id=g.student_id
@@ -521,10 +652,63 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         for (const category of checkedCategories(options.materialCategories)) {
           grantV2(deviceId, record.student_id, 'material.write', { category, actorId: deviceId });
         }
+        // Contract v2 enrollment establishes identity only. Upload starts after a bounded scope is confirmed.
+        db.prepare(`UPDATE grants SET enabled=0 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
+          .run(deviceId, record.student_id);
       }
       audit(deviceId, 'source.enrollment.redeem', record.student_id);
     });
     return { deviceId, deviceToken, cloudStudentId: record.student_id };
+  }
+  function autoEnrollSource(input = {}, existingToken = '') {
+    const key = checkedKey(input.publicKey);
+    const bindingKey = String(input.bindingKey || '').trim();
+    const productDeviceId = String(input.deviceId || '').trim();
+    const displayName = String(input.displayName || '').trim();
+    if (!/^[A-Za-z0-9_-]{43,128}$/.test(bindingKey)) fail(400, '本机学生绑定凭据无效');
+    if (!productDeviceId || productDeviceId.length > 160) fail(400, 'Windows 主机设备码无效');
+    if (!displayName || displayName.length > 120 || /[\\/\x00-\x1f]/.test(displayName)) fail(400, '学生显示名无效');
+    const verified = verifyWindowsProductLicense(input.licenseToken, {
+      trustedIssuers: trustedLicenseIssuers, deviceId: productDeviceId, now: now(),
+    });
+    if (!verified.ok) fail(403, verified.message || 'Windows 主机许可证无效');
+    const selectedFields = checkedFields(input.profileFields);
+    const selectedCategories = checkedCategories(input.materialCategories);
+    const bindingHash = digest(`${verified.license.licenseId}\n${productDeviceId.toLowerCase()}\n${bindingKey}`);
+    const prior = db.prepare(`SELECT binding_hash AS bindingHash,source_device_id AS sourceDeviceId,
+      student_id AS studentId,revoked_at AS revokedAt FROM source_auto_bindings WHERE binding_hash=?`).get(bindingHash);
+    const authenticated = existingToken ? requireDevice(existingToken, 'source') : null;
+    if (authenticated && authenticated.public_key !== key) fail(403, '来源公钥与已绑定设备不一致');
+    const deviceToken = authenticated ? existingToken : randomToken();
+    const deviceId = authenticated?.id || prior?.sourceDeviceId || `src_${crypto.randomUUID().replaceAll('-', '')}`;
+    const studentId = prior?.studentId || `cs_${crypto.randomUUID().replaceAll('-', '')}`;
+    if (prior?.revokedAt) fail(403, '此本机学生云端绑定已撤销');
+    if (!prior) {
+      const active = Number(db.prepare('SELECT COUNT(*) AS count FROM source_auto_bindings WHERE license_id=? AND revoked_at IS NULL')
+        .get(verified.license.licenseId)?.count || 0);
+      if (active >= verified.license.maxActiveStudents) fail(403, '许可证允许的云端学生数量已满');
+    }
+    atomic(() => {
+      if (!prior) db.prepare('INSERT INTO students(id,display_name,created_at) VALUES(?,?,?)').run(studentId, displayName, now());
+      else db.prepare('UPDATE students SET display_name=? WHERE id=? AND archived_at IS NULL').run(displayName, studentId);
+      if (!authenticated && !prior) {
+        db.prepare('INSERT INTO devices(id,kind,token_hash,created_at,public_key) VALUES(?,?,?,?,?)')
+          .run(deviceId, 'source', digest(deviceToken), now(), key);
+      } else if (!authenticated) {
+        db.prepare('UPDATE devices SET token_hash=?,public_key=?,revoked_at=NULL WHERE id=? AND kind=?')
+          .run(digest(deviceToken), key, deviceId, 'source');
+      }
+      if (!prior) db.prepare(`INSERT INTO source_auto_bindings
+        (binding_hash,license_id,product_device_id,source_device_id,student_id,created_at,updated_at,revoked_at)
+        VALUES(?,?,?,?,?,?,?,NULL)`).run(bindingHash, verified.license.licenseId, productDeviceId, deviceId, studentId, now(), now());
+      else db.prepare('UPDATE source_auto_bindings SET updated_at=? WHERE binding_hash=?').run(now(), bindingHash);
+      grant(deviceId, studentId, 'report.write', deviceId);
+      grantV2(deviceId, studentId, 'student_profile.write', { fields: selectedFields, actorId: deviceId });
+      for (const category of selectedCategories) grantV2(deviceId, studentId, 'material.write', { category, actorId: deviceId });
+      audit(deviceId, prior ? 'source.auto-enrollment.reuse' : 'source.auto-enrollment.create', studentId, verified.license.licenseId);
+    });
+    return { deviceId, deviceToken, cloudStudentId: studentId, created: !prior,
+      contractVersion: 2, profileFields: selectedFields, materialCategories: selectedCategories };
   }
   function createPairing(existingToken = '', publicKey = '') {
     const existing = existingToken ? requireDevice(existingToken, 'viewer') : null;
@@ -575,6 +759,14 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
           });
           for (const category of checkedCategories(options.materialCategories)) {
             grantV2(pairing.device_id, studentId, 'material.read', { category, actorId: source?.id || 'admin_local' });
+          }
+          const healthObjectScope = [...new Set((Array.isArray(options.healthObjectScope) ? options.healthObjectScope : []).map(String).filter(Boolean))];
+          if (healthObjectScope.length) {
+            if (!admin) {
+              const writeGrant = requireV2Grant(source.id, studentId, 'health_record.write');
+              if (healthObjectScope.some(objectId => !writeGrant.objectScope.includes(objectId))) fail(403, '健康资料读取范围超出来源端单独授权');
+            }
+            grantV2(pairing.device_id, studentId, 'health_record.read', { objectScope: healthObjectScope, actorId: source?.id || 'admin_local' });
           }
         }
       }
@@ -636,7 +828,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function listV2Grants(token, studentId) {
     if (!isAdmin(token)) fail(401, '管理员凭据无效');
     if (!studentExists(studentId)) fail(404, '学生不存在');
-    return db.prepare(`SELECT device_id AS deviceId,scope,category,fields_json AS fieldsJson,
+    return db.prepare(`SELECT device_id AS deviceId,scope,category,fields_json AS fieldsJson,purpose,
       object_scope_json AS objectScopeJson,created_at AS createdAt,expires_at AS expiresAt,
       revoked_at AS revokedAt,policy_version AS policyVersion FROM v2_grants
       WHERE student_id=? ORDER BY created_at DESC,device_id,scope,category`).all(studentId).map(row => ({
@@ -669,24 +861,53 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function setOwnUploadScope(token, input) {
     const source = requireDevice(token, 'source');
     const studentId = String(input?.cloudStudentId || '');
-    if (!validId(studentId) || !hasGrant(source.id, studentId, 'report.write')) {
+    const knownWriteGrant = validId(studentId) && db.prepare(`SELECT 1 FROM grants
+      WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`).get(source.id, studentId);
+    if (!knownWriteGrant) {
       fail(403, '该设备没有有效的学生上传许可');
     }
-    if (!v2Grant(source.id, studentId, 'student_profile.write')) {
+    const knownV2Grant = db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
+      AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL LIMIT 1`).get(source.id, studentId);
+    if (!knownV2Grant) {
       fail(403, '旧版上传许可不能直接扩大为新版资料授权，请重新开通');
     }
-    const profileFields = checkedFields(input?.profileFields);
+    const requestedProfileFields = Array.isArray(input?.profileFields) ? input.profileFields : [];
+    const profileFields = checkedFields(requestedProfileFields, { requireDisplayName: requestedProfileFields.length > 0 });
     const materialCategories = checkedCategories(input?.materialCategories);
+    const authorizationPurpose = String(input?.authorizationPurpose || 'document_sync');
+    const authorizationExpiresAt = Number(input?.authorizationExpiresAt);
+    if (!['document_sync', 'expert_interpretation'].includes(authorizationPurpose)) fail(400, '授权用途无效');
+    if (!Number.isSafeInteger(authorizationExpiresAt) || authorizationExpiresAt <= now() + 5 * 60 * 1000 ||
+        authorizationExpiresAt > now() + 365 * 24 * 60 * 60 * 1000) fail(400, '上传授权有效期无效');
     return atomic(() => {
       db.prepare(`UPDATE v2_grants SET revoked_at=?,policy_version=policy_version+1
         WHERE device_id=? AND student_id=? AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL`)
         .run(now(), source.id, studentId);
-      grantV2(source.id, studentId, 'student_profile.write', { fields: profileFields, actorId: source.id });
+      if (profileFields.length) grantV2(source.id, studentId, 'student_profile.write', { fields: profileFields,
+        purpose: authorizationPurpose, expiresAt: authorizationExpiresAt, actorId: source.id });
       for (const category of materialCategories) {
-        grantV2(source.id, studentId, 'material.write', { category, actorId: source.id });
+        grantV2(source.id, studentId, 'material.write', { category, purpose: authorizationPurpose,
+          expiresAt: authorizationExpiresAt, actorId: source.id });
       }
+      db.prepare(`UPDATE grants SET expires_at=?,enabled=1 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
+        .run(authorizationExpiresAt, source.id, studentId);
       audit(source.id, 'source.upload-scope.replace', studentId, source.id);
-      return { cloudStudentId: studentId, profileFields, materialCategories };
+      return { cloudStudentId: studentId, profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt };
+    });
+  }
+  function setOwnHealthScope(token, input) {
+    const source = requireDevice(token, 'source');
+    const studentId = String(input?.cloudStudentId || '');
+    const objectScope = [...new Set((Array.isArray(input?.objectScope) ? input.objectScope : []).map(String)
+      .filter(value => /^[A-Za-z0-9:_-]{8,160}$/.test(value)))].sort();
+    if (!validId(studentId) || !hasGrant(source.id, studentId, 'report.write')) fail(403, '该设备没有有效的学生上传许可');
+    if (objectScope.length > 200) fail(400, '健康资料范围过大');
+    return atomic(() => {
+      db.prepare(`UPDATE v2_grants SET revoked_at=?,policy_version=policy_version+1
+        WHERE device_id=? AND student_id=? AND scope='health_record.write' AND revoked_at IS NULL`).run(now(), source.id, studentId);
+      if (objectScope.length) grantV2(source.id, studentId, 'health_record.write', { objectScope, actorId: source.id });
+      audit(source.id, 'source.health-scope.replace', studentId, source.id);
+      return { cloudStudentId: studentId, enabled: objectScope.length > 0, objectScope };
     });
   }
   function studentRemovalPreview(token, studentId) {
@@ -779,6 +1000,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   }
   function uploadStudentProfile(token, studentId, input) {
     const source = requireDevice(token, 'source');
+    requireGrant(source.id, studentId, 'report.write');
     const grant = requireV2Grant(source.id, studentId, 'student_profile.write');
     const requested = checkedFields(input?.fields?.length ? input.fields : Object.keys(input?.profile || {}));
     if (requested.some(field => !grant.fields.includes(field))) fail(403, '学生基础信息字段超出授权范围');
@@ -1066,6 +1288,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function prepareV2Material(token, studentId, metadata) {
     const source = requireDevice(token, 'source');
     const category = String(metadata?.category || '');
+    requireGrant(source.id, studentId, 'report.write');
     requireV2Grant(source.id, studentId, 'material.write', category);
     const materialId = String(metadata?.materialId || '');
     const idempotencyKey = String(metadata?.idempotencyKey || '');
@@ -1084,6 +1307,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const tempPath = path.join(objectDir, `material-${crypto.randomUUID()}.tmp`);
     return { tempPath, commit({ sha, size, head }) {
       if (!deviceFor(token)) fail(401, '上传凭据已失效');
+      requireGrant(source.id, studentId, 'report.write');
       requireV2Grant(source.id, studentId, 'material.write', category);
       if (size < 1 || size > MAX_DOCUMENT_BYTES || !/^[a-f0-9]{64}$/.test(sha)) fail(413, '资料大小无效');
       if (suffix === '.pdf' && !head.subarray(0, 5).equals(Buffer.from('%PDF-'))) fail(400, 'PDF 内容与类型不符');
@@ -1108,6 +1332,23 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
           material_category,material_id,revision_id,idempotency_key,project_id,scope_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(documentId, studentId, source.id, displayName, contentType, sha, size, objectName, now(), category, materialId, revisionId, idempotencyKey,
             projectId, scopeFingerprint);
+        const previous = db.prepare(`SELECT revision_id FROM material_current WHERE student_id=? AND material_category=?
+          AND material_id=? AND project_id=? AND scope_fingerprint=?`).get(studentId, category, materialId, projectId, scopeFingerprint);
+        if (previous && previous.revision_id !== revisionId) {
+          db.prepare("UPDATE material_index_jobs SET status='superseded',updated_at=? WHERE revision_id=? AND status IN ('pending','processing','retry','ready')")
+            .run(now(), previous.revision_id);
+          db.prepare('DELETE FROM material_search_fts WHERE revision_id=?').run(previous.revision_id);
+          db.prepare('DELETE FROM material_search_documents WHERE revision_id=?').run(previous.revision_id);
+        }
+        db.prepare(`INSERT INTO material_current(student_id,material_category,material_id,project_id,scope_fingerprint,revision_id,updated_at)
+          VALUES(?,?,?,?,?,?,?) ON CONFLICT(student_id,material_category,material_id,project_id,scope_fingerprint)
+          DO UPDATE SET revision_id=excluded.revision_id,updated_at=excluded.updated_at`)
+          .run(studentId, category, materialId, projectId, scopeFingerprint, revisionId, now());
+        db.prepare(`INSERT INTO material_index_jobs(revision_id,status,attempts,available_at,updated_at)
+          VALUES(?,'pending',0,?,?) ON CONFLICT(revision_id) DO UPDATE SET
+          status=CASE WHEN material_index_jobs.status='ready' THEN 'ready' ELSE 'pending' END,
+          available_at=excluded.available_at,updated_at=excluded.updated_at,error_code='',error_message=''`)
+          .run(revisionId, now(), now());
         appendSyncEvent(studentId, 'material.published', category, materialId, revisionId);
         audit(source.id, `material.upload.${category}`, studentId, revisionId);
       });
@@ -1115,9 +1356,250 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         contentSha256: sha, byteSize: size, duplicate: false };
     } };
   }
+  function prepareHealthRecord(token, studentId, metadata) {
+    const source = requireDevice(token, 'source');
+    const grantRow = requireV2Grant(source.id, studentId, 'health_record.write');
+    const healthRecordId = String(metadata?.healthRecordId || '');
+    const idempotencyKey = String(metadata?.idempotencyKey || '');
+    const displayName = String(metadata?.displayName || '').trim();
+    const contentType = String(metadata?.contentType || '').split(';')[0];
+    const suffix = DOCUMENT_TYPES.get(contentType);
+    if (!/^[A-Za-z0-9:_-]{8,160}$/.test(healthRecordId) || !grantRow.objectScope.includes(healthRecordId)) {
+      fail(403, '健康资料不在单独授权范围内');
+    }
+    if (!/^[A-Za-z0-9:_-]{8,200}$/.test(idempotencyKey)) fail(400, '健康资料幂等键无效');
+    if (!displayName || displayName.length > 120 || /[\\/\x00-\x1f]/.test(displayName) || !suffix || !displayName.toLowerCase().endsWith(suffix)) {
+      fail(400, '健康资料名称或类型无效');
+    }
+    const tempPath = path.join(objectDir, `health-${crypto.randomUUID()}.tmp`);
+    return { tempPath, commit({ sha, size, head }) {
+      if (!deviceFor(token)) fail(401, '上传凭据已失效');
+      const currentGrant = requireV2Grant(source.id, studentId, 'health_record.write');
+      if (!currentGrant.objectScope.includes(healthRecordId)) fail(403, '健康资料不在当前单独授权范围内');
+      if (size < 1 || size > MAX_DOCUMENT_BYTES || !/^[a-f0-9]{64}$/.test(sha)) fail(413, '健康资料大小无效');
+      if (suffix === '.pdf' && !head.subarray(0, 5).equals(Buffer.from('%PDF-'))) fail(400, 'PDF 内容与类型不符');
+      if (suffix === '.docx' && !head.subarray(0, 2).equals(Buffer.from('PK'))) fail(400, 'DOCX 内容与类型不符');
+      const revisionId = `health_rev_${digest(`${studentId}|${healthRecordId}|${sha}`).slice(0, 48)}`;
+      const objectName = `${sha}${suffix}`;
+      let duplicate;
+      atomic(() => {
+        const existing = db.prepare(`SELECT revision_id AS revisionId,health_record_id AS healthRecordId,
+          content_sha256 AS contentSha256,byte_size AS byteSize FROM health_records
+          WHERE student_id=? AND origin_device_id=? AND idempotency_key=?`).get(studentId, source.id, idempotencyKey);
+        if (existing) {
+          if (existing.healthRecordId !== healthRecordId || existing.contentSha256 !== sha || Number(existing.byteSize) !== Number(size)) {
+            fail(409, '同一健康资料提交编号对应不同内容');
+          }
+          duplicate = { ...existing, duplicate: true }; return;
+        }
+        requireStudentCapacity(studentId, size);
+        const target = path.join(objectDir, objectName);
+        if (!fs.existsSync(target)) fs.renameSync(tempPath, target);
+        db.prepare(`INSERT INTO health_records(revision_id,health_record_id,student_id,origin_device_id,display_name,
+          content_type,content_sha256,byte_size,object_name,idempotency_key,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(revisionId, healthRecordId, studentId, source.id, displayName,
+          contentType, sha, size, objectName, idempotencyKey, now());
+        appendSyncEvent(studentId, 'health_record.published', 'health_record', healthRecordId, revisionId);
+        audit(source.id, 'health_record.upload', studentId, revisionId);
+      });
+      return duplicate || { revisionId, healthRecordId, contentSha256: sha, byteSize: size, duplicate: false };
+    } };
+  }
+  function listHealthRecords(token, studentId, cursor = '') {
+    const viewer = requireDevice(token, 'viewer');
+    const grantRow = requireV2Grant(viewer.id, studentId, 'health_record.read');
+    if (cursor && !/^\d+:health_rev_[a-f0-9]{48}$/.test(cursor)) fail(400, '健康资料分页游标无效');
+    const [before, beforeRevision] = cursor ? cursor.split(':') : [Number.MAX_SAFE_INTEGER, 'z'];
+    const placeholders = grantRow.objectScope.map(() => '?').join(',');
+    if (!placeholders) return { records: [], nextCursor: '' };
+    const rows = db.prepare(`SELECT revision_id AS revisionId,health_record_id AS healthRecordId,display_name AS displayName,
+      content_type AS contentType,content_sha256 AS contentSha256,byte_size AS byteSize,created_at AS createdAt
+      FROM health_records WHERE student_id=? AND health_record_id IN (${placeholders}) AND deleted_at IS NULL
+      AND (created_at<? OR (created_at=? AND revision_id<?)) ORDER BY created_at DESC,revision_id DESC LIMIT 101`)
+      .all(studentId, ...grantRow.objectScope, Number(before), Number(before), beforeRevision);
+    const records = rows.slice(0, 100); const last = records.at(-1);
+    audit(viewer.id, 'health_record.list', studentId);
+    return { records, nextCursor: rows.length > 100 ? `${last.createdAt}:${last.revisionId}` : '' };
+  }
+  function getHealthRecord(token, revisionId) {
+    const viewer = requireDevice(token, 'viewer');
+    const row = db.prepare('SELECT * FROM health_records WHERE revision_id=? AND deleted_at IS NULL').get(revisionId);
+    if (!row) fail(404, '健康资料修订不存在');
+    const grantRow = requireV2Grant(viewer.id, row.student_id, 'health_record.read');
+    if (!grantRow.objectScope.includes(row.health_record_id)) fail(403, '健康资料不在单独授权范围内');
+    const content = fs.readFileSync(path.join(objectDir, row.object_name));
+    if (!safeEqual(digest(content), row.content_sha256)) fail(500, '健康资料对象校验失败');
+    audit(viewer.id, 'health_record.download', row.student_id, revisionId);
+    return { content, contentSha256: row.content_sha256, contentType: row.content_type, displayName: row.display_name,
+      cloudStudentId: row.student_id, healthRecordId: row.health_record_id, revisionId };
+  }
   function readableMaterialCategories(deviceId, studentId) {
     return db.prepare(`SELECT category FROM v2_grants WHERE device_id=? AND student_id=? AND scope='material.read'
       AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)`).all(deviceId, studentId, now()).map(row => row.category);
+  }
+  function materialIndexStatusRow(revisionId) {
+    const row = db.prepare(`SELECT j.revision_id AS revisionId,j.status,j.attempts,j.available_at AS availableAt,
+      j.updated_at AS updatedAt,j.error_code AS errorCode,j.error_message AS errorMessage,
+      s.extraction_status AS extractionStatus,s.page_count AS pageCount,s.indexed_at AS indexedAt
+      FROM material_index_jobs j LEFT JOIN material_search_documents s ON s.revision_id=j.revision_id
+      WHERE j.revision_id=?`).get(revisionId);
+    return row || { revisionId, status: 'not_scheduled', attempts: 0, availableAt: 0, updatedAt: 0,
+      errorCode: '', errorMessage: '', extractionStatus: '', pageCount: 0, indexedAt: 0 };
+  }
+  function getV2MaterialIndexStatus(token, revisionId) {
+    const viewer = requireDevice(token, 'viewer');
+    const row = db.prepare(`SELECT d.student_id,d.material_category FROM documents d
+      JOIN material_current c ON c.revision_id=d.revision_id WHERE d.revision_id=? AND d.deleted_at IS NULL`).get(revisionId);
+    if (!row) fail(404, '当前资料修订不存在');
+    requireV2Grant(viewer.id, row.student_id, 'material.read', row.material_category);
+    return materialIndexStatusRow(revisionId);
+  }
+  function claimMaterialIndexJob() {
+    return atomic(() => {
+      const currentTime = now();
+      db.prepare(`UPDATE material_index_jobs SET status='retry',available_at=?,claimed_at=NULL,updated_at=?,
+        error_code='worker_interrupted',error_message='上次提取进程中断，已自动重试。'
+        WHERE status='processing' AND claimed_at IS NOT NULL AND claimed_at<?`).run(currentTime, currentTime, currentTime - 10 * 60 * 1000);
+      const row = db.prepare(`SELECT j.revision_id AS revisionId,j.attempts,d.object_name AS objectName,
+        d.content_sha256 AS contentSha256,d.byte_size AS byteSize,d.content_type AS contentType,d.display_name AS displayName
+        FROM material_index_jobs j JOIN material_current c ON c.revision_id=j.revision_id
+        JOIN documents d ON d.revision_id=j.revision_id AND d.deleted_at IS NULL
+        WHERE j.status IN ('pending','retry') AND j.available_at<=? ORDER BY j.available_at,j.updated_at,j.revision_id LIMIT 1`).get(currentTime);
+      if (!row) return null;
+      const changed = db.prepare(`UPDATE material_index_jobs SET status='processing',attempts=attempts+1,claimed_at=?,updated_at=?,
+        error_code='',error_message='' WHERE revision_id=? AND status IN ('pending','retry')`).run(currentTime, currentTime, row.revisionId);
+      return changed.changes === 1 ? { ...row, attempts: Number(row.attempts) + 1, objectPath: path.join(objectDir, row.objectName) } : null;
+    });
+  }
+  function completeMaterialIndexJob(revisionId, extraction) {
+    const text = String(extraction?.text || '').trim();
+    if (!text || Buffer.byteLength(text) > 4 * 1024 * 1024) fail(400, '索引正文为空或超过容量限制');
+    const extractionStatus = ['partial', 'ocr_complete'].includes(extraction?.status) ? extraction.status : 'complete';
+    const pageCount = Number.isSafeInteger(extraction?.pageCount) && extraction.pageCount >= 0 ? extraction.pageCount : 0;
+    return atomic(() => {
+      const current = db.prepare(`SELECT d.display_name AS displayName,d.content_sha256 AS contentSha256
+        FROM material_current c JOIN documents d ON d.revision_id=c.revision_id WHERE c.revision_id=?`).get(revisionId);
+      if (!current) {
+        db.prepare("UPDATE material_index_jobs SET status='superseded',claimed_at=NULL,updated_at=? WHERE revision_id=?")
+          .run(now(), revisionId);
+        return { revisionId, status: 'superseded' };
+      }
+      db.prepare('DELETE FROM material_search_fts WHERE revision_id=?').run(revisionId);
+      db.prepare('INSERT INTO material_search_fts(revision_id,display_name,body) VALUES(?,?,?)')
+        .run(revisionId, current.displayName, text);
+      db.prepare(`INSERT INTO material_search_documents(revision_id,content_sha256,extracted_text,extraction_status,page_count,indexed_at)
+        VALUES(?,?,?,?,?,?) ON CONFLICT(revision_id) DO UPDATE SET content_sha256=excluded.content_sha256,
+        extracted_text=excluded.extracted_text,extraction_status=excluded.extraction_status,page_count=excluded.page_count,indexed_at=excluded.indexed_at`)
+        .run(revisionId, current.contentSha256, text, extractionStatus, pageCount, now());
+      db.prepare("UPDATE material_index_jobs SET status='ready',claimed_at=NULL,updated_at=?,error_code='',error_message='' WHERE revision_id=?")
+        .run(now(), revisionId);
+      return { revisionId, status: 'ready', extractionStatus, pageCount };
+    });
+  }
+  function failMaterialIndexJob(revisionId, error) {
+    return atomic(() => {
+      const row = db.prepare('SELECT attempts FROM material_index_jobs WHERE revision_id=?').get(revisionId);
+      if (!row) return { revisionId, status: 'missing' };
+      const retry = Number(row.attempts) < 3;
+      const delay = Math.min(15 * 60 * 1000, Math.max(5000, 30000 * (2 ** Math.max(0, Number(row.attempts) - 1))));
+      db.prepare(`UPDATE material_index_jobs SET status=?,available_at=?,claimed_at=NULL,updated_at=?,error_code=?,error_message=?
+        WHERE revision_id=?`).run(retry ? 'retry' : 'failed', retry ? now() + delay : Number.MAX_SAFE_INTEGER,
+        now(), String(error?.code || 'extraction_failed').slice(0, 80), String(error?.message || '资料提取失败').slice(0, 500), revisionId);
+      return { revisionId, status: retry ? 'retry' : 'failed' };
+    });
+  }
+  function materialIndexSummary() {
+    const rows = db.prepare('SELECT status,COUNT(*) AS count FROM material_index_jobs GROUP BY status').all();
+    return Object.fromEntries(rows.map(row => [row.status, Number(row.count)]));
+  }
+  function checkedRedirectUri(value) {
+    let url;
+    try { url = new URL(String(value || '')); } catch { fail(400, 'OAuth回调地址无效'); }
+    const loopback = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    if ((!loopback && url.protocol !== 'https:') || url.username || url.password || url.hash || String(value).length > 500) fail(400, 'OAuth回调地址无效');
+    return url.toString();
+  }
+  function registerOAuthClient(token, input) {
+    const viewer = requireDevice(token, 'viewer');
+    const clientName = String(input?.clientName || '').trim();
+    const redirectUris = [...new Set((Array.isArray(input?.redirectUris) ? input.redirectUris : []).map(checkedRedirectUri))];
+    if (!clientName || clientName.length > 100 || !redirectUris.length || redirectUris.length > 5) fail(400, 'OAuth客户端名称或回调地址无效');
+    const clientId = `oauth_client_${crypto.randomUUID().replaceAll('-', '')}`;
+    db.prepare('INSERT INTO oauth_clients(client_id,owner_device_id,client_name,redirect_uris_json,created_at) VALUES(?,?,?,?,?)')
+      .run(clientId, viewer.id, clientName, JSON.stringify(redirectUris), now());
+    audit(viewer.id, 'oauth.client.register', null, clientId);
+    return { clientId, clientName, redirectUris, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code'],
+      responseTypes: ['code'] };
+  }
+  function authorizeOAuth(token, input) {
+    const viewer = requireDevice(token, 'viewer');
+    const clientId = String(input?.clientId || '');
+    const sessionId = String(input?.sessionId || '');
+    const redirectUri = checkedRedirectUri(input?.redirectUri);
+    const challenge = String(input?.codeChallenge || '');
+    const state = String(input?.state || '');
+    if (!/^[A-Za-z0-9_-]{43,128}$/.test(challenge) || input?.codeChallengeMethod !== 'S256' || state.length > 256) {
+      fail(400, 'OAuth PKCE参数无效');
+    }
+    const client = db.prepare('SELECT * FROM oauth_clients WHERE client_id=? AND owner_device_id=? AND revoked_at IS NULL')
+      .get(clientId, viewer.id);
+    if (!client || !JSON.parse(client.redirect_uris_json).includes(redirectUri)) fail(400, 'OAuth客户端或回调地址无效');
+    const session = db.prepare(`SELECT session_id,expires_at FROM remote_agent_sessions
+      WHERE session_id=? AND owner_device_id=? AND revoked_at IS NULL AND expires_at>?`).get(sessionId, viewer.id, now());
+    if (!session) fail(404, '远程 Agent 会话不存在或已过期');
+    const code = randomToken();
+    const expiresAt = Math.min(session.expires_at, now() + 5 * 60 * 1000);
+    atomic(() => {
+      db.prepare('DELETE FROM oauth_authorization_codes WHERE expires_at<=? OR consumed_at IS NOT NULL').run(now());
+      db.prepare(`INSERT INTO oauth_authorization_codes(code_hash,client_id,session_id,redirect_uri,code_challenge,scope,created_at,expires_at)
+        VALUES(?,?,?,?,?,'edu.cloud.read edu.cloud.submit',?,?)`)
+        .run(digest(code), clientId, sessionId, redirectUri, challenge, now(), expiresAt);
+      audit(viewer.id, 'oauth.authorization.issue', null, sessionId);
+    });
+    const redirect = new URL(redirectUri); redirect.searchParams.set('code', code); if (state) redirect.searchParams.set('state', state);
+    return { authorizationCode: code, redirectTo: redirect.toString(), expiresAt };
+  }
+  function exchangeOAuthCode(input) {
+    const code = String(input?.code || '');
+    const clientId = String(input?.clientId || input?.client_id || '');
+    const redirectUri = checkedRedirectUri(input?.redirectUri || input?.redirect_uri);
+    const verifier = String(input?.codeVerifier || input?.code_verifier || '');
+    if ((input?.grantType || input?.grant_type) !== 'authorization_code' || !code || !clientId || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) {
+      fail(400, 'OAuth授权码请求无效');
+    }
+    const row = db.prepare(`SELECT c.*,s.expires_at AS session_expires_at,s.revoked_at AS session_revoked,
+      o.revoked_at AS client_revoked FROM oauth_authorization_codes c
+      JOIN remote_agent_sessions s ON s.session_id=c.session_id JOIN oauth_clients o ON o.client_id=c.client_id
+      WHERE c.code_hash=? AND c.client_id=?`).get(digest(code), clientId);
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    if (!row || row.consumed_at != null || row.expires_at <= now() || row.session_expires_at <= now() || row.session_revoked != null ||
+        row.client_revoked != null || row.redirect_uri !== redirectUri || !safeEqual(row.code_challenge, challenge)) fail(400, 'OAuth授权码无效或已过期');
+    const accessToken = randomToken();
+    const expiresAt = Math.min(row.session_expires_at, now() + 15 * 60 * 1000);
+    atomic(() => {
+      const consumed = db.prepare('UPDATE oauth_authorization_codes SET consumed_at=? WHERE code_hash=? AND consumed_at IS NULL')
+        .run(now(), digest(code));
+      if (consumed.changes !== 1) fail(400, 'OAuth授权码已使用');
+      db.prepare(`INSERT INTO oauth_access_tokens(token_hash,client_id,session_id,scope,audience,created_at,expires_at)
+        VALUES(?,?,?,?,?,?,?)`).run(digest(accessToken), clientId, row.session_id, row.scope, `${oauthIssuer}/mcp`, now(), expiresAt);
+      audit(row.session_id, 'oauth.token.issue', null, clientId);
+    });
+    return { access_token: accessToken, token_type: 'Bearer', expires_in: Math.max(1, Math.floor((expiresAt - now()) / 1000)),
+      scope: row.scope, resource: `${oauthIssuer}/mcp` };
+  }
+  function revokeOAuthToken(input) {
+    const token = String(input?.token || '');
+    if (token) db.prepare('UPDATE oauth_access_tokens SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL').run(now(), digest(token));
+    return { revoked: true };
+  }
+  function oauthAuthorizationServerMetadata() {
+    return { issuer: oauthIssuer, authorization_endpoint: `${oauthIssuer}/oauth/authorize`, token_endpoint: `${oauthIssuer}/oauth/token`,
+      revocation_endpoint: `${oauthIssuer}/oauth/revoke`, response_types_supported: ['code'], grant_types_supported: ['authorization_code'],
+      code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], scopes_supported: ['edu.cloud.read', 'edu.cloud.submit'] };
+  }
+  function oauthProtectedResourceMetadata() {
+    return { resource: `${oauthIssuer}/mcp`, authorization_servers: [oauthIssuer], bearer_methods_supported: ['header'],
+      scopes_supported: ['edu.cloud.read', 'edu.cloud.submit'] };
   }
   function listV2Materials(token, studentId, { category = '', history = false, cursor = '' } = {}) {
     const viewer = requireDevice(token, 'viewer');
@@ -1127,12 +1609,14 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     if (cursor && !/^\d+:material_rev_[a-f0-9]{48}$/.test(cursor)) fail(400, '资料分页游标无效');
     const [before, beforeRevision] = cursor ? cursor.split(':') : [Number.MAX_SAFE_INTEGER, 'z'];
     const placeholders = categories.map(() => '?').join(',');
-    const currentClause = history ? '' : `AND d.created_at=(SELECT MAX(d2.created_at) FROM documents d2
-      WHERE d2.student_id=d.student_id AND d2.material_category=d.material_category AND d2.material_id=d.material_id AND d2.deleted_at IS NULL)`;
+    const currentJoin = history ? '' : 'JOIN material_current c ON c.revision_id=d.revision_id';
     const rows = db.prepare(`SELECT d.material_id AS materialId,d.revision_id AS revisionId,d.material_category AS category,
       d.display_name AS displayName,d.content_type AS contentType,d.content_sha256 AS contentSha256,d.byte_size AS byteSize,
-      d.origin_device_id AS originDeviceId,d.created_at AS createdAt FROM documents d
-      WHERE d.student_id=? AND d.material_category IN (${placeholders}) AND d.revision_id!='' AND d.deleted_at IS NULL ${currentClause}
+      d.origin_device_id AS originDeviceId,d.created_at AS createdAt,COALESCE(j.status,'not_scheduled') AS indexStatus,
+      COALESCE(s.extraction_status,'') AS extractionStatus FROM documents d ${currentJoin}
+      LEFT JOIN material_index_jobs j ON j.revision_id=d.revision_id
+      LEFT JOIN material_search_documents s ON s.revision_id=d.revision_id
+      WHERE d.student_id=? AND d.material_category IN (${placeholders}) AND d.revision_id!='' AND d.deleted_at IS NULL
       AND (d.created_at<? OR (d.created_at=? AND d.revision_id<?)) ORDER BY d.created_at DESC,d.revision_id DESC LIMIT 201`)
       .all(studentId, ...categories, Number(before), Number(before), beforeRevision);
     const materials = rows.slice(0, 200);
@@ -1196,8 +1680,13 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   }
   function remoteAgentSession(token) {
     if (!token) fail(401, '远程 Agent 会话无效');
-    const row = db.prepare(`SELECT * FROM remote_agent_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?`)
+    let row = db.prepare(`SELECT * FROM remote_agent_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?`)
       .get(digest(token), now());
+    if (!row) row = db.prepare(`SELECT s.* FROM oauth_access_tokens t
+      JOIN oauth_clients c ON c.client_id=t.client_id AND c.revoked_at IS NULL
+      JOIN remote_agent_sessions s ON s.session_id=t.session_id
+      WHERE t.token_hash=? AND t.revoked_at IS NULL AND t.expires_at>? AND t.audience=?
+        AND s.revoked_at IS NULL AND s.expires_at>?`).get(digest(token), now(), `${oauthIssuer}/mcp`, now());
     if (!row) fail(401, '远程 Agent 会话无效或已过期');
     const studentIds = JSON.parse(row.student_ids_json || '[]');
     return { ...row, studentIds: studentIds.length ? studentIds : [row.student_id],
@@ -1235,6 +1724,20 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       scopeFingerprint: session.scope_fingerprint, status: current.status, updatedAt: current.updatedAt,
       expiresAt: session.expires_at, materialCategories: session.materialCategories };
   }
+  function getRemoteAgentStudentProfile(token, studentId) {
+    const session = remoteAgentSession(token);
+    const selectedStudentId = String(studentId || session.student_id);
+    if (!session.studentIds.includes(selectedStudentId)) fail(404, '学生不在远程 Agent 会话范围');
+    const grant = requireV2Grant(session.owner_device_id, selectedStudentId, 'student_profile.read');
+    const row = db.prepare(`SELECT r.*,c.updated_at FROM student_profile_current c JOIN student_profile_revisions r
+      ON r.revision_id=c.revision_id WHERE c.student_id=?`).get(selectedStudentId);
+    if (!row) fail(404, '学生基础信息尚未同步');
+    const stored = JSON.parse(row.profile_json);
+    const profile = Object.fromEntries(grant.fields.filter(field => Object.hasOwn(stored, field)).map(field => [field, stored[field]]));
+    audit(session.session_id, 'remote_agent.student_profile.read', selectedStudentId, row.revision_id);
+    return { contractVersion: 2, source: 'cloud_copy', cloudStudentId: selectedStudentId,
+      profileRevisionId: row.revision_id, profile, fields: Object.keys(profile), updatedAt: row.updated_at };
+  }
   function listRemoteAgentMaterials(token, { category = '', cursor = '' } = {}) {
     const session = remoteAgentSession(token);
     const selected = category ? [String(category)] : session.materialCategories;
@@ -1246,19 +1749,18 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const [before, beforeRevision] = cursor ? cursor.split(':') : [Number.MAX_SAFE_INTEGER, 'z'];
     const placeholders = selected.map(() => '?').join(',');
     const studentPlaceholders = session.studentIds.map(() => '?').join(',');
-    const projectClause = session.project_id ? 'AND project_id=? AND scope_fingerprint=?' : "AND project_id=''";
-    const rows = db.prepare(`SELECT material_id AS materialId,revision_id AS revisionId,
-      material_category AS category,display_name AS displayName,content_type AS contentType,
-      content_sha256 AS contentSha256,byte_size AS byteSize,created_at AS createdAt,student_id AS cloudStudentId
-      FROM documents WHERE student_id IN (${studentPlaceholders}) AND material_category IN (${placeholders}) AND deleted_at IS NULL
+    const projectClause = session.project_id ? 'AND d.project_id=? AND d.scope_fingerprint=?' : "AND d.project_id=''";
+    const rows = db.prepare(`SELECT d.material_id AS materialId,d.revision_id AS revisionId,
+      d.material_category AS category,d.display_name AS displayName,d.content_type AS contentType,
+      d.content_sha256 AS contentSha256,d.byte_size AS byteSize,d.created_at AS createdAt,d.student_id AS cloudStudentId,
+      COALESCE(j.status,'not_scheduled') AS indexStatus,COALESCE(s.extraction_status,'') AS extractionStatus
+      FROM documents d JOIN material_current c ON c.revision_id=d.revision_id
+      LEFT JOIN material_index_jobs j ON j.revision_id=d.revision_id
+      LEFT JOIN material_search_documents s ON s.revision_id=d.revision_id
+      WHERE d.student_id IN (${studentPlaceholders}) AND d.material_category IN (${placeholders}) AND d.deleted_at IS NULL
       ${projectClause}
-      AND revision_id=(SELECT newest.revision_id FROM documents newest
-        WHERE newest.student_id=documents.student_id AND newest.material_category=documents.material_category
-        AND newest.material_id=documents.material_id AND newest.project_id=documents.project_id
-        AND newest.scope_fingerprint=documents.scope_fingerprint AND newest.deleted_at IS NULL
-        ORDER BY newest.created_at DESC,newest.revision_id DESC LIMIT 1)
-      AND (created_at<? OR (created_at=? AND revision_id<?))
-      ORDER BY created_at DESC,revision_id DESC LIMIT 201`).all(...session.studentIds, ...selected,
+      AND (d.created_at<? OR (d.created_at=? AND d.revision_id<?))
+      ORDER BY d.created_at DESC,d.revision_id DESC LIMIT 201`).all(...session.studentIds, ...selected,
       ...(session.project_id ? [session.project_id, session.scope_fingerprint] : []),
       Number(before), Number(before), beforeRevision);
     const materials = rows.slice(0, 200);
@@ -1270,7 +1772,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   }
   function getRemoteAgentMaterial(token, revisionId) {
     const session = remoteAgentSession(token);
-    const row = db.prepare('SELECT * FROM documents WHERE revision_id=? AND deleted_at IS NULL').get(revisionId);
+    const row = db.prepare(`SELECT d.* FROM documents d JOIN material_current c ON c.revision_id=d.revision_id
+      WHERE d.revision_id=? AND d.deleted_at IS NULL`).get(revisionId);
     if (!row || !session.studentIds.includes(row.student_id) || !session.materialCategories.includes(row.material_category) ||
         (session.project_id ? row.project_id !== session.project_id || row.scope_fingerprint !== session.scope_fingerprint : Boolean(row.project_id))) {
       fail(404, '资料修订不存在或不在授权范围');
@@ -1284,6 +1787,42 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       revisionId, category: row.material_category, projectId: session.project_id,
       scopeFingerprint: session.scope_fingerprint };
   }
+  function searchRemoteAgentMaterials(token, { query = '', category = '' } = {}) {
+    const session = remoteAgentSession(token);
+    const normalized = String(query || '').trim();
+    if (!normalized || [...normalized].length > 100) fail(400, '搜索关键词必须为1到100个字符');
+    const selected = category ? [String(category)] : session.materialCategories;
+    if (!selected.length || selected.some(item => !session.materialCategories.includes(item))) fail(403, '资料类别超出远程 Agent 会话范围');
+    for (const scopedStudentId of session.studentIds) for (const item of selected) {
+      requireV2Grant(session.owner_device_id, scopedStudentId, 'material.read', item);
+    }
+    const placeholders = selected.map(() => '?').join(',');
+    const studentPlaceholders = session.studentIds.map(() => '?').join(',');
+    const projectClause = session.project_id ? 'AND d.project_id=? AND d.scope_fingerprint=?' : "AND d.project_id=''";
+    const shortOrCjk = [...normalized].length <= 2 || /[\u3400-\u9fff]/u.test(normalized);
+    const match = normalized.split(/\s+/u).filter(Boolean).slice(0, 8)
+      .map(term => `"${term.replaceAll('"', '""')}"`).join(' AND ');
+    const predicate = shortOrCjk ? '(d.display_name LIKE ? ESCAPE \'\\\' OR s.extracted_text LIKE ? ESCAPE \'\\\')' : 'material_search_fts MATCH ?';
+    const escaped = normalized.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+    const searchArgs = shortOrCjk ? [`%${escaped}%`, `%${escaped}%`] : [match];
+    const rows = db.prepare(`SELECT d.material_id AS materialId,d.revision_id AS revisionId,d.material_category AS category,
+      d.display_name AS displayName,d.content_type AS contentType,d.content_sha256 AS contentSha256,
+      d.byte_size AS byteSize,d.created_at AS createdAt,d.student_id AS cloudStudentId,
+      s.extraction_status AS extractionStatus,s.indexed_at AS indexedAt
+      FROM material_search_fts JOIN material_search_documents s ON s.revision_id=material_search_fts.revision_id
+      JOIN documents d ON d.revision_id=material_search_fts.revision_id JOIN material_current c ON c.revision_id=d.revision_id
+      WHERE d.student_id IN (${studentPlaceholders}) AND d.material_category IN (${placeholders})
+      AND d.deleted_at IS NULL ${projectClause} AND ${predicate}
+      ORDER BY d.created_at DESC,d.revision_id DESC LIMIT 100`).all(...session.studentIds, ...selected,
+      ...(session.project_id ? [session.project_id, session.scope_fingerprint] : []), ...searchArgs);
+    const pending = db.prepare(`SELECT COUNT(*) AS count FROM material_current c JOIN documents d ON d.revision_id=c.revision_id
+      JOIN material_index_jobs j ON j.revision_id=d.revision_id
+      WHERE d.student_id IN (${studentPlaceholders}) AND d.material_category IN (${placeholders})
+      ${projectClause} AND j.status!='ready'`).get(...session.studentIds, ...selected,
+      ...(session.project_id ? [session.project_id, session.scope_fingerprint] : [])).count;
+    audit(session.session_id, 'remote_agent.material.search', session.student_id, session.project_id || null);
+    return { sessionId: session.session_id, query: normalized, materials: rows, pendingIndexCount: Number(pending) };
+  }
   function submitInboxResult(token, input) {
     const session = remoteAgentSession(token);
     const idempotencyKey = String(input?.idempotencyKey || '');
@@ -1292,6 +1831,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       fail(409, '成果项目范围与远程 Agent 会话不一致');
     }
     let payload = input?.payload;
+    let attachments = [];
     if (session.project_id) {
       payload = normalizeRemoteProjectResult(payload, { taskId: session.task_id, executionId: session.execution_id, taskType: session.task_type,
         projectId: session.project_id, scopeFingerprint: session.scope_fingerprint });
@@ -1304,6 +1844,13 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
           fail(409, '远程成果引用了任务授权范围外的资料');
         }
       }
+      attachments = payload.attachments.map((attachment, index) => ({
+        attachmentId: `attachment_${digest(`${session.session_id}|${index}|${attachment.contentSha256}|${attachment.displayName}`).slice(0, 32)}`,
+        displayName: attachment.displayName, contentType: attachment.contentType, contentSha256: attachment.contentSha256,
+        byteSize: attachment.byteSize, bytes: Buffer.from(attachment.contentBase64, 'base64'),
+        objectName: `inbox-${attachment.contentSha256}.bin`,
+      }));
+      payload = { ...payload, attachments: attachments.map(({ bytes, objectName, ...attachment }) => attachment) };
     }
     const payloadJson = stableJson(payload);
     if (!payload || Buffer.byteLength(payloadJson) > 1024 * 1024) fail(400, '成果内容无效或超过限额');
@@ -1325,18 +1872,46 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       return { submissionId: existing.submission_id, status: existing.status, duplicate: true };
     }
     const submissionId = `submission_${crypto.randomUUID().replaceAll('-', '')}`;
+    for (const attachment of attachments) {
+      const target = path.join(objectDir, attachment.objectName);
+      if (!fs.existsSync(target)) {
+        const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+        fs.writeFileSync(temporary, attachment.bytes, { flag: 'wx' });
+        try { fs.renameSync(temporary, target); } catch (error) {
+          if (!fs.existsSync(target)) throw error;
+          fs.rmSync(temporary, { force: true });
+        }
+      }
+    }
     atomic(() => {
       db.prepare(`INSERT INTO cloud_inbox_submissions
         (submission_id,student_id,student_ids_json,target_device_id,provider,project_id,scope_fingerprint,idempotency_key,
          payload_json,content_sha256,status,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,'available',?,?)`).run(submissionId, session.student_id, JSON.stringify(session.studentIds), session.owner_device_id,
         session.provider, session.project_id, session.scope_fingerprint, idempotencyKey, payloadJson, contentSha256, now(), now());
+      const insertAttachment = db.prepare(`INSERT INTO cloud_inbox_attachments
+        (submission_id,attachment_id,display_name,content_type,content_sha256,byte_size,object_name,created_at)
+        VALUES(?,?,?,?,?,?,?,?)`);
+      for (const attachment of attachments) insertAttachment.run(submissionId, attachment.attachmentId, attachment.displayName,
+        attachment.contentType, attachment.contentSha256, attachment.byteSize, attachment.objectName, now());
       appendSyncEvent(session.student_id, 'inbox.submitted', 'agent_result', submissionId, '');
       db.prepare(`UPDATE remote_agent_sessions SET status='result_submitted',result_submission_id=?,updated_at=? WHERE session_id=?`)
         .run(submissionId, now(), session.session_id);
       audit(session.session_id, 'inbox.submit', session.student_id, submissionId);
     });
     return { submissionId, status: 'available', duplicate: false };
+  }
+  function getInboxSubmissionStatus(token, submissionId = '') {
+    const session = remoteAgentSession(token);
+    const expected = String(submissionId || session.result_submission_id || '');
+    if (!/^submission_[a-f0-9]{32}$/.test(expected)) fail(404, '当前任务尚未提交成果');
+    if (session.result_submission_id && session.result_submission_id !== expected) fail(403, '成果不属于当前远程任务');
+    const row = db.prepare(`SELECT submission_id AS submissionId,status,content_sha256 AS contentSha256,
+      created_at AS createdAt,updated_at AS updatedAt,quarantined_reason AS quarantinedReason
+      FROM cloud_inbox_submissions WHERE submission_id=? AND target_device_id=?`).get(expected, session.owner_device_id);
+    if (!row) fail(404, '成果不存在');
+    return { ...row, sessionId: session.session_id, taskId: session.task_id, executionId: session.execution_id,
+      projectId: session.project_id, scopeFingerprint: session.scope_fingerprint };
   }
   function listInbox(token, cursor = '') {
     const viewer = requireDevice(token, 'viewer');
@@ -1370,10 +1945,29 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       audit(viewer.id, 'inbox.lease', row.student_id, submissionId);
       const task = db.prepare(`SELECT session_id AS sessionId,task_id AS taskId,execution_id AS executionId,task_type AS taskType
         FROM remote_agent_sessions WHERE result_submission_id=? AND owner_device_id=?`).get(submissionId, viewer.id) || {};
+      const attachments = db.prepare(`SELECT attachment_id AS attachmentId,display_name AS displayName,content_type AS contentType,
+        content_sha256 AS contentSha256,byte_size AS byteSize FROM cloud_inbox_attachments WHERE submission_id=? ORDER BY attachment_id`)
+        .all(submissionId);
       return { submissionId, status: 'leased', leaseId, leaseExpiresAt, provider: row.provider, ...task,
         cloudStudentId: row.student_id, cloudStudentIds: JSON.parse(row.student_ids_json || '[]'), projectId: row.project_id, scopeFingerprint: row.scope_fingerprint,
-        contentSha256: row.content_sha256, payload: JSON.parse(row.payload_json) };
+        contentSha256: row.content_sha256, payload: JSON.parse(row.payload_json), attachments };
     });
+  }
+  function getInboxAttachment(token, submissionId, attachmentId, leaseId) {
+    const viewer = requireDevice(token, 'viewer');
+    const submission = db.prepare(`SELECT status,lease_id,lease_expires_at FROM cloud_inbox_submissions
+      WHERE submission_id=? AND target_device_id=?`).get(submissionId, viewer.id);
+    if (!submission) fail(404, '成果不存在');
+    if (submission.status !== 'leased' || submission.lease_id !== String(leaseId || '') || submission.lease_expires_at <= now()) {
+      fail(409, '成果附件租约无效或已过期');
+    }
+    const row = db.prepare('SELECT * FROM cloud_inbox_attachments WHERE submission_id=? AND attachment_id=?')
+      .get(submissionId, attachmentId);
+    if (!row) fail(404, '成果附件不存在');
+    const content = fs.readFileSync(path.join(objectDir, row.object_name));
+    if (!safeEqual(digest(content), row.content_sha256)) fail(500, '成果附件校验失败');
+    audit(viewer.id, 'inbox.attachment.download', null, `${submissionId}:${attachmentId}`);
+    return { content, contentSha256: row.content_sha256, contentType: row.content_type, displayName: row.display_name };
   }
   function settleInboxSubmission(token, submissionId, input) {
     const viewer = requireDevice(token, 'viewer');
@@ -1468,20 +2062,31 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       }
       if (deleted !== undefined) {
         db.prepare('UPDATE documents SET deleted_at=? WHERE id=?').run(deleted ? now() : null, documentId);
+        if (deleted && row.revision_id) {
+          db.prepare('DELETE FROM material_current WHERE revision_id=?').run(row.revision_id);
+          db.prepare("UPDATE material_index_jobs SET status='superseded',claimed_at=NULL,updated_at=? WHERE revision_id=?")
+            .run(now(), row.revision_id);
+          db.prepare('DELETE FROM material_search_fts WHERE revision_id=?').run(row.revision_id);
+          db.prepare('DELETE FROM material_search_documents WHERE revision_id=?').run(row.revision_id);
+          appendSyncEvent(row.student_id, 'material.withdrawn', row.material_category, row.material_id, row.revision_id, true);
+        }
         audit(admin ? 'admin_local' : source.id, deleted ? 'document.trash' : 'document.restore', row.student_id, documentId);
       }
     });
     return { documentId, displayName: displayName === undefined ? row.display_name : String(displayName).trim(), deleted: deleted === undefined ? row.deleted_at !== null : deleted };
   }
-  return { db, close: () => db.close(), schemaStatus, loginAdmin, logoutAdmin, rotateAdmin, rotateDevice, revokeDevice, recordDenied, verifyBody, verifyBodyHash, prepareDocument, deleteReport, listAudit, studentStorage, verifyViewerProof, createStudent, registerSource, allowWrite, createPairing,
-    createSourceEnrollment, redeemSourceEnrollment, approvePairing, revoke, listGrants, setOwnWrite, setOwnUploadScope, listStudents,
+  return { db, close: () => db.close(), schemaStatus, isAdmin, loginAdmin, logoutAdmin, rotateAdmin, rotateDevice, revokeDevice, recordDenied, verifyBody, verifyBodyHash, prepareDocument, deleteReport, listAudit, studentStorage, verifyViewerProof, createStudent, registerSource, allowWrite, createPairing,
+    createSourceEnrollment, redeemSourceEnrollment, autoEnrollSource, approvePairing, revoke, listGrants, setOwnWrite, setOwnUploadScope, setOwnHealthScope, listStudents,
     studentRemovalPreview, archiveStudent, restoreStudent, relinquishViewerStudent, uploadReport, checkSourceReports, listReports, getReport,
     uploadDocument, listDocuments, getDocument, updateDocument,
     issueV2Grant, revokeV2Grant, listV2Grants, uploadStudentProfile, getStudentProfile, getStudentProfileStatus,
-    recordBinding, recordTransferReceipt, listSyncEvents, prepareV2Material, listV2Materials, getV2Material,
-    issueRemoteAgentSession, revokeRemoteAgentSession, listRemoteAgentMaterials, getRemoteAgentMaterial,
-    remoteAgentStatusForHost, remoteAgentAcknowledge, submitInboxResult, listInbox,
-    leaseInboxSubmission, settleInboxSubmission, listRemoteOperations };
+    recordBinding, recordTransferReceipt, listSyncEvents, prepareV2Material, listV2Materials, getV2Material, getV2MaterialIndexStatus,
+    prepareHealthRecord, listHealthRecords, getHealthRecord,
+    claimMaterialIndexJob, completeMaterialIndexJob, failMaterialIndexJob, materialIndexSummary,
+    registerOAuthClient, authorizeOAuth, exchangeOAuthCode, revokeOAuthToken, oauthAuthorizationServerMetadata, oauthProtectedResourceMetadata,
+    issueRemoteAgentSession, revokeRemoteAgentSession, listRemoteAgentMaterials, searchRemoteAgentMaterials, getRemoteAgentMaterial, getRemoteAgentStudentProfile,
+    remoteAgentStatusForHost, remoteAgentAcknowledge, submitInboxResult, getInboxSubmissionStatus, listInbox,
+    leaseInboxSubmission, getInboxAttachment, settleInboxSubmission, listRemoteOperations };
 }
 
 module.exports = { createService, digest, MAX_REPORT_BYTES, MAX_DOCUMENT_BYTES, CODE_LIFETIME_MS, ADMIN_SESSION_LIFETIME_MS, DEFAULT_MAX_STUDENT_BYTES };

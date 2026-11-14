@@ -95,6 +95,10 @@ class BusinessDatabaseBackup(private val context: Context, private val db: Busin
                             val consent = JSONObject(row.getString("payload")).put("enabled", false).put("restoreRequiresConsent", true)
                             row.put("payload", consent.toString()) // Cloud automation requires fresh authorization on the new device.
                         }
+                        if (table == "business_metadata" && row.getString("name").startsWith("digest-stage:")) {
+                            val stage = JSONObject(row.getString("payload")).put("allowAutoNoDispatch", false).put("restoredSnapshot", true)
+                            row.put("payload", stage.toString())
+                        }
                         if (table == "business_metadata" && row.getString("name").let { it.startsWith("digest-request:") || it.startsWith("cloud-summary:") }) {
                             val marker = JSONObject(row.getString("payload"))
                             if (marker.optString("state") == "authorized_retry") row.put("payload", marker.put("state", "unknown").put("restoreRequiresConsent", true).toString())

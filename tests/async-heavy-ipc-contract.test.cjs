@@ -51,8 +51,7 @@ test('renderer awaits heavy work and exposes non-blocking busy feedback', () => 
   assert.match(renderer, /activeSection === 'assets'\) void refreshAssets\(assetCursor\)/);
   assert.doesNotMatch(renderer, /refreshLicenseStatus\(\);\s*refreshAssets\(\)/);
   assert.match(renderer, /const generateCrossProjectKnowledgeLinks = async/);
-  assert.match(renderer, /materialSourceBusyAction === 'scan' \? '正在扫描…'/);
-  assert.match(renderer, /materialSourceBusyAction === 'import' \? '正在导入…'/);
+  assert.match(renderer, /请选择本机资料；选择后正在导入/);
   assert.match(renderer, /m\.assetBusyAction === 'rebuild' \? '正在补建…'/);
   assert.match(renderer, /projectBusyAction === 'cross-project-index' \? '正在关联…'/);
 });

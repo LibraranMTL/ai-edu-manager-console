@@ -94,7 +94,8 @@ export function AgentControlCenter({ api, onOpenTool, onDownloadTool, onTasks, o
     const providerLabel = snapshot?.providers.find(provider => provider.id === providerId)?.label || providerId;
     const progress = action === 'authorize' ? `正在启动 ${providerLabel} 官方授权窗口…`
       : action === 'verifyResearch' ? `正在执行 ${providerLabel} 联网研究合同测试，通常需要 1–2 分钟，请勿重复点击…`
-        : action === 'verify' ? `正在验证 ${providerLabel} 连接与任务合同，最多等待 3 分钟，请勿重复点击…`
+        : action === 'verifyContract' ? `正在验证 ${providerLabel} 分类任务合同；这不会改变连接状态…`
+        : action === 'verify' ? `正在检查 ${providerLabel} 连接；不会调用分类模型或消耗任务合同额度…`
           : '正在处理…';
     inFlight.current = true; setBusy(true); setMessage(progress);
     if (providerId) setProviderOperation({ providerId, action, state: 'running', message: progress });
@@ -139,6 +140,7 @@ export function AgentControlCenter({ api, onOpenTool, onDownloadTool, onTasks, o
         {!['login_required', 'unavailable'].includes(provider.state) && <details><summary>高级</summary><p>仅在更换账号或凭据已撤销时使用；普通检查不会改变授权版本。</p><button disabled={busy || provider.login?.state === 'running'} onClick={() => void act('authorize', { providerId: provider.id })}>更换账号／重新授权</button></details>}
       </>}
       {provider.id === 'workbuddy' && <button disabled={busy || !provider.installed} onClick={() => void act('verifyResearch', { providerId: provider.id })}>验证联网研究合同</button>}
+      {provider.id === 'workbuddy' && <button disabled={busy || !provider.installed} onClick={() => void act('verifyContract', { providerId: provider.id })}>验证分类合同</button>}
       {provider.adapterKind === 'builtin-structured' && <button disabled={busy} onClick={() => void act('verifyBuiltin', { providerId: provider.id })}>检测并验证三类合同</button>}
       {provider.connection === 'cli' && <button disabled={busy} onClick={() => void act('verifyCli', { providerId: provider.id })}>验证 CLI 协议</button>}
       {provider.handoff && (!provider.custom || provider.connection !== 'cli') && <button disabled={busy} onClick={() => provider.custom ? void act('openTool', { providerId: provider.id }) : onOpenTool?.(provider.id)}>打开工具</button>}

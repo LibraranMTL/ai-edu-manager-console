@@ -38,7 +38,8 @@ test('short-lived Codex/WorkBuddy sessions read only granted material and submit
     const student = await adminPost('/v1/students', { displayName: '远程合成学生' });
     const enrollment = await adminPost('/v1/source-enrollments', { cloudStudentId: student.id });
     await source.enrollSource({ serverUrl: base, enrollmentCode: enrollment.enrollmentCode, localStudentId: 'student-local',
-      materialCategories: ['learning_material'] });
+      materialCategories: ['learning_material'], authorizationPurpose: 'document_sync',
+      authorizationExpiresAt: Date.now() + 90 * 24 * 60 * 60 * 1000 });
     const pairing = await receiver.createPairing(base);
     await source.approvePairing(pairing.pairingCode, ['student-local'], { materialCategories: ['learning_material'] });
     const scopeFingerprint = 'a'.repeat(64);
@@ -66,10 +67,14 @@ test('short-lived Codex/WorkBuddy sessions read only granted material and submit
     assert.equal(contentResponse.status, 200);
     assert.equal(await contentResponse.text(), '# 项目资料\n\n只读范围测试。\n');
 
+    const attachmentBytes = Buffer.from('# 远程成果附件\n');
+    const attachmentSha = require('node:crypto').createHash('sha256').update(attachmentBytes).digest('hex');
     const resultPayload = { schema: 'edu-manager.remote-project-result.v2', taskId: 'task:remote:001', executionId: 'execution:remote:001',
       taskType: 'project_digest.v2', projectId: 'project:remote:001', scopeFingerprint, status: 'completed',
       title: '合成远程结果', content: '这是经过资料来源约束的合成远程结果。',
-      sources: [{ materialId: 'learning:remote:001', revisionId: material.revisionId, contentSha256: material.contentSha256 }] };
+      sources: [{ materialId: 'learning:remote:001', revisionId: material.revisionId, contentSha256: material.contentSha256 }],
+      attachments: [{ displayName: '成果附件.md', contentType: 'text/markdown', contentSha256: attachmentSha,
+        contentBase64: attachmentBytes.toString('base64') }] };
     const submission = { idempotencyKey: 'result:remote:001:v1', projectId: 'project:remote:001', scopeFingerprint,
       payload: resultPayload };
     const submitted = await agentRequest('/v2/inbox/submissions', session.sessionToken, { method: 'POST', body: submission });
@@ -98,6 +103,11 @@ test('short-lived Codex/WorkBuddy sessions read only granted material and submit
     assert.equal(inbox.submissions.length, 1);
     const leased = await receiver.leaseCloudInboxSubmission(submitted.json.submissionId);
     assert.equal(leased.payload.content, '这是经过资料来源约束的合成远程结果。');
+    assert.equal(leased.attachments.length, 1);
+    assert.equal(leased.payload.attachments[0].contentBase64, undefined, '云端账本不得重复保存附件正文');
+    const downloadedAttachment = await receiver.downloadCloudInboxAttachment(submitted.json.submissionId,
+      leased.attachments[0].attachmentId, leased.leaseId);
+    assert.equal(downloadedAttachment.content.toString('utf8'), attachmentBytes.toString('utf8'));
     assert.equal(leased.taskId, 'task:remote:001');
     assert.equal(leased.executionId, 'execution:remote:001');
     await assert.rejects(receiver.leaseCloudInboxSubmission(submitted.json.submissionId), /正在由本机另一流程处理/);
@@ -132,6 +142,7 @@ test('inbox is target-host isolated and an unsafe late result can be quarantined
     service.issueV2Grant(ADMIN, { deviceId: target.deviceId, cloudStudentId: student.id,
       scope: 'material.read', category: 'learning_material' });
     const source = service.registerSource(ADMIN);
+    service.allowWrite(ADMIN, source.deviceId, student.id);
     service.issueV2Grant(ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id,
       scope: 'material.write', category: 'learning_material' });
     const prepared = service.prepareV2Material(source.deviceToken, student.id, { category: 'learning_material',
@@ -177,6 +188,7 @@ test('one project session freezes a sorted multi-student cloud scope and exposes
       publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } }).publicKey;
     const viewer = service.createPairing('', viewerKey);
     for (const student of [first, second]) {
+      service.allowWrite(ADMIN, source.deviceId, student.id);
       service.issueV2Grant(ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id,
         scope: 'material.write', category: 'learning_material' });
       service.issueV2Grant(ADMIN, { deviceId: viewer.deviceId, cloudStudentId: student.id,

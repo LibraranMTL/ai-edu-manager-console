@@ -63,7 +63,7 @@ test('registers open-world knowledge immediately and builds a deduplicated seven
     assert.equal(trend.activityCount, 1);
     assert.equal(trend.activeDays, 1);
     assert.equal(trend.studentActivityCount, 1);
-    assert.equal(listStudentKnowledgePoints(root, { studentId: 'student-1' }).items[0].activity.activityCount, 1);
+    assert.equal(listStudentKnowledgePoints(root, { studentId: 'student-1', asOf: '2026-10-23T00:00:00.000Z' }).items[0].activity.activityCount, 1);
     assert.equal(rebuildKnowledgeProjection(root, { studentId: 'student-1', cursor: 0 }).complete, true);
     const timeless = { studentId: 'student-1', subject: '空间设计', knowledgePoint: '自然采光分析',
       activityType: 'material_exposure', evidenceRefs: [{ sourceType: 'project_material', sourceId: 'm2' }] };

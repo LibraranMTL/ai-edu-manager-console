@@ -3,10 +3,30 @@ const test = require('node:test');
 
 const {
   candidateRuntimeDecision,
+  clearDispatchBlockPatch,
   compactTaskEvents,
+  dispatchBlockPatch,
   repairTaskRuntimeStore,
   taskTimeoutDecision,
 } = require('../electron/task-runtime-policy.cjs');
+
+test('dispatch block patch is stable and clear is explicit', () => {
+  const conflict = {
+    blockerTaskId: 'unknown-1', blockerWorkKey: 'digest:student-a',
+    reasonCode: 'execution_unknown_same_work', nextCheckAt: '2026-10-27T12:00:00.000Z',
+    evidence: { executionId: 'run-1' },
+  };
+  const first = dispatchBlockPatch(conflict, '2026-10-27T11:59:00.000Z');
+  const second = dispatchBlockPatch(conflict, '2026-10-27T11:59:30.000Z');
+
+  assert.equal(first.dispatchBlock.blockerTaskId, 'unknown-1');
+  assert.equal(first.dispatchBlock.signature, second.dispatchBlock.signature);
+  assert.equal(first.dispatchBlock.nextCheckAt, conflict.nextCheckAt);
+  assert.deepEqual(clearDispatchBlockPatch(first.dispatchBlock.signature), {
+    dispatchBlock: null,
+    clearedDispatchBlockSignature: first.dispatchBlock.signature,
+  });
+});
 
 test('manual waits never use heartbeat timeout and QClaw inbox uses a result deadline', () => {
   const startedAt = '2026-07-23T00:00:00.000Z';
@@ -84,6 +104,16 @@ test('same-cycle terminal tasks stay terminal while a new cycle resets execution
   assert.equal(newCycle.resetExecution, true);
 });
 
+test('a rotated candidate id cannot reset a terminal result for the same stable work key', () => {
+  const decision = candidateRuntimeDecision({ status: 'failed', idempotencyKey: 'batch-old',
+    workKey: 'student_digest:s1:stable', settlementState: 'terminal', businessOutcome: 'failed_terminal', attempt: 2 },
+  { status: 'pending', idempotencyKey: 'batch-new', workKey: 'student_digest:s1:stable' });
+  assert.equal(decision.sameWork, true);
+  assert.equal(decision.newCycle, false);
+  assert.equal(decision.preserveTerminal, true);
+  assert.equal(decision.nextStatus, 'failed');
+});
+
 test('confirmed stop survives fingerprint drift within one schedule window but not a genuinely new window', () => {
   const current = {
     status: 'cancelled',
@@ -124,6 +154,31 @@ test('candidate refresh cannot replace active or prepared execution runtime', ()
   );
   assert.equal(prepared.preservePreparedExecution, true);
   assert.equal(prepared.nextStatus, 'approved');
+});
+
+test('legacy exported manual packets with missing timestamps stay quarantined across refresh and repair', () => {
+  for (const executionMode of ['manual', 'agent_handoff']) {
+    for (const executionId of ['', 'manual-legacy']) {
+      const current = { id: 'manual-legacy', status: 'waiting_result', executionMode, executor: 'manual',
+        executionId, startedAt: '', workKey: 'synthetic-work', autoRetry: true,
+        result: { status: 'manual_required', packet: { id: 'synthetic-packet' } } };
+      const decision = candidateRuntimeDecision(current, { ...current, status: 'queued', result: null });
+      assert.equal(decision.preserveRuntime, true);
+      assert.equal(decision.nextStatus, 'waiting_result');
+      assert.equal(decision.resetExecution, false);
+      const store = { tasks: [structuredClone(current)] };
+      repairTaskRuntimeStore(store, '2026-11-13T00:00:00Z');
+      assert.equal(store.tasks[0].status, 'waiting_result');
+      assert.equal(store.tasks[0].result.packet.id, 'synthetic-packet');
+      assert.equal(store.tasks[0].autoRetry, false);
+      assert.equal(store.tasks[0].executionId, executionId);
+      const previouslyQueued = { tasks: [{ ...structuredClone(current), status: 'queued' }] };
+      repairTaskRuntimeStore(previouslyQueued, '2026-11-13T00:00:00Z');
+      assert.equal(previouslyQueued.tasks[0].status, 'waiting_result');
+      assert.equal(previouslyQueued.tasks[0].recoveryState, 'unknown');
+      assert.equal(previouslyQueued.tasks[0].result.packet.id, 'synthetic-packet');
+    }
+  }
 });
 
 test('runtime repair restores manual waits, recovers orphans and clamps retry storms', () => {
@@ -185,4 +240,69 @@ test('noisy repeated events are collapsed without dropping distinct audit events
   assert.equal(compacted[0].repeatCount, 2);
   assert.equal(compacted[0].firstAt, events[0].at);
   assert.equal(compacted[1].type, 'result_approved');
+});
+
+test('validated retained maintenance result is settled instead of queued again', () => {
+  const task = {
+    id: 'maintenance-1',
+    kind: 'maintenance_lint',
+    status: 'queued',
+    idempotencyKey: 'maintenance:student:week',
+    approval: { required: false, status: 'not_required' },
+    result: { status: 'reviewing', validation: { valid: true }, summary: 'validated report' },
+  };
+  const decision = candidateRuntimeDecision(task, { ...task, status: 'queued' });
+  assert.equal(decision.preserveRuntime, true);
+  assert.equal(decision.nextStatus, 'succeeded');
+
+  const store = { tasks: [structuredClone(task)] };
+  const repair = repairTaskRuntimeStore(store, '2026-10-24T15:20:00.000Z');
+  assert.equal(repair.changed, true);
+  assert.equal(repair.repairs[0].type, 'retained_validated_result_settled');
+  assert.equal(store.tasks[0].status, 'succeeded');
+  assert.equal(store.tasks[0].settlementState, 'settled');
+  assert.equal(store.tasks[0].result.status, 'succeeded');
+  assert.equal(store.tasks[0].approval.status, 'not_required');
+});
+
+test('validated retained result that still needs approval is restored to review', () => {
+  const task = {
+    id: 'high-risk-1',
+    kind: 'generic',
+    status: 'queued',
+    idempotencyKey: 'generic:one',
+    approval: { required: true, status: 'pending' },
+    result: { status: 'reviewing', validation: { valid: true } },
+  };
+  const store = { tasks: [structuredClone(task)] };
+  repairTaskRuntimeStore(store, '2026-10-24T15:20:00.000Z');
+  assert.equal(store.tasks[0].status, 'reviewing');
+  assert.equal(store.tasks[0].settlementState, 'reviewing');
+  assert.equal(store.tasks[0].approval.status, 'pending');
+});
+
+test('a validated terminal result protects the same work but not newly registered digest material', () => {
+  const completed = {
+    status: 'succeeded',
+    kind: 'project_digest',
+    idempotencyKey: 'digest:project:p1:old',
+    workKey: 'project_digest:p1:old-materials',
+    result: { status: 'succeeded', validation: { valid: true } },
+  };
+  const same = candidateRuntimeDecision(completed, {
+    status: 'pending',
+    idempotencyKey: 'digest:project:p1:refresh',
+    workKey: 'project_digest:p1:old-materials',
+  });
+  assert.equal(same.nextStatus, 'succeeded');
+  assert.equal(same.resetExecution, false);
+
+  const changed = candidateRuntimeDecision(completed, {
+    status: 'pending',
+    idempotencyKey: 'digest:project:p1:new',
+    workKey: 'project_digest:p1:new-materials',
+  });
+  assert.equal(changed.newCycle, true);
+  assert.equal(changed.nextStatus, 'pending');
+  assert.equal(changed.resetExecution, true);
 });

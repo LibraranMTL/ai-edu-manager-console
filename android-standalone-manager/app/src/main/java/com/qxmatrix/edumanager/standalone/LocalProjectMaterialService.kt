@@ -216,6 +216,32 @@ class LocalProjectMaterialService(private val context: Context) {
         return changed
     }
 
+    /** Reversible logical categorization. Originals stay in place until separate organization consent. */
+    @Synchronized fun autoClassify(projectId: String): Int {
+        val project = projects.requireExact(projectId); requireWritable(project)
+        val registry = readRegistry(project); val actual = categories(project); val store = controlStore(project)
+        var changed = 0
+        registry.getJSONArray("materials").objects().forEach { item ->
+            if (changed >= LocalProjectMaterialPolicy.MAX_BATCH) return@forEach
+            val classification = item.optJSONObject("classification") ?: return@forEach
+            val location = item.optJSONObject("location") ?: return@forEach
+            if (classification.optBoolean("manualLocked") || classification.optString("categoryId").isNotBlank() ||
+                item.optString("adoption") != "accepted" || item.optString("availability") != "available" ||
+                location.optString("rootId") != "workspace") return@forEach
+            val relative = location.optString("relativePath")
+            val choice = LocalProjectMaterialPolicy.automaticCategory(item.optString("title"), actual) ?: return@forEach
+            if (relative.isBlank() || item.optString("sha256").isBlank() ||
+                runCatching { fingerprint(store, relative).first }.getOrNull() != item.optString("sha256")) return@forEach
+            classification.put("categoryId", choice.first).put("source", "automatic_rule")
+                .put("status", "auto_provisional").put("manualLocked", false).put("suggestedCategoryId", "")
+                .put("suggestionReason", choice.second).put("classifiedAt", Timestamp.now())
+            item.put("organizationState", "classified").put("recordRevision", item.optInt("recordRevision") + 1)
+                .put("updatedAt", Timestamp.now()); changed++
+        }
+        if (changed > 0) writeRegistry(project, registry)
+        return changed
+    }
+
     @Synchronized fun classify(projectId: String, materialId: String, categoryId: String) {
         val project = projects.requireExact(projectId); requireWritable(project)
         require(categoryId in categories(project)) { "工作空间中不存在该分类文件夹，请刷新分类" }
@@ -564,6 +590,51 @@ class LocalProjectMaterialService(private val context: Context) {
         return rollback.put("migrationState", project.materialMigrationState)
     }
 
+    /** Fail closed before producing current reports when registered source bytes cannot be verified. */
+    @Synchronized fun requireCurrentOriginalsIntact(projectId: String) {
+        val project = projects.requireExact(projectId)
+        val items = readRegistry(project).getJSONArray("materials").objects()
+        items.filter { it.optString("adoption") == "accepted" }.forEach { item ->
+            val location = item.optJSONObject("location")
+            val expected = item.optString("sha256")
+            val actual = if (location == null || expected.isBlank()) null else runCatching {
+                fingerprint(sourceStore(project, location.getString("rootId")), location.getString("relativePath")).first
+            }.getOrNull()
+            require(actual != null && actual == expected) { "项目原件不可用或已变化：${item.optString("title")}；保留历史成果，请重新扫描或恢复原件后再生成报告" }
+        }
+    }
+
+    /** Check the exact frozen inputs against both current registration and original bytes. */
+    @Synchronized fun requireFrozenSourcesCurrent(projectId: String, frozen: JSONArray) {
+        require(frozen.length() > 0) { "项目成果缺少固定来源，暂不能作为当前结果" }
+        val project = projects.requireExact(projectId)
+        val registry = readRegistry(project)
+        val ids = mutableSetOf<String>()
+        frozen.objects().forEach { source ->
+            val id = source.optString("materialId")
+            val expected = source.optString("sha256")
+            require(id.isNotBlank() && ids.add(id) && expected.matches(Regex("[0-9a-f]{64}"))) { "项目来源记录无效" }
+            val item = material(registry, id)
+            val location = item.optJSONObject("location") ?: error("项目原件位置不可用")
+            val actual = runCatching { fingerprint(sourceStore(project, location.getString("rootId")), location.getString("relativePath")).first }.getOrNull()
+            require(ProjectSourceIntegrityPolicy.matches(source, item, actual)) { "项目原件不可用或已变化，历史成果保留但不作为当前结果" }
+        }
+        require(ids.size == frozen.length()) { "项目来源记录无效" }
+    }
+
+    /** Retain generated files but fail closed if their provenance cannot be confirmed. */
+    fun requireGeneratedKnowledgeCurrent(projectId: String, path: String) {
+        val operation = Regex("project-digest-[0-9a-f]{32}").find(path.substringAfterLast('/'))?.value ?: return
+        val project = projects.requireExact(projectId)
+        val store = controlStore(project)
+        val manifestPath = "${project.paths.managerPath}/project-materials/digest-provenance/$operation.json"
+        require(store.exists(manifestPath)) { "历史项目知识缺少完整来源凭证，已保留原文件，暂不能作为当前结果" }
+        val manifest = JSONObject(store.readBytes(manifestPath).toString(Charsets.UTF_8))
+        require(manifest.optString("schema") == "edu-manager.project-digest-provenance.v1" &&
+            manifest.optString("projectId") == projectId && manifest.optString("operationId") == operation) { "项目知识来源凭证不匹配" }
+        requireFrozenSourcesCurrent(projectId, manifest.getJSONArray("sources"))
+    }
+
     fun readMaterialBytes(projectId: String, materialId: String): ByteArray {
         val project = projects.requireExact(projectId); val registry = readRegistry(project); val item = material(registry, materialId)
         return sourceStore(project, item.getJSONObject("location").getString("rootId"))
@@ -660,6 +731,13 @@ class LocalProjectMaterialService(private val context: Context) {
         }
     }
 
+    /** Returns only a persisted registry, never an invented empty snapshot. */
+    @Synchronized fun persistedSnapshotFingerprint(projectId: String): String? {
+        val project = projects.requireExact(projectId)
+        if (!controlStore(project).exists(registryPath(project))) return null
+        return AutomationMaterialPolicy.projectFingerprint(readRegistry(project))
+    }
+
     private fun writeRegistry(project: ProjectRecord, registry: JSONObject) {
         synchronized(LOCK) {
             val store = controlStore(project); val path = registryPath(project)
@@ -671,6 +749,14 @@ class LocalProjectMaterialService(private val context: Context) {
         context.getSharedPreferences("reference-suggestion-project-changes", Context.MODE_PRIVATE).edit()
             .putString(project.id, registry.optString("updatedAt")).apply()
         project.studentIds.forEach { StudioAutomation.enqueueCheck(context, it) }
+        runCatching {
+            AutomationOrchestrator(context).emit(
+                AutomationEventType.PROJECT_SNAPSHOT_CHANGED,
+                studentId = "",
+                sourceFingerprint = AutomationMaterialPolicy.projectFingerprint(registry),
+                projectId = project.id,
+            )
+        }
     }
 
     private fun emptyRegistry(project: ProjectRecord) = JSONObject().put("schema", LocalProjectMaterialPolicy.SCHEMA)

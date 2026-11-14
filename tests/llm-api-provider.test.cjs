@@ -45,7 +45,19 @@ test('structured generation sends no tools and parses bounded JSON output', asyn
   const value = await provider.generate({ prompt: '合成输入', schema: { type: 'object', properties: { answer: { type: 'integer' } } }, onStage: stage => stages.push(stage) });
   assert.deepEqual(value, { answer: 42 }); assert.equal(authorization, 'Bearer synthetic-private-key');
   assert.equal(requestBody.model, 'fixture-model'); assert.equal(requestBody.tools, undefined); assert.equal(requestBody.stream, false);
-  assert.deepEqual(stages, ['possibly_sent', 'result_received']);
+  assert.deepEqual(stages, ['possibly_sent', 'transport_acknowledged', 'result_received']);
+});
+
+test('vision generation accepts a bounded representative-image batch', async t => {
+  let requestBody;
+  const { provider } = await fixture(t, async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{"timelineObservations":[],"behaviorLabels":[]}' } }] }), { status: 200 });
+  });
+  await provider.save({ revision: 0, baseUrl: 'https://api.example.com/v1', model: 'vision-fixture', apiKey: 'key' });
+  const images = Array.from({ length: 3 }, (_, index) => ({ bytes: Buffer.from(`image-${index}`), extension: '.png' }));
+  await provider.generate({ prompt: '受控代表图', schema: { type: 'object', properties: {} }, images });
+  assert.equal(requestBody.messages[0].content.filter((item) => item.type === 'image_url').length, 3);
 });
 
 test('chat completion failures distinguish truncation, filtering, tool calls and missing choices', () => {

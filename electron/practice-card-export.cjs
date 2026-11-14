@@ -52,7 +52,11 @@ async function renderPracticeCard({ card, format, BrowserWindow, dialog, parent,
     await waitForWindow(window,window.loadFile(source),30000);
     await waitForWindow(window,window.webContents.executeJavaScript('Promise.all([document.fonts.ready,...Array.from(document.images,image=>image.decode())])'),15000);
     assertScope();
-    if (format === 'print') return await require('./practice-print-window.cjs').printWithControls(window, card, {...(printServices || require('electron')),dialog,assertScope});
+    if (format === 'print') {
+      const services = {...(printServices || require('electron')),dialog,assertScope};
+      if (typeof services.createSubmitPrint === 'function') services.submitPrint = services.createSubmitPrint(source);
+      return await require('./practice-print-window.cjs').printWithControls(window, card, services);
+    }
     const choice = await dialog.showSaveDialog(parent, { title: format === 'png' ? '保存卡片分享图片' : '保存卡片 PDF', defaultPath: `${labels[card.languagePolicy?.instructionLanguage || 'zh-CN'].download}-${card.id.slice(0,8)}.${format}`, filters: [{ name: format.toUpperCase(), extensions: [format] }] });
     if (choice.canceled || !choice.filePath) return { cancelled: true };
     assertScope();

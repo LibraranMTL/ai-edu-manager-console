@@ -28,3 +28,33 @@ test('practice content uses evidence and independent review, hides answers until
     await assert.rejects(api.savePlan('a', { ...plan, minutes: 60 }));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test('learning-state action can request a one-off focused card without rewriting the saved plan', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'practice-action-card-'));
+  const api = createPracticeCards({
+    resolveStudentDir: async id => path.join(root, id),
+    snapshot: async () => ({ profile: { grade: '八年级' }, inputFingerprint: 'action-fp', learningSignals: ['正式证据：函数迁移需要复测'], confirmedGrowthSignals: [], sourceIds: ['evidence-1'] }),
+    generate: async ({ schema, input }) => schema.required.includes('passed')
+      ? { passed: true, languagePassed: true, reason: '证据与题目匹配' }
+      : { title: input.plan.focus, subject: '数学', knowledgePoint: '函数迁移', rationale: '依据正式证据安排复测', minutes: 10, sourceRefs: ['E0'], prompt: '完成一道函数迁移题', hint: '先识别变量关系', answer: '示例答案', explanation: '按变量关系验证' },
+  });
+  try {
+    const saved = await api.savePlan('a', plan);
+    const ordinary = await api.generate('a');
+    const generated = await api.generateForAction('a', {
+      businessActionKey: 'learning-action-stable-key',
+      plan: { ...plan, focus: '函数迁移专项复测', range: 'auto' },
+    });
+    assert.equal(generated.card.businessActionKey, 'learning-action-stable-key');
+    assert.equal(generated.card.content.title, '函数迁移专项复测');
+    assert.equal((await api.dashboard('a')).plan.focus, saved.focus, 'one-off action must not rewrite the student plan');
+    assert.equal((await api.dashboard('a')).history.find((card) => card.id === ordinary.card.id)?.status, 'ready', 'one-off action must not supersede an unrelated ready card');
+    assert.equal((await api.generateForAction('a', {
+      businessActionKey: 'learning-action-stable-key',
+      plan: { ...plan, focus: '函数迁移专项复测', range: 'auto' },
+    })).card.id, generated.card.id);
+    await api.start('a', generated.card.id);
+    const submitted = await api.submit('a', generated.card.id, { attemptId: 'action-attempt-1', answer: '示例答案' });
+    assert.equal(submitted.attempt.businessActionKey, 'learning-action-stable-key');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

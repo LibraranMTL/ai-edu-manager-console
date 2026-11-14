@@ -2,6 +2,8 @@ param(
   [string]$KeystorePath = '',
   [string]$KeyAlias = '',
   [string]$DeviceSerial = '',
+  [ValidateRange(1, 65535)]
+  [int]$AdbServerPort = 5037,
   [string]$OutputDirectory = '',
   [string]$CandidateTag = '',
   [string]$PerformanceBaselinePath = '',
@@ -108,6 +110,7 @@ try {
 
   $releaseArguments = @{}
   if (-not [string]::IsNullOrWhiteSpace($DeviceSerial)) { $releaseArguments.DeviceSerial = $DeviceSerial }
+  $releaseArguments.AdbServerPort = $AdbServerPort
   if (-not [string]::IsNullOrWhiteSpace($OutputDirectory)) { $releaseArguments.OutputDirectory = $OutputDirectory }
   if (-not [string]::IsNullOrWhiteSpace($CandidateTag)) { $releaseArguments.CandidateTag = $CandidateTag }
   if (-not [string]::IsNullOrWhiteSpace($PerformanceBaselinePath)) { $releaseArguments.PerformanceBaselinePath = $PerformanceBaselinePath }

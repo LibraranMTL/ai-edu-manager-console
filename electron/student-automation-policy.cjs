@@ -8,7 +8,9 @@ function studentAutomaticTasksPaused(student) {
   if (!student) return true;
   if (student.archived === true || student.status === 'archived') return true;
   if (studentActivity(student) === 'inactive') return true;
-  return student.pauseAutomaticTasksWhenInactive !== false && studentActivity(student) === 'paused';
+  // Paused is a business state.  The legacy preference remains readable for
+  // diagnostics but cannot silently keep periodic/background work running.
+  return studentActivity(student) === 'paused';
 }
 function studentTaskCardsSuppressed(student) {
   if (!student) return true;
@@ -22,6 +24,8 @@ function inactiveStudentTaskCardRetirable(task) {
 }
 function automaticStudentTaskBlocked(task, student) {
   // User-submitted homework is not a periodic job; never strand a saved answer.
-  return task?.sourceType === 'student' && task.kind !== 'practice_attempt_review' && studentAutomaticTasksPaused(student);
+  if (task?.sourceType !== 'student' || task.kind === 'practice_attempt_review') return false;
+  if (String(task.trigger || '') === 'manual') return false;
+  return studentAutomaticTasksPaused(student);
 }
 module.exports = {studentActivity, studentAutomaticTasksPaused, studentTaskCardsSuppressed, inactiveStudentTaskCardRetirable, automaticStudentTaskBlocked};

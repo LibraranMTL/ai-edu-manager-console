@@ -2,6 +2,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ApkPath,
   [string]$DeviceSerial = '',
+  [ValidateRange(1, 65535)]
+  [int]$AdbServerPort = 5037,
   [string]$EvidenceDirectory = '',
   [switch]$KnowledgeCollaboration
 )
@@ -34,9 +36,10 @@ if (-not (Test-Path -LiteralPath $resolvedApk -PathType Leaf)) {
 
 function Invoke-AdbText {
   param([string[]]$CommandArgs)
-  $commandOutput = (& $adb @CommandArgs 2>&1 | Out-String)
+  $effectiveArgs = @('-P', [string]$AdbServerPort) + $CommandArgs
+  $commandOutput = (& $adb @effectiveArgs 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0) {
-    throw "ADB command failed: adb $($CommandArgs -join ' ')`n$commandOutput"
+    throw "ADB command failed: adb -P $AdbServerPort $($CommandArgs -join ' ')`n$commandOutput"
   }
   return $commandOutput.Trim()
 }
@@ -285,10 +288,10 @@ try {
   }
 } finally {
   if (-not [string]::IsNullOrWhiteSpace($remoteScreenshot) -and -not [string]::IsNullOrWhiteSpace($selectedSerial)) {
-    & $adb -s $selectedSerial shell rm -f $remoteScreenshot 2>$null | Out-Null
+    & $adb -P $AdbServerPort -s $selectedSerial shell rm -f $remoteScreenshot 2>$null | Out-Null
   }
   if (-not [string]::IsNullOrWhiteSpace($remoteUiDump) -and -not [string]::IsNullOrWhiteSpace($selectedSerial)) {
-    & $adb -s $selectedSerial shell rm -f $remoteUiDump 2>$null | Out-Null
+    & $adb -P $AdbServerPort -s $selectedSerial shell rm -f $remoteUiDump 2>$null | Out-Null
   }
   if (Test-Path -LiteralPath $verificationRoot) {
     [IO.Directory]::Delete($verificationRoot, $true)

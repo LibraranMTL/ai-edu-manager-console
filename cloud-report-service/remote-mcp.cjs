@@ -9,6 +9,20 @@ function textContent(value) {
 
 function toolDefinitions() {
   return [
+    { name: 'cloud_connection_get_scope', description: '读取当前短期云端任务的学生、项目、权限范围和到期时间。',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+    { name: 'cloud_student_profile_read', description: '读取当前会话明确授权学生的已同步基础信息字段。',
+      inputSchema: { type: 'object', properties: { cloudStudentId: { type: 'string' } }, additionalProperties: false } },
+    { name: 'cloud_material_list', description: '列出当前会话获准读取的最新版材料，不返回历史修订。',
+      inputSchema: { type: 'object', properties: { category: { type: 'string' }, cursor: { type: 'string' } }, additionalProperties: false } },
+    { name: 'cloud_material_read', description: '读取一个获准的当前材料修订。',
+      inputSchema: { type: 'object', required: ['revisionId'], properties: { revisionId: { type: 'string' } }, additionalProperties: false } },
+    { name: 'cloud_report_list', description: '列出当前会话范围内的最新版云端学情报告。',
+      inputSchema: { type: 'object', properties: { cursor: { type: 'string' } }, additionalProperties: false } },
+    { name: 'cloud_report_read', description: '读取一个获准的云端学情报告修订。',
+      inputSchema: { type: 'object', required: ['revisionId'], properties: { revisionId: { type: 'string' } }, additionalProperties: false } },
+    { name: 'cloud_material_search', description: '搜索当前会话获准读取且已完成索引的当前资料修订；历史修订不会返回。',
+      inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string', minLength: 1, maxLength: 100 }, category: { type: 'string' } }, additionalProperties: false } },
     { name: 'education_task_context', description: '读取当前短期任务的学生、项目、权限范围和幂等合同。',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { name: 'list_authorized_materials', description: '列出当前任务获准读取的最新版材料，不返回历史修订。',
@@ -19,6 +33,12 @@ function toolDefinitions() {
       inputSchema: { type: 'object', required: ['idempotencyKey', 'projectId', 'scopeFingerprint', 'payload'], properties: {
         idempotencyKey: { type: 'string' }, projectId: { type: 'string' }, scopeFingerprint: { type: 'string' }, payload: { type: 'object' },
       }, additionalProperties: false } },
+    { name: 'cloud_inbox_submit', description: '按冻结的项目范围和幂等键提交成果到目标主机云端收件箱。',
+      inputSchema: { type: 'object', required: ['idempotencyKey', 'projectId', 'scopeFingerprint', 'payload'], properties: {
+        idempotencyKey: { type: 'string' }, projectId: { type: 'string' }, scopeFingerprint: { type: 'string' }, payload: { type: 'object' },
+      }, additionalProperties: false } },
+    { name: 'cloud_inbox_status', description: '查询当前远程任务已经提交的成果处理状态。',
+      inputSchema: { type: 'object', properties: { submissionId: { type: 'string' } }, additionalProperties: false } },
   ];
 }
 
@@ -66,12 +86,24 @@ function createRemoteMcpHandler(service) {
       if (message.method === 'tools/call') {
         const name = String(message.params?.name || '');
         const args = message.params?.arguments || {};
-        if (name === 'education_task_context') return result(id, { content: textContent(service.remoteAgentAcknowledge(token)), isError: false });
-        if (name === 'list_authorized_materials') return result(id, { content: textContent(service.listRemoteAgentMaterials(token, {
+        if (['education_task_context', 'cloud_connection_get_scope'].includes(name)) return result(id, { content: textContent(service.remoteAgentAcknowledge(token)), isError: false });
+        if (name === 'cloud_student_profile_read') return result(id, { content: textContent(service.getRemoteAgentStudentProfile(token, String(args.cloudStudentId || ''))), isError: false });
+        if (['list_authorized_materials', 'cloud_material_list'].includes(name)) return result(id, { content: textContent(service.listRemoteAgentMaterials(token, {
           category: String(args.category || ''), cursor: String(args.cursor || ''),
         })), isError: false });
-        if (name === 'read_authorized_material') {
+        if (name === 'cloud_report_list') return result(id, { content: textContent(service.listRemoteAgentMaterials(token, {
+          category: 'learning_report', cursor: String(args.cursor || ''),
+        })), isError: false });
+        if (name === 'cloud_material_search') {
+          const query = String(args.query || '').trim().toLocaleLowerCase('zh-CN');
+          if (!query || [...query].length > 100) return result(id, { content: textContent('搜索关键词必须为1到100个字符。'), isError: true });
+          return result(id, { content: textContent(service.searchRemoteAgentMaterials(token, {
+            query, category: String(args.category || ''),
+          })), isError: false });
+        }
+        if (['read_authorized_material', 'cloud_material_read', 'cloud_report_read'].includes(name)) {
           const item = service.getRemoteAgentMaterial(token, String(args.revisionId || ''));
+          if (name === 'cloud_report_read' && item.category !== 'learning_report') return result(id, { content: textContent('所选修订不是学情报告。'), isError: true });
           if (item.content.length > MAX_MCP_CONTENT_BYTES) return result(id, { content: textContent('材料超过单次读取上限，未返回内容。'), isError: true });
           return result(id, { content: item.contentType.startsWith('text/')
             ? [{ type: 'text', text: item.content.toString('utf8') }]
@@ -79,7 +111,8 @@ function createRemoteMcpHandler(service) {
           isError: false, structuredContent: { revisionId: item.revisionId, contentSha256: item.contentSha256,
             cloudStudentId: item.cloudStudentId, projectId: item.projectId, scopeFingerprint: item.scopeFingerprint } });
         }
-        if (name === 'submit_project_result') return result(id, { content: textContent(service.submitInboxResult(token, args)), isError: false });
+        if (['submit_project_result', 'cloud_inbox_submit'].includes(name)) return result(id, { content: textContent(service.submitInboxResult(token, args)), isError: false });
+        if (name === 'cloud_inbox_status') return result(id, { content: textContent(service.getInboxSubmissionStatus(token, String(args.submissionId || ''))), isError: false });
         return failure(id, -32602, '工具名称无效');
       }
       return failure(id, -32601, '方法不存在');

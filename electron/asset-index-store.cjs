@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync, backup } = require('node:sqlite');
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 
@@ -58,6 +58,7 @@ function comparableRecord(value) {
   delete record.linkedStudents;
   delete record.linkedProjects;
   delete record.aliases;
+  for (const field of Object.keys(FIELD_TO_COLUMN)) delete record[field];
   return stableJson(record);
 }
 
@@ -206,6 +207,32 @@ function schemaSql() {
       asset_id UNINDEXED, filename, paths, owner_name, source_name, sha1, sha256, governance
     );
     ${summarySchemaSql()}
+    ${statisticsGenerationSchemaSql()}
+  `;
+}
+
+function statisticsGenerationSchemaSql() {
+  return `
+    INSERT OR IGNORE INTO asset_index_meta(key,value) VALUES('statistics_generation','0');
+    INSERT OR IGNORE INTO asset_index_meta(key,value) VALUES('statistics_changed_at','');
+    CREATE TRIGGER IF NOT EXISTS asset_statistics_generation_ai AFTER INSERT ON assets BEGIN
+      UPDATE asset_index_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='statistics_generation';
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_statistics_generation_au AFTER UPDATE ON assets BEGIN
+      UPDATE asset_index_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='statistics_generation';
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_statistics_generation_ad AFTER DELETE ON assets BEGIN
+      UPDATE asset_index_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='statistics_generation';
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_reference_statistics_generation_ai AFTER INSERT ON asset_references BEGIN
+      UPDATE asset_index_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='statistics_generation';
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_reference_statistics_generation_au AFTER UPDATE ON asset_references BEGIN
+      UPDATE asset_index_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='statistics_generation';
+    END;
+    CREATE TRIGGER IF NOT EXISTS asset_reference_statistics_generation_ad AFTER DELETE ON asset_references BEGIN
+      UPDATE asset_index_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='statistics_generation';
+    END;
   `;
 }
 
@@ -381,9 +408,10 @@ function summarySchemaSql() {
   `;
 }
 
-function createSchema(db, journalMode = 'WAL') {
+function createSchema(db, journalMode = 'WAL', now = Date.now) {
   db.exec(`PRAGMA journal_mode=${journalMode}; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;`);
   db.exec(schemaSql());
+  db.prepare("UPDATE asset_index_meta SET value=? WHERE key='statistics_changed_at'").run(nowIso(now));
   db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
 }
 
@@ -520,6 +548,24 @@ function migrateSchemaV3ToV4(db, dbPath, now = Date.now) {
   }
 }
 
+function migrateSchemaV4ToV5(db, dbPath, now = Date.now) {
+  const backupPath = schemaUpgradeBackup(db, dbPath, 5, now);
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    db.exec(statisticsGenerationSchemaSql());
+    db.prepare("UPDATE asset_index_meta SET value=? WHERE key='statistics_changed_at'").run(nowIso(now));
+    db.exec('PRAGMA user_version=5');
+    const foreign = db.prepare('PRAGMA foreign_key_check').all();
+    const integrity = db.prepare('PRAGMA integrity_check').get();
+    if (foreign.length || Object.values(integrity || {})[0] !== 'ok') throw new Error('SQLite v5 schema integrity check failed');
+    db.exec('COMMIT');
+    return backupPath;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction already ended */ }
+    throw Object.assign(error, { code: 'asset_db_schema_upgrade_failed', backupPath });
+  }
+}
+
 function canonicalAsset(group) {
   const sha1 = text(group[0]?.sha1);
   const expected = sha1 ? `asset-${sha1.slice(0, 16)}` : '';
@@ -563,12 +609,14 @@ function openCheckedDatabase(dbPath, now = Date.now, quickCheck = true) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
   let version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
-  if (version === 0) createSchema(db, 'WAL');
+  if (version === 0) createSchema(db, 'WAL', now);
   else if (version === 1) migrateSchemaV1ToV2(db, dbPath, now);
   version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
   if (version === 2) migrateSchemaV2ToV3(db, dbPath, now);
   version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
   if (version === 3) migrateSchemaV3ToV4(db, dbPath, now);
+  version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
+  if (version === 4) migrateSchemaV4ToV5(db, dbPath, now);
   version = Number(db.prepare('PRAGMA user_version').get().user_version || 0);
   if (version !== SCHEMA_VERSION) throw Object.assign(new Error(`Unsupported asset database schema ${version}`), { code: 'asset_db_schema_unsupported' });
   db.exec(schemaSql());
@@ -658,6 +706,7 @@ function makeStoreApi(db, options) {
   const dbPath = options.dbPath;
   const now = options.now || Date.now;
   const summaryCache = new Map();
+  const trendCache = new Map();
   const listCountCache = new Map();
   const SUMMARY_CACHE_LIMIT = 64;
   const LIST_COUNT_CACHE_LIMIT = 256;
@@ -674,7 +723,7 @@ function makeStoreApi(db, options) {
     cache.set(key, value);
     while (cache.size > limit) cache.delete(cache.keys().next().value);
   };
-  const invalidateSummary = () => { summaryCache.clear(); listCountCache.clear(); };
+  const invalidateSummary = () => { summaryCache.clear(); trendCache.clear(); listCountCache.clear(); };
   const insertAsset = db.prepare(`INSERT INTO assets(${ASSET_COLUMNS.join(',')}) VALUES(${ASSET_COLUMNS.map(() => '?').join(',')})
     ON CONFLICT(asset_id) DO UPDATE SET ${ASSET_COLUMNS.filter(column => column !== 'asset_id').map(column => column === 'sha256'
       ? `sha256=CASE WHEN excluded.sha256<>'' THEN excluded.sha256 ELSE assets.sha256 END`
@@ -885,6 +934,106 @@ function makeStoreApi(db, options) {
     return clauses;
   }
 
+  function localDayKey(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
+  function recentTrend(filter = {}, asOf = nowIso(now)) {
+    const asOfDate = localDayKey(asOf) || localDayKey(now());
+    const cacheKey = `${asOfDate}:${JSON.stringify(filter || {})}`;
+    const cached = cacheGet(trendCache, cacheKey);
+    if (cached) return { ...cached, asOf };
+
+    const days = [];
+    const buckets = new Map();
+    const base = new Date(`${asOfDate}T12:00:00`);
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      const day = new Date(base.getFullYear(), base.getMonth(), base.getDate() - offset);
+      const date = localDayKey(day);
+      const item = { date, label: `${day.getMonth() + 1}/${day.getDate()}`, added: 0, references: 0 };
+      days.push(item);
+      buckets.set(date, item);
+    }
+
+    const params = [];
+    const clauses = filterSql(filter, params);
+    if (filter.projectId && filter.projectId !== 'all') {
+      clauses.push("a.asset_id IN (SELECT asset_id FROM asset_references WHERE state='active' AND space_type='project' AND space_id=?)");
+      params.push(text(filter.projectId));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const assetDate = "strftime('%Y-%m-%d', COALESCE(NULLIF(a.uploaded_at,''), NULLIF(a.created_at,'')), 'localtime')";
+    const referenceDate = "strftime('%Y-%m-%d', NULLIF(r.linked_at,''), 'localtime')";
+    let undatedAssets = 0;
+    let undatedReferences = 0;
+    for (const row of db.prepare(`SELECT ${assetDate} AS date,COUNT(*) AS count FROM assets a ${where} GROUP BY date`).all(...params)) {
+      const count = Number(row.count || 0);
+      const bucket = buckets.get(text(row.date));
+      if (bucket) bucket.added += count;
+      else if (!row.date) undatedAssets += count;
+    }
+    for (const row of db.prepare(`SELECT ${referenceDate} AS date,COUNT(*) AS count FROM asset_references r
+      JOIN assets a ON a.asset_id=r.asset_id ${where} GROUP BY date`).all(...params)) {
+      const count = Number(row.count || 0);
+      const bucket = buckets.get(text(row.date));
+      if (bucket) bucket.references += count;
+      else if (!row.date) undatedReferences += count;
+    }
+    const result = {
+      days,
+      addedTotal: days.reduce((total, item) => total + item.added, 0),
+      referenceTotal: days.reduce((total, item) => total + item.references, 0),
+      undatedAssets,
+      undatedReferences,
+    };
+    cacheSet(trendCache, cacheKey, result, SUMMARY_CACHE_LIMIT);
+    return { ...result, asOf };
+  }
+
+  function weeklyUploadTrend(filter = {}, asOf = nowIso(now)) {
+    const currentDate = localDayKey(asOf) || localDayKey(now());
+    const cacheKey = `weekly-upload:${currentDate}:${JSON.stringify(filter || {})}`;
+    const cached = cacheGet(trendCache, cacheKey);
+    if (cached) return { ...cached, asOf };
+
+    const [year, month, day] = currentDate.split('-').map(Number);
+    const currentWeekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    const mondayOffset = currentWeekday === 0 ? -6 : 1 - currentWeekday;
+    const base = new Date(year, month - 1, day + mondayOffset, 12);
+    const labels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const days = labels.map((label, index) => {
+      const date = localDayKey(new Date(base.getFullYear(), base.getMonth(), base.getDate() + index));
+      return { date, label, uploads: date > currentDate ? null : 0 };
+    });
+    const buckets = new Map(days.map((item) => [item.date, item]));
+    const params = [];
+    const clauses = filterSql(filter, params);
+    if (filter.projectId && filter.projectId !== 'all') {
+      clauses.push("a.asset_id IN (SELECT asset_id FROM asset_references WHERE state='active' AND space_type='project' AND space_id=?)");
+      params.push(text(filter.projectId));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const assetDate = "strftime('%Y-%m-%d', COALESCE(NULLIF(a.uploaded_at,''), NULLIF(a.created_at,'')), 'localtime')";
+    let undatedAssets = 0;
+    for (const row of db.prepare(`SELECT ${assetDate} AS date,COUNT(*) AS count FROM assets a ${where} GROUP BY date`).all(...params)) {
+      const bucket = buckets.get(text(row.date));
+      if (bucket && bucket.uploads !== null) bucket.uploads += Number(row.count || 0);
+      else if (!row.date) undatedAssets += Number(row.count || 0);
+    }
+    const result = {
+      currentDate,
+      weekStart: days[0].date,
+      weekEnd: days.at(-1).date,
+      days,
+      uploadedTotal: days.reduce((total, item) => total + Number(item.uploads || 0), 0),
+      undatedAssets,
+    };
+    cacheSet(trendCache, cacheKey, result, SUMMARY_CACHE_LIMIT);
+    return { ...result, asOf };
+  }
+
   function listAssets(request = {}, searchText = '') {
     const params = [];
     const clauses = filterSql(request, params);
@@ -1051,6 +1200,10 @@ function makeStoreApi(db, options) {
       clauses.push('s.asset_id IN (SELECT asset_id FROM asset_student_memberships WHERE student_id=?)');
       params.push(text(filter.studentId));
     }
+    if (filter.projectId && filter.projectId !== 'all') {
+      clauses.push("s.asset_id IN (SELECT asset_id FROM asset_references WHERE state='active' AND space_type='project' AND space_id=?)");
+      params.push(text(filter.projectId));
+    }
     if (filter.sourceName && filter.sourceName !== 'all') { clauses.push('s.source_name=?'); params.push(text(filter.sourceName)); }
     if (filter.type && filter.type !== 'all') { clauses.push('s.asset_type=?'); params.push(text(filter.type)); }
     if (filter.risk && filter.risk !== 'all') { clauses.push('s.governance_risk=?'); params.push(text(filter.risk)); }
@@ -1095,6 +1248,35 @@ function makeStoreApi(db, options) {
       health: 'ok', lastRebuildAt: text(lastRebuild?.value) };
     cacheSet(summaryCache, cacheKey, result, SUMMARY_CACHE_LIMIT);
     return result;
+  }
+
+  function statisticsState() {
+    const rows = db.prepare("SELECT key,value FROM asset_index_meta WHERE key IN ('statistics_generation','statistics_changed_at')").all();
+    const state = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    return { generation: Math.max(0, Number(state.statistics_generation || 0)), changedAt: text(state.statistics_changed_at) };
+  }
+
+  function markStatisticsChangedAt() {
+    const changedAt = nowIso(now);
+    db.prepare("UPDATE asset_index_meta SET value=? WHERE key='statistics_changed_at'").run(changedAt);
+    return { ...statisticsState(), changedAt };
+  }
+
+  function statisticsSnapshot(scope = {}) {
+    const filter = {
+      studentId: text(scope.studentId || '') === 'all' ? '' : text(scope.studentId || ''),
+      projectId: text(scope.projectId || ''),
+      sourceName: text(scope.sourceName || '') === 'all' ? '' : text(scope.sourceName || ''),
+      type: text(scope.type || '') === 'all' ? '' : text(scope.type || ''),
+      risk: text(scope.risk || '') === 'all' ? '' : text(scope.risk || ''),
+      duplicateOnly: Boolean(scope.duplicateOnly),
+    };
+    const state = statisticsState();
+    const asOf = nowIso(now);
+    const overallScope = { studentId: filter.studentId, projectId: filter.projectId };
+    return { schema: 'edu.asset-statistics-snapshot.v1', asOf, ...state, scope: filter,
+      ...summary(filter), recentTrend: recentTrend(filter, asOf), overallRecentTrend: recentTrend(overallScope, asOf),
+      weeklyUploadTrend: weeklyUploadTrend(filter, asOf), overallWeeklyUploadTrend: weeklyUploadTrend(overallScope, asOf) };
   }
 
   function listDuplicateGroups(request = {}) {
@@ -1318,17 +1500,25 @@ function makeStoreApi(db, options) {
     listDuplicateGroups, listDuplicateOperations, createDuplicateOperation, duplicateOperation, updateDuplicateOperation, updateDuplicateEntry, setReferenceQuarantine,
     setReferenceAvailability,
     refreshSearch, rebuildSearchIndex, beginScan, updateScan, scanStatus, setMeta,
-    cacheStats: () => ({ summary: summaryCache.size, listCount: listCountCache.size,
+    statisticsState, markStatisticsChangedAt, statisticsSnapshot,
+    cacheStats: () => ({ summary: summaryCache.size, trend: trendCache.size, listCount: listCountCache.size,
       summaryLimit: SUMMARY_CACHE_LIMIT, listCountLimit: LIST_COUNT_CACHE_LIMIT }),
     transaction,
     backupTo, close() { db.close(); },
   };
 }
 
-function createAssetIndexStore({ dbPath, legacyJsonPath, now = Date.now, quickCheck = true }) {
+function createAssetIndexStore({ dbPath, legacyJsonPath, now = Date.now, quickCheck = true, onChanged = null }) {
   let api = null;
   let migration = null;
   let initializationError = null;
+  const summaryMutations = new Set(['upsertAsset', 'replaceAll', 'replaceReferences', 'patchAsset', 'importSnapshot',
+    'setReferenceQuarantine', 'setReferenceAvailability']);
+  const affectedStudentIds = (property, args) => {
+    const values = property === 'replaceAll' ? (Array.isArray(args[0]) ? args[0] : []) : [args[0], ...(Array.isArray(args[1]) ? args[1] : [])];
+    return [...new Set(values.flatMap((value) => value && typeof value === 'object'
+      ? [value.ownerStudentId, value.studentId, value.spaceType === 'student' ? value.spaceId : ''] : []).map(text).filter(Boolean))];
+  };
   function initialize() {
     if (api) return api;
     if (initializationError) throw initializationError;
@@ -1347,8 +1537,30 @@ function createAssetIndexStore({ dbPath, legacyJsonPath, now = Date.now, quickCh
       if (property === 'initialize') return initialize;
       if (property === 'migrationResult') return () => migration;
       if (property === 'initializationError') return () => initializationError;
-      const value = initialize()[property];
-      return typeof value === 'function' ? value.bind(initialize()) : value;
+      const store = initialize();
+      const value = store[property];
+      if (typeof value !== 'function') return value;
+      if (!summaryMutations.has(property)) return value.bind(store);
+      return (...args) => {
+        const before = store.statisticsState();
+        let result;
+        let failure;
+        try { result = value.apply(store, args); }
+        catch (error) { failure = error; }
+        const after = store.statisticsState();
+        if (after.generation > before.generation) {
+          const committed = store.markStatisticsChangedAt();
+          if (typeof onChanged === 'function') {
+            try {
+              const studentIds = affectedStudentIds(property, args);
+              onChanged({ schema: 'edu.asset-index-changed.v1', ...committed, reason: String(property), studentIds,
+                global: studentIds.length === 0 });
+            } catch { /* a committed asset transaction must not fail because an event listener failed */ }
+          }
+        }
+        if (failure) throw failure;
+        return result;
+      };
     },
   });
 }

@@ -1,0 +1,12 @@
+{
+  "description": "Non-production cross-client RSA-SHA256 canonical JSON fixture",
+  "payload": {
+    "contractId": "edu-manager.public-course-mvp.v1",
+    "keyId": "fixture-course-key",
+    "manifestRevision": "manifest-fixture-001",
+    "signatureAlgorithm": "RSA-SHA256"
+  },
+  "canonical": "{\"contractId\":\"edu-manager.public-course-mvp.v1\",\"keyId\":\"fixture-course-key\",\"manifestRevision\":\"manifest-fixture-001\",\"signatureAlgorithm\":\"RSA-SHA256\"}",
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApVxP6BN5huMAoLpVGgkr\nnFF/i7qgRs3dDv3cJKIx8HB8Io6VylGpSu9Xb2QzBeLSY8QLnnrnFXLXcLu++KbC\nKjocR2TXN3cQ/qwGHwaZQYuS0TKET1L9c0JcEKpSP7SCsltZS/ARIud34xAu+TfN\n5tZLhQMWyic1/PLDP/UnpH0IstBya0tIFhAl57ekLLjQHb8+g+jucWJLzd8mxwNC\nML59oGDB0gk+KSf6o32Dklomjid/UPszFjXnXegVJn+BKl3eKDdFwSrEnNhKfqFN\nxZwfdx2MiQr0SKj86f0Qq9CGBB3CsO+KtJL7XrabFsivlZQT9Ejj+EqEEsubEMdc\nxQIDAQAB\n-----END PUBLIC KEY-----\n",
+  "signature": "fUqQKScGBqCEV6v5fbcK5cOpUR3CnNgs6nrVaKBgrHIDGve1Azz4cP6yLPGX8cQSU1njSs3JD01yK58ca/+P7JmEIIb4dWPg9dqlfX1p1YpEzQM1Bu7aqtRgOls8jpQJoNZsYQBRM8GNVrgMW9OqFhsq4zSjqFxEieImDogGxzqZRmeNve1LJ1iCiQ5aO8xHafgPmvauIHOC+4w6589hTxM0+U64CHQ86mgxJq/u5WLtxo6df+I8DgRy/JE0N5jPy9wcuWPMW8OTCy3uymzJfMxGytKPjvr8cKd9EvCz3p1H3fqd5s8gUWUvMaQG7nh5csXvvaZqdp+M+eS7EdNq0w=="
+}

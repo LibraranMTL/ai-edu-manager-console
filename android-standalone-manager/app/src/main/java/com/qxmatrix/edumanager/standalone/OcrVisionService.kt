@@ -20,6 +20,22 @@ class OcrVisionService(private val context: Context) {
     private val tasks = TaskRepository(context)
     private val tools = ControlledFileTools(context)
 
+    /** Local ML Kit only; callers bind and verify the frozen project source separately. */
+    fun extractProjectText(bytes: ByteArray, extension: String): String {
+        require(bytes.size <= 4_000_000) { "项目 OCR 原件超过 4 MB，请拆分" }
+        var hasRecognizedText = false
+        val process: (Int, Bitmap, () -> String) -> String = { _, _, recognize ->
+            recognize().also { if (it.isNotBlank()) hasRecognizedText = true }
+        }
+        val extracted = when (extension.lowercase()) {
+            "jpg", "jpeg", "png", "webp", "bmp" -> extractBitmap(decodeBounded(bytes), process)
+            "pdf" -> extractPdf(bytes, process)
+            else -> error("不支持此项目资料格式")
+        }
+        require(hasRecognizedText) { "项目 OCR 未识别到正文，原件保留" }
+        return extracted.text.trim().take(100_000)
+    }
+
     fun extract(studentId: String, materialId: String, includeVision: Boolean): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         val material = files.materials(studentId).singleOrNull { it.optString("id") == materialId } ?: error("未找到指定资料")
@@ -114,6 +130,8 @@ class OcrVisionService(private val context: Context) {
                 .put("ocrPath", outputPath).put("ocrMarkdownPath", markdownPath).put("digestReady", digestReady)
                 .put("digestInputKind", MaterialProcessingPolicy.inputKind(extracted.text, vision))
                 .put("visionStatus", visionStatus).put("visionError", visionError.take(800)))
+            if (digestReady) runCatching { AutomationEventEmitter.ocrResult(context, student.id, material, result) }
+            else runCatching { AutomationEventEmitter.qualityFailure(context, student.id, listOf(material), "ocr_empty") }
             val message = when {
                 !digestReady -> ocrError
                 visionStatus == "unavailable" -> "本地逐页 OCR 已完成且可消化；部分视觉页等待额度或人工核对，已完成页保留"
@@ -124,6 +142,7 @@ class OcrVisionService(private val context: Context) {
                 .put("result", result).put("outputPath", outputPath)
         } catch (error: Throwable) {
             files.patchMaterial(student.id, materialId, JSONObject().put("ocrStatus", "failed").put("ocrError", error.message ?: "解析失败"))
+            runCatching { AutomationEventEmitter.qualityFailure(context, student.id, listOf(material), "ocr_failed") }
             runCatching { tasks.acceptResult(task.getString("id"), resultPayload(task.getString("id"), executionId, false, error.message ?: "解析失败", "")) }
             throw error
         }

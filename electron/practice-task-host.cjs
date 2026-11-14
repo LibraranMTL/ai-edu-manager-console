@@ -10,7 +10,7 @@ function createPracticeTaskHost(host) {
     const existing = host.read().tasks.find(task => task.id === id);
     if (!existing) host.upsert([{ id, title: '学习卡片作答评阅', kind: 'practice_attempt_review', sourceType: 'student', sourceId: studentId,
       sourceName: student.name, status: 'pending', executor: 'internal', executionMode: 'internal', trigger: 'practice_submit',
-      idempotencyKey: id, input: { attemptId }, permissions: { read: [root], write: [root], operations: ['read', 'review_practice'] },
+      idempotencyKey: id, automaticExecution:true,requestOrigin:'user_manual_once',input: { attemptId }, permissions: { read: [root], write: [root], operations: ['read', 'review_practice'] },
       timeoutSeconds: 300, heartbeatTimeoutSeconds: 45, autoRetry: false, completionPolicy: 'validated', riskLevel: 'low' }]);
     else if (retry && !['running','waiting_result'].includes(existing.status)) {
       const store = host.read(); host.transition(store, id, 'pending', { error: null }, 'practice_retry_requested'); await host.write(store);
@@ -21,23 +21,27 @@ function createPracticeTaskHost(host) {
   function drain() {
     try {
     if (!host.active() || [...host.running.values()].some(entry => entry.practiceReview)) return;
-    const next = host.read().tasks.find(task => task.kind === 'practice_attempt_review' && ['pending','approved','queued'].includes(task.status));
+    const next = host.read().tasks.find(task => task.kind === 'practice_attempt_review' && ['pending','approved','queued'].includes(task.status)
+      && (!task.nextRetryAt||Date.parse(task.nextRetryAt)<=Date.now())&&!task.capabilityWait?.exhausted
+      && (!task.executionId||['not_sent','settled'].includes(task.executionPhase)));
     if (next) Promise.resolve(host.execute(next.id, 'internal')).catch(error => host.onError?.(error));
     } catch (error) { host.onError?.(error); }
   }
-  async function submit(task) {
+  async function submit(task, executionOptions = {}) {
     if ([...host.running.values()].some(entry => entry.practiceReview)) {
       const store = host.read(); host.transition(store, task.id, 'queued', {}, 'practice_serial_wait'); await host.write(store);
       return { ok: true, queued: true, message: '已保存，等待前一份作答处理。' };
     }
     const student = host.student(task.sourceId); if (!student || !host.active()) return { ok: false, message: '学生范围或授权已失效' };
-    const permit = host.acquire(task);
+    const permit = host.acquire(task, executionOptions);
     if (!permit) { host.retryLater(task.id, 'internal'); return { ok: true, queued: true, message: '后台资源忙，稍后继续。' }; }
-    const store = host.read(), executionId = `practice-${crypto.randomUUID()}`;
+    let claim;try{claim=await host.claim?.(task,executionOptions);}catch(error){permit();throw error;}
+    if(claim&&!claim.ok){permit();return claim;}
+    const store = host.read(), executionId = claim?.executionId||`practice-${crypto.randomUUID()}`;
     const transition = host.transition(store, task.id, 'running', { executionId, executor: 'internal', adapterId: 'internal', executionMode: 'internal',
       attempt: (task.attempt || 0) + 1, startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), error: null }, 'practice_review_started');
-    if (!transition.ok) { permit(); return transition; }
-    try { await host.write(store); } catch (error) { permit(); throw error; }
+    if (!transition.ok) {await host.releaseClaim?.(claim); permit(); return transition; }
+    try { await host.write(store); } catch (error) {await host.releaseClaim?.(claim); permit(); throw error; }
     const controller = new AbortController();
     const checkpoint = async phase => {
       const currentStore = host.read(), current = currentStore.tasks.find(item => item.id === task.id);
@@ -52,15 +56,29 @@ function createPracticeTaskHost(host) {
     host.running.set(task.id, running);
     running.completion = Promise.resolve().then(async () => {
       await checkpoint('starting');
-      return host.runtime().reviewAttempt(task.sourceId, task.input.attemptId, { signal: controller.signal, checkpoint });
+      return host.runtime().reviewAttempt(task.sourceId, task.input.attemptId, { signal: controller.signal, checkpoint,executionContext:claim?{claim,taskId:task.id,permitHeld:true}:undefined });
     }).then(async output => {
       const current = host.read(); if (current.tasks.find(item => item.id === task.id)?.executionId !== executionId) return;
       if (!host.transition(current, task.id, 'reviewing', {}, 'practice_result_checked').ok) return;
-      host.transition(current, task.id, 'succeeded', { result: { summary: output.status === 'needs_attention' ? '识别或判断不足，原件已保留，等待查看。' : '作答处理完成。', structuredOutput: output } }, 'practice_review_finished'); await host.write(current);
+      host.transition(current, task.id, 'succeeded', { result: { summary: output.status === 'needs_attention' ? '识别或判断不足，原件已保留，等待查看。' : '作答处理完成。', structuredOutput: output,validation:{valid:true,checkedAt:new Date().toISOString()} } }, 'practice_review_finished'); await host.write(current);
+      await host.settle?.(task.id,{knownResult:true});
     }).catch(async error => {
+      if(error.code==='CAPABILITY_WAIT')await host.releaseClaim?.(claim);
+      const safeRetry=Boolean(error.providerId&&['not_sent','rejected'].includes(error.stage));
+      if(safeRetry)await host.settle?.(task.id,{notSent:true});
       const current = host.read(), entry = current.tasks.find(item => item.id === task.id);
       if (entry?.executionId === executionId && entry.status === 'running') {
+        if(error.code==='CAPABILITY_WAIT'){
+          host.transition(current,task.id,'queued',{error:null,nextRetryAt:error.capabilityWait?.nextRetryAt||new Date(Date.now()+15000).toISOString(),capabilityWait:error.capabilityWait||null},'practice_capability_wait');await host.write(current);return;
+        }
+        const tried=[...new Set([...(entry.routeAttempts||[]),...(error.providerId?[error.providerId]:[])])];
+        if(safeRetry&&tried.length<3){
+          host.transition(current,task.id,'queued',{error:null,nextRetryAt:new Date(Date.now()+30000).toISOString(),routeAttempts:tried,automaticExecution:true},'practice_next_provider');
+          await host.write(current);host.wake?.(task.id,30000);return;
+        }
         host.transition(current, task.id, timedOut?'timed_out':controller.signal.aborted ? 'cancelled' : 'failed', { error: { code: timedOut?'PRACTICE_REVIEW_TIMEOUT':error.code || 'PRACTICE_REVIEW_FAILED', message: timedOut?'评阅超过时限，原件保留，可稍后重试。':error.message }, autoRetry: false }, 'practice_review_failed'); await host.write(current);
+        if(entry.executionPhase==='claimed')await host.releaseClaim?.(claim);
+        else await host.settle?.(task.id,{notSent:error.stage==='not_sent'});
       }
     }).finally(() => {
       clearInterval(heartbeatTimer); timeout.cancel(); permit();
@@ -74,6 +92,9 @@ function createPracticeTaskHost(host) {
     for (const attemptId of await host.runtime().recoverable(studentId)) {
       const id = taskId(studentId, attemptId), store = host.read(), existing = store.tasks.find(item => item.id === id);
       if (existing && !host.running.has(id)) {
+        if(existing.executionId&&!['not_sent','settled'].includes(existing.executionPhase)){
+          await host.reconcile?.(existing);continue;
+        }
         if (['running','waiting_result'].includes(existing.status)) host.transition(store, id, 'failed', { error: { code: 'RESTART_RECOVERY', message: '重启后恢复作答处理' } }, 'practice_interrupted');
         if (!['pending','approved','queued'].includes(existing.status)) host.transition(store, id, 'pending', {}, 'practice_recovered');
         await host.write(store);

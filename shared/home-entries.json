@@ -1,0 +1,7 @@
+[
+  { "id": "weekly-actions", "title": "本周行动建议", "description": "查看本周重点与里程碑" },
+  { "id": "daily-routine", "title": "每日固定动作", "description": "定位到本周报告同名章节" },
+  { "id": "project-progress", "title": "项目进展", "description": "查看项目状态与待补充项" },
+  { "id": "topic-recommendations", "title": "推荐选题", "description": "查看当前学生的选题建议" },
+  { "id": "competition-recommendations", "title": "推荐比赛", "description": "查看适合的比赛建议" }
+]

@@ -37,6 +37,14 @@ class LlmWikiKnowledgeEngine(
             .put("relationships", jsonFileNames(RELATIONSHIPS).size))
     }
 
+    /** Preserve legacy IDs when they identify the same URI, disambiguate equal bytes from distinct records. */
+    fun sourceIdForRecord(legacyId: String, sourceUri: String): String {
+        val id = portableId(legacyId, "asset.id")
+        val path = "$SOURCES/$id.json"
+        if (!documents.exists(path) || JSONObject(documents.readText(path)).optString("uri") == sourceUri.trim()) return id
+        return "source-${ScopedContentPolicy.hash("$id:$sourceUri".toByteArray()).take(40)}"
+    }
+
     fun importAsset(input: JSONObject): JSONObject {
         val asset = JSONObject(input.toString())
         val id = portableId(asset.optString("id"), "asset.id")
@@ -58,6 +66,7 @@ class LlmWikiKnowledgeEngine(
             if (existing.optString("sha256") != sha256) {
                 fail("IMMUTABLE_SOURCE_CONFLICT", "同一来源 ID 已存在不同内容；原始资料不可覆盖")
             }
+            if (!documents.exists(markdownPath)) documents.writeTextSafely(markdownPath, sourceMarkdown(existing), "text/markdown")
             return JSONObject().put("ok", true).put("duplicate", true).put("source", existing).put("markdownPath", markdownPath)
         }
         val source = JSONObject(asset.toString()).apply {
@@ -94,6 +103,15 @@ class LlmWikiKnowledgeEngine(
         val claimId = portableId(id, "claim.id")
         val path = "$CLAIMS/$claimId.json"
         return if (documents.exists(path)) JSONObject(documents.readText(path)) else null
+    }
+
+    /** Repair a missing projection without changing the authoritative claim. */
+    fun ensureClaimProjection(id: String) {
+        val claimId = portableId(id, "claim.id")
+        val claim = requireNotNull(getClaim(claimId)) { "知识声明不存在" }
+        require(claim.optString("subjectId") == subjectId) { "知识声明学生范围不匹配" }
+        val markdownPath = "$CLAIMS/$claimId.md"
+        if (!documents.exists(markdownPath)) documents.writeTextSafely(markdownPath, claimMarkdown(claim), "text/markdown")
     }
 
     fun search(

@@ -17,7 +17,7 @@ test('host home presents one primary education-material workflow', () => {
   assert.match(renderer, /1<\/span><strong>添加资料/);
   assert.match(renderer, /2<\/span><strong>处理中/);
   assert.match(renderer, /3<\/span><strong>需要补充/);
-  assert.match(renderer, /4<\/span><strong>知识更新/);
+  assert.match(renderer, /4<\/span><strong>知识资产/);
   assert.match(renderer, /5<\/span><strong>成长变化/);
   assert.match(renderer, /6<\/span><strong>报告与档案/);
   assert.match(renderer, /homeNeedsSupplementTotal > 0/);

@@ -71,6 +71,8 @@ test('Android student keeps small-library upgrade and diverts large libraries to
   assert.match(main, /从 Windows 主机升级到单机版（少量资料）/);
   assert.match(main, /rawFileCount >= 1000/);
   assert.match(main, /rawTotalBytes >= 3L \* 1024L \* 1024L \* 1024L/);
-  assert.match(manifest, /versionCode="96"/);
-  assert.match(manifest, /versionName="0\.6\.26"/);
+  const versionCode = Number(manifest.match(/versionCode="(\d+)"/)?.[1] || 0);
+  const versionName = manifest.match(/versionName="([^"]+)"/)?.[1] || '';
+  assert.ok(versionCode >= 97, `Android student versionCode regressed below the accepted baseline: ${versionCode}`);
+  assert.ok(/^0\.6\.(?:2[7-9]|[3-9]\d)$/.test(versionName), `Android student versionName regressed below 0.6.27: ${versionName}`);
 });

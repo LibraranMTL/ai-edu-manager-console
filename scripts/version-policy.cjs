@@ -8,9 +8,10 @@ function parseVersion(value) {
 
 function validateWindowsVersion(value) {
   const version = parseVersion(value);
-  const oneTimeException = version.major === 0 && version.minor === 17 && version.patch === 11;
-  if (version.patch < 1 || (version.patch > 10 && !oneTimeException)) {
-    throw new Error(`Windows 版本修订号必须为 1-10（0.17.11 为指定例外）：${value}`);
+  const approvedException = (version.major === 0 && version.minor === 17 && version.patch === 11)
+    || (version.major === 0 && version.minor === 23 && version.patch === 0);
+  if ((version.patch < 1 || version.patch > 10) && !approvedException) {
+    throw new Error(`Windows 版本修订号必须为 1-10（0.17.11、0.23.0 为指定例外）：${value}`);
   }
   return version;
 }

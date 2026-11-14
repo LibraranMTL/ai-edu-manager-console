@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   getAgentCapture: () => ipcRenderer.invoke('terminal:get-agent-capture'),
   setAgentCapture: (enabled) => ipcRenderer.invoke('terminal:set-agent-capture', enabled),
   runAgentCapture: () => ipcRenderer.invoke('terminal:run-agent-capture'),
+  getAgentBridge: () => ipcRenderer.invoke('terminal:get-agent-bridge'),
+  setAgentBridge: (enabled) => ipcRenderer.invoke('terminal:set-agent-bridge', enabled),
+  copyAgentBridgeConfig: () => ipcRenderer.invoke('terminal:copy-agent-bridge-config'),
+  showCompanion: () => ipcRenderer.invoke('terminal:show-companion'),
+  showCompanionPanel: (mode) => ipcRenderer.invoke('terminal:show-companion-panel', mode),
   getUploadQueue: () => ipcRenderer.invoke('terminal:get-upload-queue'),
   retryUploadQueue: () => ipcRenderer.invoke('terminal:retry-upload-queue'),
   acknowledgeUploadGeneration: () => ipcRenderer.invoke('terminal:acknowledge-upload-generation'),
@@ -39,6 +44,22 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   getLearningInbox: () => ipcRenderer.invoke('terminal:learning-inbox'),
   submitLearningInbox: (input) => ipcRenderer.invoke('terminal:submit-learning-inbox', input),
   listLearningReports: () => ipcRenderer.invoke('terminal:list-learning-reports'),
+  getLearningStatus: () => ipcRenderer.invoke('terminal:get-learning-status'),
+  submitLearningStatus: (input) => ipcRenderer.invoke('terminal:submit-learning-status', input),
+  getProjectComprehensiveReport: (projectId) => ipcRenderer.invoke('terminal:get-project-comprehensive-report', projectId),
+  listKnowledgeGrowthWeeks: () => ipcRenderer.invoke('terminal:list-knowledge-growth-weeks'),
+  getKnowledgeGrowthImage: (week) => ipcRenderer.invoke('terminal:get-knowledge-growth-image', week),
+  getLearningTrajectory: () => ipcRenderer.invoke('terminal:get-learning-trajectory'),
+  uploadCapturedMedia: (input, target) => ipcRenderer.invoke('terminal:upload-captured-media', input, target),
+  quickScreenshot: (sourceId, target) => ipcRenderer.invoke('terminal:quick-screenshot', sourceId, target),
+  exportKnowledgeGrowthImage: (input, action) => ipcRenderer.invoke('terminal:export-knowledge-growth-image', input, action),
+  exportStudentMaterialStatsImage: (input, action) => ipcRenderer.invoke('terminal:export-student-material-stats-image', input, action),
+  chooseConversationFile: () => ipcRenderer.invoke('terminal:choose-conversation-file'),
+  previewConversationLink: (url) => ipcRenderer.invoke('terminal:preview-conversation-link', url),
+  submitConversation: (input) => ipcRenderer.invoke('terminal:submit-conversation', input),
+  takeConversationImport: () => ipcRenderer.invoke('terminal:take-conversation-import'),
+  checkUpdate: () => ipcRenderer.invoke('terminal:check-update'),
+  downloadUpdate: (update) => ipcRenderer.invoke('terminal:download-update', update),
   getGrowthSummary: () => ipcRenderer.invoke('terminal:get-growth-summary'),
   readLearningReport: (reportId) => ipcRenderer.invoke('terminal:read-learning-report', reportId),
   listArchiveFiles: () => ipcRenderer.invoke('terminal:list-archive-files'),
@@ -57,6 +78,8 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   listCourses: () => ipcRenderer.invoke('terminal:list-courses'),
   openCourse: (courseId) => ipcRenderer.invoke('terminal:open-course', courseId),
   closeCourse: () => ipcRenderer.invoke('terminal:close-course'),
+  setCourseViewTop: (top) => ipcRenderer.invoke('terminal:set-course-view-top', top),
+  setCourseLearningFullscreen: (enabled) => ipcRenderer.invoke('terminal:set-course-learning-fullscreen', Boolean(enabled)),
   listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
   startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
   stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
@@ -71,6 +94,11 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   onAutoDelivery: (handler) => ipcRenderer.on('terminal:auto-delivery', (_event, payload) => handler(payload)),
   onCaptureChanged: (handler) => ipcRenderer.on('terminal:capture-changed', (_event, payload) => handler(payload)),
   onCourseBrowserChanged: (handler) => ipcRenderer.on('terminal:course-browser-changed', (_event, payload) => handler(payload)),
+  onCourseLearningFullscreen: (handler) => {
+    const listener = (_event, payload) => handler(payload || { enabled: false });
+    ipcRenderer.on('terminal:course-learning-fullscreen', listener);
+    return () => ipcRenderer.removeListener('terminal:course-learning-fullscreen', listener);
+  },
   onAgentCaptureChanged: (handler) => {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('terminal:agent-capture-changed', listener);
@@ -80,5 +108,15 @@ contextBridge.exposeInMainWorld('terminalBridge', {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('terminal:pairing-changed', listener);
     return () => ipcRenderer.removeListener('terminal:pairing-changed', listener);
+  },
+  onCompanionNavigate: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('terminal:companion-navigate', listener);
+    return () => ipcRenderer.removeListener('terminal:companion-navigate', listener);
+  },
+  onConversationImport: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('terminal:conversation-import', listener);
+    return () => ipcRenderer.removeListener('terminal:conversation-import', listener);
   },
 });

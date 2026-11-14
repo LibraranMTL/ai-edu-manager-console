@@ -15,3 +15,8 @@ test('installer retains host identity, uses a wizard and preserves user data', (
   assert.equal(config.publish, null);
   assert.equal(config.win.artifactName, 'AI-edu-manager-console-Windows-0.18.3-Setup.${ext}');
 });
+
+test('candidate tag equal to the version selects the candidate directory without duplicating the filename', () => {
+  const config = installerConfig('0.21.8', 'out', 'icon.ico', '0.21.8');
+  assert.equal(config.win.artifactName, 'AI-edu-manager-console-Windows-0.21.8-Setup.${ext}');
+});

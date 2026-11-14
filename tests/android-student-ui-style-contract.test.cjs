@@ -34,7 +34,7 @@ test('Android student card and hero surfaces keep rounded readable containers', 
   assert.match(source, /title\.setTextSize\(TypedValue\.COMPLEX_UNIT_DIP, 22\)/);
 });
 
-test('Android student home uses exactly four core actions with landscape and narrow navigation', () => {
+test('Android student home uses five current core actions with landscape and narrow navigation', () => {
   assert.match(source, /new GridLayout\(this\)/);
   assert.match(source, /columns = isPhoneLayout\(\).*\? 1 : 2/);
   assert.match(source, /isWideLandscape\(\)/);
@@ -43,9 +43,10 @@ test('Android student home uses exactly four core actions with landscape and nar
   assert.match(source, /"搜集上传"/);
   assert.match(source, /"主机连接"/);
   assert.match(source, /"教育档案"/);
+  assert.match(source, /"项目管理"/);
   assert.match(source, /"学习行动"/);
   const dashboard = source.slice(source.indexOf('private LinearLayout buildStudentDashboard'), source.indexOf('private View addDashboardAction'));
-  assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 4);
+  assert.equal((dashboard.match(/addDashboardAction\(/g) || []).length, 5);
   assert.doesNotMatch(dashboard, /AI 学习助手|项目知识库/);
 });
 
@@ -82,6 +83,7 @@ test('Student feature cards expose readable labels and keyboard focus states', (
   assert.match(source, /item\.setSingleLine\(true\)/);
   assert.match(source, /文件 · 图片 · 拍照 · 屏幕采集/);
   assert.match(source, /发现主机 · 扫码连接 · 学生空间/);
-  assert.match(source, /学情 · 成长 · 项目 · 规划/);
-  assert.match(source, /课程 · 卡片 · 知识点复习/);
+  assert.match(source, /学情 · 成长 · 知识点 · 规划/);
+  assert.match(source, /资料 · 综合报告 · 项目导师/);
+  assert.match(source, /课程 · 卡片 · 学习导师/);
 });

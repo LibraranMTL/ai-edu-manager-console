@@ -7,6 +7,7 @@ const {
   collectLearningEvents,
   removeLearningEventsBySource,
 } = require('./learning-analytics.cjs');
+const { aggregateCoverage } = require('./capture-timeline-duration.cjs');
 
 const SEGMENT_SCHEMA = 'edu-manager.timeline-segment.v1';
 const MEMORY_SCHEMA = 'edu-manager.timeline-memory.v1';
@@ -192,15 +193,21 @@ function refineSegmentGroups(groups, recognitionByEventId) {
 
 function inferCategory(text, fallback = '') {
   const value = `${text}\n${fallback}`.toLocaleLowerCase('zh-CN');
+  if (!value.trim()) return 'unknown';
   if (/代码|编程|terminal|powershell|javascript|python|java|函数|debug|报错/.test(value)) return 'coding';
   if (/练习|题目|答题|作答|订正|测试|测验|考试/.test(value)) return 'practice';
   if (/写作|文档|作文|报告|方案|总结|论文|演示文稿/.test(value)) return 'writing';
   if (/agent|codex|qclaw|workbuddy|openclaw|智能体/.test(value)) return 'agent_assisted';
-  return 'reading';
+  if (/阅读|学习|课程|教材|课件|文献|文章|课堂|讲义|笔记|知识点/.test(value)) return 'reading';
+  if (/游戏|购物|音乐|短视频|娱乐|社交|聊天|新闻|邮件|日历/.test(value)) return 'other';
+  return 'unknown';
 }
 
 function categoryLabel(category) {
-  return ({ coding: '编程与调试', practice: '练习与订正', writing: '写作与产出', agent_assisted: '智能体辅助学习', reading: '阅读与学习' })[category] || '学习活动';
+  return ({
+    coding: '编程与调试', practice: '练习与订正', writing: '写作与产出',
+    agent_assisted: '智能体辅助', reading: '阅读与学习', other: '其他可见活动', unknown: '无法可靠识别',
+  })[category] || '无法可靠识别';
 }
 
 function conciseText(value, maximum = 100) {
@@ -226,7 +233,12 @@ function buildSegments(session, groups, recognitionByEventId, options = {}) {
         : gapBeforeMs > 4 * 60 * 1000 ? 'unobserved_interval' : 'bounded_interval';
     const text = keyFrames.map((event) => recognitionByEventId.get(String(event.id))?.ocrText || '').filter(Boolean).join('\n');
     const failed = keyFrames.filter((event) => recognitionByEventId.get(String(event.id))?.status !== 'completed').length;
-    const category = options.factualOnly ? 'unknown' : inferCategory(text, `${session.courseName || ''} ${session.projectName || ''} ${session.sourceName || ''}`);
+    const candidateCategory = inferCategory(text, `${session.courseName || ''} ${session.projectName || ''} ${session.sourceName || ''}`);
+    const category = options.factualOnly ? 'unknown' : candidateCategory;
+    const coverage = aggregateCoverage(events, session, {
+      ...options,
+      contextEvents: Array.isArray(session.timelineEvents) ? session.timelineEvents : events,
+    });
     const topicBase = options.factualOnly
       ? (session.courseName || session.projectName || '待消化的屏幕活动')
       : (conciseText(text, 42) || session.courseName || session.projectName || session.sourceName || categoryLabel(category));
@@ -240,11 +252,23 @@ function buildSegments(session, groups, recognitionByEventId, options = {}) {
       date: String(events[0]?.date || ''),
       startedAt: String(events[0]?.occurredAt || ''),
       endedAt: String(events.at(-1)?.occurredAt || ''),
+      coverageStartAt: coverage.coverageStartAt,
+      coverageEndAt: coverage.coverageEndAt,
+      durationMs: coverage.durationMs,
+      observedDurationMs: coverage.observedDurationMs,
+      inferredDurationMs: coverage.inferredDurationMs,
+      unobservedDurationMs: coverage.unobservedDurationMs,
+      duplicateSampleCount: coverage.duplicateSampleCount,
+      trustedSampleCount: coverage.trustedSampleCount,
+      durationBasis: coverage.durationBasis,
+      durationConfidence: coverage.durationConfidence,
+      historicalReconstruction: coverage.historicalReconstruction,
       timeStatus: events.every(captureTimeKnown) ? 'device_reported_capture_time' : 'includes_substituted_or_uncertain_time',
       uncertainTimeEventCount: events.filter((event) => !captureTimeKnown(event)).length,
       gapBeforeMs,
       gapBeforeStatus,
       category,
+      candidateCategory,
       topic: topicBase,
       recognizedText: conciseText(text, 2000),
       candidateSummary: options.factualOnly
@@ -1044,6 +1068,7 @@ module.exports = {
   visionManifestPath,
   deleteSemanticSession,
   findKnowledgeLinks,
+  inferCategory,
   jobPath,
   knowledgeLinksPath,
   memoryPath,

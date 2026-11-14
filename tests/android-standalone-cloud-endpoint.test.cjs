@@ -8,9 +8,11 @@ const root = path.resolve(__dirname, '..');
 const endpoint = fs.readFileSync(path.join(root, 'android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/CloudServiceEndpoint.kt'), 'utf8');
 const sync = fs.readFileSync(path.join(root, 'android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/CloudReportSync.kt'), 'utf8');
 const activity = fs.readFileSync(path.join(root, 'android-standalone-manager/app/src/main/java/com/qxmatrix/edumanager/standalone/MainActivity.kt'), 'utf8');
+const gradle = fs.readFileSync(path.join(root, 'android-standalone-manager/app/build.gradle.kts'), 'utf8');
 
 test('Android standalone uses the public Alibaba Cloud reverse-proxy endpoint, never its loopback port', () => {
-  assert.match(endpoint, /OFFICIAL_BASE_URL = "https:\/\/www\.greatbg\.com\/edu-cloud"/);
+  assert.match(endpoint, /OFFICIAL_BASE_URL: String = BuildConfig\.PUBLIC_CONTENT_BASE_URL/);
+  assert.match(gradle, /orElse\("https:\/\/www\.greatbg\.com\/edu-cloud"\)/);
   assert.match(endpoint, /HEALTH_SERVICE_ID = "edu-cloud-documents"/);
   assert.match(sync, /enrollOfficial\(studentId: String, code: String\)/);
   assert.match(sync, /checkOfficialConnection\(\)/);

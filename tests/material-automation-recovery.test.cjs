@@ -17,9 +17,29 @@ test('repeat start preserves a live batch without a second dispatch', () => {
   assert.equal(orchestrator.start('project','p').alreadyRunning, true);
   assert.equal(calls, 0);
 });
+test('orchestrator passes the request origin into preparation and never dispatches receipt reconciliation', () => {
+  let preparedOptions, calls = 0;
+  const orchestrator = createDigestOrchestrator({ prepare: (_type, _id, options) => {
+    preparedOptions = options; return {ok:true,alreadyRunning:true,taskId:'t',businessOutcome:'awaiting_receipt'};
+  }, execute: () => calls++ });
+  const result = orchestrator.start('student','s','auto',{automatic:true,requestOrigin:'recovery'});
+  assert.equal(preparedOptions.requestOrigin,'recovery');assert.equal(result.businessOutcome,'awaiting_receipt');assert.equal(calls,0);
+});
+test('no-work and receipt reconciliation skip capability probing', async () => {
+  for (const disposition of ['no_work','awaiting_receipt']) {
+    let probes=0,starts=0;
+    const context={taskAutomationEnabled:()=>true,findStudentByKey:()=>({}),studentAutomaticTasksPaused:()=>false,
+      digestBusinessSnapshot:()=>({ok:true,pendingCount:0,submittedCount:disposition==='awaiting_receipt'?14:0}),
+      digestWorkDisposition:()=>disposition,configuredDigestExecutor:()=> 'workbuddy',
+      refreshCapabilitiesForExplicitExecution:async()=>{probes++;},startDigestWorkflow:()=>{starts++;return '{}';}};
+    const start=load('startDigestWorkflowWithFreshCapabilities',context);
+    await start('student','s','auto',{automatic:true});assert.equal(probes,0);assert.equal(starts,1);
+  }
+});
 test('automatic digest stops if automation is disabled during capability detection', async () => {
   let enabled = true, starts = 0;
   const context = { taskAutomationEnabled: () => enabled, configuredDigestExecutor: () => 'codex',
+    digestBusinessSnapshot: () => ({ok:true,pendingCount:1,submittedCount:0}), digestWorkDisposition: () => 'ready',
     refreshCapabilitiesForExplicitExecution: async () => { enabled = false; }, startDigestWorkflow: () => starts++ };
   const start = load('startDigestWorkflowWithFreshCapabilities', context);
   assert.equal(JSON.parse(await start('project','p','auto',{automatic:true})).reason, 'automation_disabled');

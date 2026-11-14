@@ -1,0 +1,12 @@
+{
+  "schema": "edu.agent0228.receipt-evidence.v1",
+  "executionId": "fa12f13f-21d6-4f53-9219-f3855ffd3100",
+  "workKey": "p0-synthetic-codex-digest",
+  "sourceVersion": "material-2bc586a7-84e1-428f-ab1d-7768fa9ebdfc:v1",
+  "artifact": "r1-real-host/codex-1/codex-e2e-artifact.md",
+  "validation": {
+    "valid": true,
+    "hostCommitted": true,
+    "syntheticOnly": true
+  }
+}

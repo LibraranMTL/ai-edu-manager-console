@@ -11,12 +11,21 @@ const { auditWindowsResources } = require('./audit-windows-resources.cjs');
 const { compactWindowsRuntime } = require('./compact-windows-runtime.cjs');
 const { compactPngResources } = require('./compact-png-resources.cjs');
 const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
+const { createSourceControlAudit } = require('./source-control-audit.cjs');
+const { assertReleaseWebsiteParity } = require('./verify-release-website-parity.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 const version = String(packageJson.version);
 validateWindowsVersion(version);
 const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+const correctiveRebuild = process.env.EDU_WINDOWS_CORRECTIVE_REBUILD === '1';
+if (correctiveRebuild && !candidateTag) {
+  throw new Error('EDU_WINDOWS_CORRECTIVE_REBUILD requires an isolated candidate tag.');
+}
+if (correctiveRebuild && !candidateTag.startsWith(`${version}-corrective-`)) {
+  throw new Error(`Corrective candidate tag must start with ${version}-corrective-.`);
+}
 const changelog = fs.readFileSync(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
 if (!changelog.includes(`## [${version}]`)) {
   throw new Error(`CHANGELOG.md 缺少 Windows ${version} 更新记录。`);
@@ -32,13 +41,17 @@ for (const manifestPath of [
   if (candidateTag && !['stable', 'release'].includes(String(manifest.windowsReleaseStatus || '').toLowerCase())) {
     throw new Error(`${manifestPath} 必须继续指向正式版；候选构建不得改写线上更新清单。`);
   }
-  if (candidateTag && String(manifest.windowsVersionName || '') === version) {
+  if (candidateTag && String(manifest.windowsVersionName || '') === version && !correctiveRebuild) {
     throw new Error(`${manifestPath} 已指向本次候选版本；请恢复上一正式版后再构建候选。`);
+  }
+  if (correctiveRebuild && String(manifest.windowsVersionName || '') !== version) {
+    throw new Error(`${manifestPath} 与同版本纠偏构建 ${version} 不一致。`);
   }
   if (candidateTag && String(manifest.windowsUrl || '').includes(candidateTag)) {
     throw new Error(`${manifestPath} 不得指向候选标识 ${candidateTag}。`);
   }
 }
+assertReleaseWebsiteParity();
 const artifactBase = `AI-edu-manager-console-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;
 const localAppData = process.env.LOCALAPPDATA || os.tmpdir();
 const stageBase = path.resolve(localAppData, 'AI-Education-Manager', 'release-stage');
@@ -130,33 +143,6 @@ function sha256(file) {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(file));
   return hash.digest('hex').toUpperCase();
-}
-
-function captureGit(args) {
-  const result = spawnSync('git', args, {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    stdio: 'pipe',
-    windowsHide: true,
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Unable to capture source-control state: ${String(result.stderr || result.stdout || '').trim()}`);
-  }
-  return String(result.stdout || '').trim();
-}
-
-function sourceControlAudit() {
-  const status = captureGit(['status', '--porcelain=v1', '--untracked-files=all']);
-  const changedPaths = status ? status.split(/\r?\n/).filter(Boolean) : [];
-  return {
-    commit: captureGit(['rev-parse', 'HEAD']),
-    branch: captureGit(['branch', '--show-current']),
-    dirty: changedPaths.length > 0,
-    changedPathCount: changedPaths.length,
-    statusSha256: crypto.createHash('sha256').update(status, 'utf8').digest('hex').toUpperCase(),
-  };
 }
 
 const privateKeyHeaderPattern = new RegExp(`-{5}BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-{5}`);
@@ -269,9 +255,9 @@ function writeRuntimePackage() {
       compression: 'maximum',
       electronLanguages,
       directories: { output: 'out' },
-      files: ['dist/**/*', 'electron/**/*', 'cloud-report-service/**/*', 'package.json'],
+      files: ['dist/**/*', 'electron/**/*', 'shared/**/*', 'cloud-report-service/**/*', 'package.json'],
       extraResources: [{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' }],
-      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1'],
+      asarUnpack: ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1', 'electron/practice-print-gdi.ps1', 'electron/windows-firewall.ps1'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
@@ -289,6 +275,41 @@ function createZip(exePath, zipPath) {
     '-CompressionLevel Optimal -Force',
   ].join(' ');
   run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
+}
+
+function verifyPackagedCanvasRuntime(unpackedRoot) {
+  const executable = fs.readdirSync(unpackedRoot).map((name) => path.join(unpackedRoot, name))
+    .find((file) => /\.exe$/i.test(file) && fs.statSync(file).isFile() && path.basename(file).toLowerCase() !== 'elevate.exe');
+  if (!executable) throw new Error('Packaged Windows executable is missing for Canvas runtime verification.');
+  const resourcesRoot = path.join(unpackedRoot, 'resources');
+  const expectedCanvasRoot = path.join(resourcesRoot, 'material-pdf-runtime', 'canvas');
+  const probePath = path.join(stageRoot, 'packaged-canvas-runtime-probe.cjs');
+  const probe = [
+    "'use strict';",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "const expected = path.resolve(process.argv[2]);",
+    "const canvasRoot = path.join(process.resourcesPath, 'material-pdf-runtime', 'canvas');",
+    "if (path.resolve(canvasRoot) !== expected || !fs.existsSync(path.join(canvasRoot, 'package.json'))) throw new Error('packaged_canvas_root_missing');",
+    "const { createCanvas } = require(canvasRoot);",
+    "const canvas = createCanvas(8, 8); const context = canvas.getContext('2d'); context.fillStyle = '#1e8f78'; context.fillRect(0, 0, 8, 8);",
+    "const png = canvas.toBuffer('image/png'); context.reset?.(); canvas.width = 1; canvas.height = 1;",
+    "if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('packaged_canvas_png_invalid');",
+    "process.stdout.write(JSON.stringify({ canvasRoot, resolved: require.resolve(canvasRoot), pngBytes: png.length }));",
+  ].join('\n');
+  fs.writeFileSync(probePath, probe, 'utf8');
+  const result = run(executable, [probePath, expectedCanvasRoot], {
+    capture: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  let report;
+  try { report = JSON.parse(String(result.stdout || '').trim()); }
+  catch { throw new Error('Packaged Canvas runtime probe did not return valid JSON.'); }
+  if (path.resolve(String(report.canvasRoot || '')) !== path.resolve(expectedCanvasRoot)
+    || !String(report.resolved || '').startsWith(path.resolve(expectedCanvasRoot))) {
+    throw new Error('Packaged Canvas runtime probe escaped the audited extra resource.');
+  }
+  return { executable, canvasRoot: expectedCanvasRoot, resolved: report.resolved, pngBytes: Number(report.pngBytes || 0) };
 }
 
 function publishFile(source, destination) {
@@ -337,7 +358,7 @@ function build() {
   assertInside(stageRoot, stageBase, 'Stage root');
   const lockHandle = acquireBuildLock();
   try {
-    const sourceControl = sourceControlAudit();
+    const sourceControl = createSourceControlAudit(repoRoot);
     fs.writeFileSync(phaseLogPath, '', 'utf8');
     recordPhase('audit-required-resources-source');
     const sourceResourceAudit = auditWindowsResources({ repoRoot, strict: true });
@@ -345,6 +366,7 @@ function build() {
     assertWindowsLicenseClosure(repoRoot, 'source');
     const sourceSecretAudit = scanSecretSignatures([
       ...walkFiles(path.join(repoRoot, 'electron')),
+      ...walkFiles(path.join(repoRoot, 'shared')),
       ...walkFiles(path.join(repoRoot, 'src')),
       ...walkFiles(path.join(repoRoot, 'public')),
       ...cloudReportRuntime.map((relative) => path.join(repoRoot, relative)),
@@ -373,6 +395,7 @@ function build() {
     recordPhase('copy-runtime-files');
     const stagedElectron = path.join(stageRoot, 'electron');
     copyDirectoryFiles(path.join(repoRoot, 'electron'), stagedElectron);
+    copyDirectoryFiles(path.join(repoRoot, 'shared'), path.join(stageRoot, 'shared'));
     for (const relative of cloudReportRuntime) {
       const destination = path.join(stageRoot, relative);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -429,13 +452,23 @@ function build() {
 
     recordPhase('audit-package');
     const asar = locateAsarModule();
-    const pdfRuntimeAudit = require('./build-project-material-pdf.cjs').auditPdfRuntime(
+    const pdfRuntime = require('./build-project-material-pdf.cjs');
+    const pdfRuntimeAudit = pdfRuntime.auditPdfRuntime(
       path.join(unpackedRoot, 'resources', 'material-pdf-runtime'), path.join(stageRoot, 'material-pdf-runtime'));
+    const stagedCanvasRuntime = pdfRuntime.verifyCanvasRuntime(path.join(stageRoot, 'material-pdf-runtime'));
+    const packagedCanvasRuntime = verifyPackagedCanvasRuntime(unpackedRoot);
     const asarFiles = asar.listPackage(appAsar);
     const packagedNodeModules = asarFiles.filter((name) => /^\\node_modules(?:\\|$)/.test(name));
     if (packagedNodeModules.length) throw new Error(`Minimal runtime package unexpectedly contains node_modules (${packagedNodeModules.length} entries).`);
     if (!asarFiles.includes('\\electron\\main.cjs') || !asarFiles.includes('\\dist\\index.html')) {
       throw new Error('Packaged app is missing its main process or renderer entry.');
+    }
+    const workspaceTemplateCatalog = '\\shared\\project-workspace-templates.json';
+    if (!asarFiles.includes(workspaceTemplateCatalog)) throw new Error('Packaged workspace template catalog is missing.');
+    const packagedWorkspaceTemplates = asar.extractFile(appAsar, 'shared/project-workspace-templates.json');
+    const stagedWorkspaceTemplates = fs.readFileSync(path.join(stageRoot, 'shared', 'project-workspace-templates.json'));
+    if (!stagedWorkspaceTemplates.equals(packagedWorkspaceTemplates)) {
+      throw new Error('Packaged workspace template catalog differs from source.');
     }
     for (const terminalEntry of ['\\electron\\terminal-main.cjs', '\\electron\\terminal-preload.cjs']) {
       if (asarFiles.includes(terminalEntry)) throw new Error(`Host package unexpectedly contains separate terminal entry: ${terminalEntry}`);
@@ -578,6 +611,14 @@ function build() {
     if (sha256(unpackedKnowledgeGuard) !== sha256(path.join(repoRoot, 'electron', 'project-knowledge-guard.ps1'))) {
       throw new Error('Packaged knowledge commit guard differs from the verified source');
     }
+    const unpackedPrintBridge = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'practice-print-gdi.ps1');
+    if (!fs.existsSync(unpackedPrintBridge) || sha256(unpackedPrintBridge) !== sha256(path.join(repoRoot, 'electron', 'practice-print-gdi.ps1'))) {
+      throw new Error('Packaged Windows print compatibility bridge is missing or differs from source');
+    }
+    const unpackedFirewallBridge = path.join(unpackedRoot, 'resources', 'app.asar.unpacked', 'electron', 'windows-firewall.ps1');
+    if (!fs.existsSync(unpackedFirewallBridge) || sha256(unpackedFirewallBridge) !== sha256(path.join(repoRoot, 'electron', 'windows-firewall.ps1'))) {
+      throw new Error('Packaged Windows firewall compatibility bridge is missing or differs from source');
+    }
     const asarBytes = fs.statSync(appAsar).size;
     if (asarBytes > 21 * 1024 * 1024) throw new Error(`app.asar exceeds 21 MiB: ${(asarBytes / 1024 / 1024).toFixed(2)} MiB`);
     recordPhase('secret-scan-package');
@@ -674,6 +715,7 @@ function build() {
       package: {
         asarBytes,
         pdfRuntime: pdfRuntimeAudit,
+        canvasRuntime: { staged: stagedCanvasRuntime, packaged: packagedCanvasRuntime },
         asarFiles: asarFiles.length,
         nodeModuleFiles: packagedNodeModules.length,
         agentBridge: unpackedAgentBridge,

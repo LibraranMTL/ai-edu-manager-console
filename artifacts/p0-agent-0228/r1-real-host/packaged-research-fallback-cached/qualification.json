@@ -1,0 +1,12 @@
+{
+  "ready": true,
+  "profile": "research.v1",
+  "mode": "host-mediated-verified-web-search",
+  "runtimeHash": "2d8e7c1aab61d62f983c85d9fc473c85a2d22afb0e13683920586ba69e82b4a3",
+  "cliHash": "2d8e7c1aab61d62f983c85d9fc473c85a2d22afb0e13683920586ba69e82b4a3",
+  "measuredAt": "2026-11-01T08:36:46.111Z",
+  "expiresAt": "2026-11-01T09:06:46.111Z",
+  "sourceCount": 1,
+  "message": "WorkBuddy 联网研究合同已验证（1 个实际抓取来源）；实际任务仍逐次校验来源。",
+  "authScope": "[\"C:\\\\Users\\\\bxw00\\\\AppData\\\\Roaming\\\\edu-manager-launcher\\\\classification-auth\\\\workbuddy-profile\\\\.workbuddy\",38]"
+}

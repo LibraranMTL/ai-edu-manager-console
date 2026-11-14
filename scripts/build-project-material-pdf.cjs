@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createRequire } = require('node:module');
+const { spawnSync } = require('node:child_process');
 
 function filesUnder(root) {
   return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -59,4 +60,33 @@ function auditPdfRuntime(root, expectedRoot) {
   if (!fs.readFileSync(path.join(root, 'manifest.json')).equals(fs.readFileSync(path.join(expectedRoot, 'manifest.json')))) throw new Error('PDF runtime manifest mismatch.');
   return { bytes: manifest.bytes, files: manifest.entries.length, pdfjs: manifest.pdfjs, canvas: manifest.canvas };
 }
-module.exports = { stagePdfRuntime, auditPdfRuntime };
+
+// A file inventory alone cannot prove that the native .node binary is usable.
+// The weekly-growth worker consumes this exact canvas copy from resources, so
+// keep a small runtime probe here for both PDF and weekly-growth packaging.
+function verifyCanvasRuntime(root) {
+  const canvasRoot = path.join(root, 'canvas');
+  if (!fs.existsSync(path.join(canvasRoot, 'package.json'))) throw new Error('Canvas runtime package.json is missing.');
+  // Native DLLs stay loaded until a Node process exits on Windows.  Run the
+  // probe in a child so release staging can still be cleaned deterministically.
+  const probe = [
+    "'use strict';",
+    "const path = require('node:path');",
+    "const canvasRoot = path.resolve(process.argv[1]);",
+    "const resolved = require.resolve(canvasRoot);",
+    "const { createCanvas } = require(resolved);",
+    "const canvas = createCanvas(8, 8); const context = canvas.getContext('2d'); context.fillStyle = '#1e8f78'; context.fillRect(0, 0, 8, 8);",
+    "const png = canvas.toBuffer('image/png'); context.reset?.(); canvas.width = 1; canvas.height = 1;",
+    "if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('canvas_png_invalid');",
+    "process.stdout.write(JSON.stringify({ resolved, pngBytes: png.length }));",
+  ].join('\n');
+  const result = spawnSync(process.execPath, ['-e', probe, canvasRoot], { encoding: 'utf8', windowsHide: true });
+  if (result.error || result.status !== 0) throw new Error(`Canvas runtime failed to render a PNG: ${result.stderr || result.error?.message || result.status}`);
+  let report;
+  try { report = JSON.parse(String(result.stdout || '').trim()); }
+  catch { throw new Error('Canvas runtime probe did not return valid JSON.'); }
+  if (!String(report.resolved || '').startsWith(path.resolve(canvasRoot))) throw new Error('Canvas runtime probe escaped its staged resource.');
+  return { canvasRoot, resolved: report.resolved, pngBytes: Number(report.pngBytes || 0) };
+}
+
+module.exports = { stagePdfRuntime, auditPdfRuntime, verifyCanvasRuntime };

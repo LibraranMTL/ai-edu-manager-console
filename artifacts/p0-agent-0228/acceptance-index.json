@@ -1,0 +1,516 @@
+{
+  "schema": "edu.agent0228.acceptance.v1",
+  "generatedAt": "2026-11-01T09:10:33.906Z",
+  "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+  "sourceProvenance": {
+    "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+    "runtimeAsarHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+    "sourceTreeHash": "38f6ff32cbcec282178b57d47e7d83b0a1cad373d46629d3e43f8df7c0e6e1f6",
+    "workspaceCommit": "bc1b6d0fe9750d401cd25fe20fd89f0f1923686e"
+  },
+  "artifacts": [
+    {
+      "path": "acceptance-config.json",
+      "sha256": "6836236a4f60e3f57d2d5fa8d41a7cd17e9b40a600fb65d8e29fcecbaeddd735"
+    },
+    {
+      "path": "r1-provenance.json",
+      "sha256": "42c1eb559e31b6cf9cee215e9f69b9f0c6def1f15dc0fbf3b22b8db08031e81e"
+    },
+    {
+      "path": "r1-real-host/workbuddy-1/result.json",
+      "sha256": "fe725128d72aac755225b565536475822f1c431258924f851df7f6b0bc46a506"
+    },
+    {
+      "path": "r1-real-host/workbuddy-1/process-tree.json",
+      "sha256": "327df098941eb24850a495f36bea6d3205cd723b5838f0fe13ff367697f927fe"
+    },
+    {
+      "path": "r1-real-host/workbuddy-1/workbuddy-e2e-artifact.md",
+      "sha256": "c10500f6551b5c84a4fba21ac9c02ebfb79f06b1fcd429b5740b28e157a3a8a7"
+    },
+    {
+      "path": "acceptance/workbuddy-1-process.json",
+      "sha256": "ca9b8fac7edc2c9a8dfe73107531821ec1724fa3a0467a31fb492f9641a7cb9f"
+    },
+    {
+      "path": "acceptance/workbuddy-1-receipt.json",
+      "sha256": "ffc065f252170603918d7a1f790c395aa4d3020d2a2bdfa0e2cac60dcb14b155"
+    },
+    {
+      "path": "acceptance/workbuddy-1-trace.json",
+      "sha256": "a0135141bf522377aacc0e397a5d1a6f68be8f1fbd1538a00bff2a7ac7162f1b"
+    },
+    {
+      "path": "r1-real-host/workbuddy-2/result.json",
+      "sha256": "2487f5e2be686325dfd342ad4101153466894b5c261d0798010906301a64b0a5"
+    },
+    {
+      "path": "r1-real-host/workbuddy-2/process-tree.json",
+      "sha256": "473e063f690b5b9c02967b052ead7d026c69450740c8f0eaf0fede7e99fa67ac"
+    },
+    {
+      "path": "r1-real-host/workbuddy-2/workbuddy-e2e-artifact.md",
+      "sha256": "3d97e8ca63048a5e1df41d0cb3ab63e7b83bd3e676276da9488fbf010b0934f0"
+    },
+    {
+      "path": "acceptance/workbuddy-2-process.json",
+      "sha256": "b37aa07edcb1a1e985da8fed93c95fc896269c1c58d2a1b618a065692e492020"
+    },
+    {
+      "path": "acceptance/workbuddy-2-receipt.json",
+      "sha256": "88ea6bb5d7d38fd44b2722c116d12b95abd19f07caf3b8f12454e1179deb1897"
+    },
+    {
+      "path": "acceptance/workbuddy-2-trace.json",
+      "sha256": "79aa3bc93d31452c38b828e7cd8dfbc42c7a644b957664b412e254affdb1997c"
+    },
+    {
+      "path": "r1-real-host/workbuddy-3/result.json",
+      "sha256": "feb1a202a529caceee7844d4e87a66ef9264fd4ff247843545c38a87141cfdb4"
+    },
+    {
+      "path": "r1-real-host/workbuddy-3/process-tree.json",
+      "sha256": "99f0e45879547c9deb9fa20cff648f6c0e42b3504ad999ff7b95a2140d905df5"
+    },
+    {
+      "path": "r1-real-host/workbuddy-3/workbuddy-e2e-artifact.md",
+      "sha256": "fd2a3c276e0fb1743dbc12637b4c8b8943d406271408310db2a48ebc17cf34b7"
+    },
+    {
+      "path": "acceptance/workbuddy-3-process.json",
+      "sha256": "ffd15f85034512701ecd505a3486caf7343c9ff867e43a2c23c605f6ca9af264"
+    },
+    {
+      "path": "acceptance/workbuddy-3-receipt.json",
+      "sha256": "14352af6d49682ad62f37d1d6bc9b2bd0b39224c4d2ea33a4caa34b029da9a5a"
+    },
+    {
+      "path": "acceptance/workbuddy-3-trace.json",
+      "sha256": "21560934b0641a57790261ec3bb0773dbc82848da3dda2087ca2e44ce7ea14d8"
+    },
+    {
+      "path": "r1-real-host/codex-1/result.json",
+      "sha256": "bedd7a1c4330a0314de94cfb52e0167a3e5681c2884bee436fd55634595be2d7"
+    },
+    {
+      "path": "r1-real-host/codex-1/process-tree.json",
+      "sha256": "4e9db3e78125dc4993addacd28b670b5609523113e0812b9af7b1a4cf29c1043"
+    },
+    {
+      "path": "r1-real-host/codex-1/codex-e2e-artifact.md",
+      "sha256": "6e7fe92c06a42777ad77f55d702a26b0a1cfaba9555868dab0e9fbf8bfb78102"
+    },
+    {
+      "path": "acceptance/codex-1-process.json",
+      "sha256": "26b98c439a47f94d358c251d62b57fd8b5fb504799265fe957c155b01beff654"
+    },
+    {
+      "path": "acceptance/codex-1-receipt.json",
+      "sha256": "115f12d506ca8c8ce7c2b5e4c7414c19aba09ca644ffbea7b922b7016dbd5866"
+    },
+    {
+      "path": "acceptance/codex-1-trace.json",
+      "sha256": "b53c0074bbb93182a4b32d72de088294c4b4ceca80456cc80756c571d4036208"
+    },
+    {
+      "path": "r1-real-host/codex-2/result.json",
+      "sha256": "6527b0f462325d95faeb5226f1d05363a514942babebed5ac743955702ca201b"
+    },
+    {
+      "path": "r1-real-host/codex-2/process-tree.json",
+      "sha256": "5198ad2dd5117b124dd2366bb0df26366606fc5ce1e3573160bf989eaec8fb7d"
+    },
+    {
+      "path": "r1-real-host/codex-2/codex-e2e-artifact.md",
+      "sha256": "73207f07c0d4053dd3b44b5e464bcc4dd4e40a8cd51c9c62f96bad2e08011b60"
+    },
+    {
+      "path": "acceptance/codex-2-process.json",
+      "sha256": "9afaf89ff13f658dec618ed1abd601d8cf10c40a20f964a1013dec6f9d5fe1bf"
+    },
+    {
+      "path": "acceptance/codex-2-receipt.json",
+      "sha256": "31b2527e8cc125295b2c5fc04161a926430ba9bed055641c495e10f2b9c12c5f"
+    },
+    {
+      "path": "acceptance/codex-2-trace.json",
+      "sha256": "8105d14a982bce36dd083b5290f7d43cac1f2e2769d08f64a02bebd1fac98cea"
+    },
+    {
+      "path": "r1-real-host/codex-3/result.json",
+      "sha256": "adf4a80d367fde7b2495183932532d45855cf3d4c8f5c16523dc58c72f0fcb07"
+    },
+    {
+      "path": "r1-real-host/codex-3/process-tree.json",
+      "sha256": "4d28a9705c2bc9377c5097adbe73d6da3dcb742d479fb6ebe069e4d278d546c1"
+    },
+    {
+      "path": "r1-real-host/codex-3/codex-e2e-artifact.md",
+      "sha256": "439bbec8d4809f29c1cbf200e30171c64c0f86f2820987df5390c09470240afd"
+    },
+    {
+      "path": "acceptance/codex-3-process.json",
+      "sha256": "2fed87d29adb627df15ce211070c4bcd455f6d77e2e2077bcc6c25c6f1e02d77"
+    },
+    {
+      "path": "acceptance/codex-3-receipt.json",
+      "sha256": "db5ee981dfb1135a99e120ed4381e68b035d6f79432d83dc5b0e06fa36b2afb4"
+    },
+    {
+      "path": "acceptance/codex-3-trace.json",
+      "sha256": "fb58bf6070a2aa4fd7dc872aae127025f823c1f4c8ef14ca4664573d7629101f"
+    },
+    {
+      "path": "r1-real-host/failure-matrix/result.json",
+      "sha256": "eb0d01ee740cadf2d2589a6498acb6768d0d35af31aba9113953c2ec0e1a7d51"
+    },
+    {
+      "path": "formal-performance.json",
+      "sha256": "42725d862e5a3086d311d944f6569b4cc0d879a3f22191971855bfefbef933ed"
+    },
+    {
+      "path": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/visible-interactions.json",
+      "sha256": "bebe7766881fd610e4cd84a14b803f945363cd676d4add4e0c2f602bbc6bae36"
+    },
+    {
+      "path": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/runtime.json",
+      "sha256": "b1d1133ad251a7751477db2af13c614f9db8366ac79de3034d6185313322ba06"
+    },
+    {
+      "path": "r1-normal-agent-workbuddy-10min-x3/performance-summary-audited.json",
+      "sha256": "99e43786bb1258355880acc4f44af35af8b7e30993f66d38fb1199ab19e72722"
+    },
+    {
+      "path": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/task-semantics-after.json",
+      "sha256": "a194a9bf82f524f45b73fa8695413c83b480948d4a82c1c729363a0ee21326bc"
+    },
+    {
+      "path": "acceptance/matrix-contract-results.json",
+      "sha256": "4fdd42ce95ce6d2fe4f049836895419f332ece81452a266c7d3d8df09d87975c"
+    },
+    {
+      "path": "research-timeout-real-host.json",
+      "sha256": "1572fc4052bd72590fca694444043ad87801be422b103a7e03371c6bac789203"
+    },
+    {
+      "path": "research-timeout-real-host-unconfirmed.json",
+      "sha256": "5ac909a4bb7643297c5519197de5e04dbc00a57a2d46ec0c4f4b9c4c370dcc2c"
+    },
+    {
+      "path": "r1-real-host/packaged-research-fallback-cached/summary.json",
+      "sha256": "f059b3cddaaea268cdca1d9e157dddc845af641cd4e8850bfde13ace218e3aa9"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "workbuddy-real-closure-1",
+      "providerId": "workbuddy",
+      "expectedOutcome": "completed",
+      "evidenceKind": "real_agent_e2e",
+      "observedStatus": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "trace": "acceptance/workbuddy-1-trace.json",
+      "registered": 1,
+      "started": 1,
+      "receipts": 1,
+      "settled": 1,
+      "duplicateExecutions": 0
+    },
+    {
+      "id": "workbuddy-real-closure-2",
+      "providerId": "workbuddy",
+      "expectedOutcome": "completed",
+      "evidenceKind": "real_agent_e2e",
+      "observedStatus": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "trace": "acceptance/workbuddy-2-trace.json",
+      "registered": 1,
+      "started": 1,
+      "receipts": 1,
+      "settled": 1,
+      "duplicateExecutions": 0
+    },
+    {
+      "id": "workbuddy-real-closure-3",
+      "providerId": "workbuddy",
+      "expectedOutcome": "completed",
+      "evidenceKind": "real_agent_e2e",
+      "observedStatus": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "trace": "acceptance/workbuddy-3-trace.json",
+      "registered": 1,
+      "started": 1,
+      "receipts": 1,
+      "settled": 1,
+      "duplicateExecutions": 0
+    },
+    {
+      "id": "codex-real-closure-1",
+      "providerId": "codex",
+      "expectedOutcome": "completed",
+      "evidenceKind": "real_agent_e2e",
+      "observedStatus": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "trace": "acceptance/codex-1-trace.json",
+      "registered": 1,
+      "started": 1,
+      "receipts": 1,
+      "settled": 1,
+      "duplicateExecutions": 0
+    },
+    {
+      "id": "codex-real-closure-2",
+      "providerId": "codex",
+      "expectedOutcome": "completed",
+      "evidenceKind": "real_agent_e2e",
+      "observedStatus": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "trace": "acceptance/codex-2-trace.json",
+      "registered": 1,
+      "started": 1,
+      "receipts": 1,
+      "settled": 1,
+      "duplicateExecutions": 0
+    },
+    {
+      "id": "codex-real-closure-3",
+      "providerId": "codex",
+      "expectedOutcome": "completed",
+      "evidenceKind": "real_agent_e2e",
+      "observedStatus": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "trace": "acceptance/codex-3-trace.json",
+      "registered": 1,
+      "started": 1,
+      "receipts": 1,
+      "settled": 1,
+      "duplicateExecutions": 0
+    }
+  ],
+  "recovery": {
+    "lateReceiptsObserved": 1,
+    "lateReceiptsSettled": 1,
+    "lateReceiptEvidencePreserved": 1,
+    "duplicateExecutions": 0
+  },
+  "performance": {
+    "schema": "edu.agent0228.formal-performance.v1",
+    "generatedAt": "2026-11-01T08:20:19.685Z",
+    "passed": true,
+    "failures": [],
+    "workload": "real_agent",
+    "repeats": 3,
+    "interactionSamples": 90,
+    "idleCpuCorePercent": 0.03,
+    "interactionP95Ms": 38.208900000000085,
+    "mainLongTaskMaxMs": 0,
+    "extraMainMemoryBytes": 532480,
+    "timeouts": 0,
+    "baselineCompleted": 3,
+    "treatmentCompleted": 39,
+    "baselineSeconds": 1800,
+    "treatmentSeconds": 5400,
+    "throughputLossPercent": -333.3333333333333,
+    "interactionTrace": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/visible-interactions.json",
+    "processTreeTrace": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/runtime.json",
+    "baselineTrace": "r1-normal-agent-workbuddy-10min-x3/performance-summary-audited.json",
+    "taskTimeline": "r1-backlog-agent-workbuddy-remaining2-fixed/r12-agent-backlog-workbuddy-2/task-semantics-after.json",
+    "scenarioDurations": {
+      "idleSeconds": 600,
+      "normalSeconds": 600,
+      "backlogSeconds": 1800
+    }
+  },
+  "matrix": [
+    {
+      "id": "A1",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A2",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A3",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A4",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A5",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A6",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A7",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A8",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A9",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A10",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A11",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A12",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "A13",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "formal-performance.json"
+    },
+    {
+      "id": "A14",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "r1-real-host/workbuddy-1/result.json"
+    },
+    {
+      "id": "A15",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "formal-performance.json"
+    },
+    {
+      "id": "B1",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "B2",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "B3",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "B4",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "B5",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "B6",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "B7",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "C1",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    },
+    {
+      "id": "C2",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "research-timeout-real-host.json"
+    },
+    {
+      "id": "C3",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "research-timeout-real-host-unconfirmed.json"
+    },
+    {
+      "id": "C4",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "r1-real-host/packaged-research-fallback-cached/summary.json"
+    },
+    {
+      "id": "C5",
+      "status": "pass",
+      "candidateHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "evidence": "acceptance/matrix-contract-results.json"
+    }
+  ],
+  "packaging": [
+    {
+      "kind": "portable",
+      "asarHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "sha256": "30bb8f8fecb96720dc035344c8dba2bae14db218143755d0548cbb4c66744b16",
+      "bytes": 98994009,
+      "authenticodeStatus": "NotSigned",
+      "localVerified": true
+    },
+    {
+      "kind": "zip",
+      "asarHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "sha256": "eac626bad5e706ec0cf714b61112490bca1b3974355f90684c01fd7551416129",
+      "bytes": 99002839,
+      "authenticodeStatus": "NotSigned",
+      "localVerified": true
+    },
+    {
+      "kind": "installer",
+      "asarHash": "f4c453cf69b37325d06fe72d8539ac2fa196c43aa644cffa5e91c069beb08c58",
+      "sha256": "f94049dc45bdd0d948d9b95ed5a32ca04825073f27e26c27d81ba3a959bbcb10",
+      "bytes": 99699670,
+      "authenticodeStatus": "NotSigned",
+      "localVerified": true
+    }
+  ],
+  "installUpgradeVerified": true
+}

@@ -100,7 +100,7 @@ test('pagination and capabilities keep legacy upload compatibility but close uns
   assert.equal('path' in receipt, false);
 });
 
-test('host HTTP handlers enforce project authorization, mode and safe list projection', () => {
+test('host HTTP handlers enforce project authorization, mode and safe list projection', async () => {
   const project = { id: 'project-1', name: '合成项目', status: 'active', materialStorageMode: 'workspace-v1',
     studentIds: ['student-1'], workspacePath: 'D:\\private\\project', workspaceFolders: ['参考资料'] };
   const index = { projectId: project.id, revision: 1, categories: [], materials: [record('own', '本人.txt', 'student-1')] };
@@ -108,7 +108,18 @@ test('host HTTP handlers enforce project authorization, mode and safe list proje
   const replies = [];
   const scope = {
     readProjects: () => [project], readProjectMetadata: () => [project], normalizeProject: (item) => item, normalizeProjectMetadata: (item) => item,
-    readProjectMaterialIndexSync: () => { registryReads++; return index; },
+    projectMaterialReadClient: () => ({ request: async (op, input) => {
+      registryReads++;
+      if (op === 'material_list') return listProjectMaterialsForViewer({ ...index,
+        categories: projectMaterialCategoryDefinitions(project, index) }, input.authContext, input.query);
+      if (op === 'material_detail') {
+        const found = index.materials.find(item => item.materialId === input.materialId);
+        return { registryRevision: index.revision,
+          material: found && materialVisibleToViewer(found, input.authContext)
+            ? require('../electron/project-material-http.cjs').publicMaterial(found, input.authContext) : null };
+      }
+      throw Error(`unexpected worker op ${op}`);
+    } }),
     requireAuth: (request) => Boolean(request.authContext),
     projectAllowed: (request) => request.authContext.allowedStudentIds?.includes('student-1'),
     canReadProjectMaterials, materialVisibleToViewer,
@@ -131,14 +142,14 @@ test('host HTTP handlers enforce project authorization, mode and safe list proje
   capabilities(request, {}, 'project-1');
   assert.equal(replies.at(-1).status, 200);
   assert.equal(registryReads, 0, 'capability lookup must not scan or read the registry');
-  list(request, {}, 'project-1', new URL('http://localhost/?limit=10'));
+  await list(request, {}, 'project-1', new URL('http://localhost/?limit=10'));
   assert.equal(replies.at(-1).payload.items[0].materialId, 'own');
-  detail(request, {}, 'project-1', 'own');
+  await detail(request, {}, 'project-1', 'own');
   assert.equal(replies.at(-1).payload.material.materialId, 'own');
   assert.equal(JSON.stringify(replies).includes('D:\\private'), false);
   const denied = { authContext: { type: 'student_session', allowedStudentIds: ['student-2'] } };
   const readsBeforeDenial = registryReads;
-  list(denied, {}, 'project-1', new URL('http://localhost/'));
+  await list(denied, {}, 'project-1', new URL('http://localhost/'));
   assert.equal(replies.at(-1).status, 403);
   assert.equal(registryReads, readsBeforeDenial);
   assert.match(main, /request\.method === 'GET' && projectMaterialMatch/);
@@ -244,6 +255,11 @@ test('classification handlers keep suggestions separate and require an explicit 
     projectMaterialAccessPolicy,
     parseJsonBody: async (request) => request.body,
     readProjectMaterialIndexSync: () => index,
+    projectMaterialReadClient: () => ({ request: async (op, input) => {
+      assert.equal(op, 'visible_ids');
+      return index.materials.filter(item => materialVisibleToViewer(item, input.authContext))
+        .map(item => item.materialId);
+    } }),
     materialVisibleToViewer,
     projectClassificationService: () => service,
     projectMaterialActorId: (auth) => auth.type === 'admin' ? 'host-admin'
@@ -293,6 +309,11 @@ test('organization status is scoped and remote run or retry requires an explicit
     authorizedProjectMaterialRead: () => project,
     isWorkspaceMaterialProject: (item) => item.materialStorageMode === 'workspace-v1',
     projectMaterialAccessPolicy, readProjectMaterialIndexSync: () => index,
+    projectMaterialReadClient: () => ({ request: async (op, input) => {
+      assert.equal(op, 'visible_ids');
+      return index.materials.filter(item => materialVisibleToViewer(item, input.authContext))
+        .map(item => item.materialId);
+    } }),
     materialVisibleToViewer, projectMaterialOrganizationService: () => organization,
     parseJsonBody: async (request) => request.body,
     projectMaterialActorId: (auth) => `device:${auth.deviceId}`,

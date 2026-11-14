@@ -11,6 +11,7 @@ class ResourceCoordinator {
     this.serial = 0;
     this.foregroundUntil = 0;
     this.timer = null;
+    this.drainWakePending = false;
     this.keyed = new Map();
     this.activeScopes = new Map();
     this.external = new Map();
@@ -30,6 +31,7 @@ class ResourceCoordinator {
   }
 
   updatePressure(snapshot = {}) {
+    const wasPaused = this.pressure.paused;
     const cpu = Number(snapshot.cpuPercent || 0);
     if (cpu > 65) { this.pressure.highCpuSamples++; this.pressure.lowCpuSamples = 0; }
     else if (cpu < 45) { this.pressure.lowCpuSamples++; this.pressure.highCpuSamples = 0; }
@@ -41,7 +43,19 @@ class ResourceCoordinator {
     else if (latencyHigh) { this.pressure.paused = true; this.pressure.reason = 'renderer_latency'; }
     else if (this.pressure.highCpuSamples >= 2) { this.pressure.paused = true; this.pressure.reason = 'cpu_pressure'; }
     else if (this.pressure.paused && this.pressure.lowCpuSamples >= 3) { this.pressure.paused = false; this.pressure.reason = ''; }
+    if (wasPaused && !this.pressure.paused) this.wakeDrain();
     return { ...this.pressure };
+  }
+
+  wakeDrain() {
+    if (!this.queue.length || this.drainWakePending) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.drainWakePending = true;
+    queueMicrotask(() => {
+      this.drainWakePending = false;
+      if (this.queue.length) this.drain();
+    });
   }
 
   refreshPressure() {
@@ -51,17 +65,25 @@ class ResourceCoordinator {
     try { this.updatePressure(this.getSnapshot()); } catch { /* resource snapshot is advisory */ }
   }
 
-  canStart(entry) {
+  blockReason(entry) {
     this.refreshPressure();
-    if (entry.background && this.now() < this.foregroundUntil) return false;
-    if (entry.background && entry.types.includes('heavy') && this.pressure.paused) return false;
-    if (entry.scopeKeys.some(scope => (this.activeScopes.get(scope) || 0) > 0)) return false;
-    return entry.types.every((type) => (this.active.get(type) || 0) < (this.limits[type] || 1));
+    if (entry.background && !entry.ignoreForegroundDelay && this.now() < this.foregroundUntil) return 'foreground_delay';
+    if (entry.background && entry.types.includes('heavy') && this.pressure.paused) return this.pressure.reason || 'system_pressure';
+    if (entry.scopeKeys.some(scope => (this.activeScopes.get(scope) || 0) > 0)) return 'scope_busy';
+    const blockedType = entry.types.find((type) => (this.active.get(type) || 0) >= (this.limits[type] || 1));
+    return blockedType ? `${blockedType}_busy` : '';
+  }
+
+  canStart(entry) {
+    return !this.blockReason(entry);
   }
 
   scheduleDrain() {
     if (this.timer || !this.queue.length) return;
-    const wait = Math.max(25, Math.min(1_000, this.foregroundUntil - this.now() || 25));
+    // Resource release and pressure recovery wake the queue immediately. This
+    // timer is only a bounded safety net, not a hot polling loop.
+    const foregroundRemaining = Math.max(0, this.foregroundUntil - this.now());
+    const wait = foregroundRemaining > 0 ? Math.max(25, Math.min(1_000, foregroundRemaining)) : 1_000;
     this.timer = setTimeout(() => { this.timer = null; this.drain(); }, wait);
     this.timer.unref?.();
   }
@@ -93,12 +115,14 @@ class ResourceCoordinator {
     if (!started && this.queue.length) this.scheduleDrain();
   }
 
-  run(types, task, { priority = 0, background = false, signal, key = '', studentId = '', projectId = '' } = {}) {
+  run(types, task, { priority = 0, background = false, ignoreForegroundDelay = false,
+    signal, key = '', studentId = '', projectId = '' } = {}) {
     const normalized = this.normalizedTypes(types);
     if (!normalized.length) return Promise.resolve().then(task);
     if (key && this.keyed.has(key)) return this.keyed.get(key);
     const promise = new Promise((resolve, reject) => {
       this.queue.push({ types: normalized, task, priority: Number(priority) || 0, background: Boolean(background),
+        ignoreForegroundDelay: Boolean(ignoreForegroundDelay),
         signal, key: String(key || ''), serial: ++this.serial, resolve, reject, enqueuedAt: this.now(),
         scopeKeys: [studentId ? `student:${studentId}` : '', projectId ? `project:${projectId}` : ''].filter(Boolean) });
       this.drain();
@@ -107,9 +131,22 @@ class ResourceCoordinator {
     return promise;
   }
 
-  acquireExternal(types, { studentId = '', projectId = '', background = true } = {}) {
-    const entry = { types: this.normalizedTypes(types), background: Boolean(background),
+  externalEntry(types, { studentId = '', projectId = '', background = true, ignoreForegroundDelay = false } = {}) {
+    return { types: this.normalizedTypes(types), background: Boolean(background),
+      ignoreForegroundDelay: Boolean(ignoreForegroundDelay),
       scopeKeys: [studentId ? `student:${studentId}` : '', projectId ? `project:${projectId}` : ''].filter(Boolean) };
+  }
+
+  canAcquireExternal(types, options = {}) {
+    return this.canStart(this.externalEntry(types, options));
+  }
+
+  externalBlockReason(types, options = {}) {
+    return this.blockReason(this.externalEntry(types, options));
+  }
+
+  acquireExternal(types, { studentId = '', projectId = '', background = true, ignoreForegroundDelay = false } = {}) {
+    const entry = this.externalEntry(types, { studentId, projectId, background, ignoreForegroundDelay });
     if (!this.canStart(entry)) return null;
     const token = Symbol('external-resource');
     entry.types.forEach(type => this.active.set(type, (this.active.get(type) || 0) + 1));
@@ -133,6 +170,7 @@ class ResourceCoordinator {
   close() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.drainWakePending = false;
     const error = Object.assign(new Error('资源队列已关闭。'), { code: 'resource_queue_closed' });
     for (const entry of this.queue.splice(0)) entry.reject(error);
     this.keyed.clear();

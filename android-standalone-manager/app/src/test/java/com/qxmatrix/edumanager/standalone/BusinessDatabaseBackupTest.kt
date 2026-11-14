@@ -56,6 +56,8 @@ class BusinessDatabaseBackupTest {
             sourceDb.ledger().recordCall(ModelCallEntity("call-a", "student-a", "task-a", "provider", "model", "example.com", "v1", "v1", 1, 10,
                 "succeeded", "req", null, null, null, "", "source", "cn", "disabled", false, 0))
             sourceDb.tasks().metadata(BusinessMetadataEntity("restore-operation", "previous-device-operation"))
+            sourceDb.tasks().metadata(BusinessMetadataEntity("digest-stage:student-a:exec-a",
+                JSONObject().put("state", "prepared").put("allowAutoNoDispatch", true).toString()))
             val versionPayload = JSONObject().put("module", "cards").put("result", JSONObject()).put("historicalPath", "old-device/path")
             sourceDb.content().insert(ScopedContentEntity("version-a", "student-a", "artifact", "source-key", "version", "", "", "", ScopedContentPolicy.fingerprint(versionPayload), "", "candidate", "today", "today", versionPayload.toString()))
             val bytes = BusinessDatabaseBackup(source, sourceDb).exportBytes()
@@ -70,6 +72,7 @@ class BusinessDatabaseBackupTest {
                 stage.walkTopDown().filter(File::isFile).forEach { PrivateStateStore(target).writeBytes(it.relativeTo(stage).invariantSeparatorsPath, it.readBytes()) }
             }
             assertEquals("task-a", targetDb.tasks().all().single().id)
+            assertFalse(JSONObject(targetDb.tasks().metadata("digest-stage:student-a:exec-a")!!).getBoolean("allowAutoNoDispatch"))
             assertNull(targetDb.ledger().calls("student-a").single().totalTokens)
             assertEquals(versionPayload.toString(), targetDb.content().exact("student-a", "version-a")!!.payload)
             assertFalse(BusinessRestoreRecovery.pending(target))

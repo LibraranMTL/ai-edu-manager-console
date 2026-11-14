@@ -5,7 +5,9 @@ import org.json.JSONObject
 /** View states do not rename the shared Task Protocol 1.2 wire states. */
 object TaskCenterPolicy {
     fun viewState(task: JSONObject): String {
+        if (task.optString("status") == "archived" && task.optJSONObject("result")?.optJSONObject("supersededReceipt") != null) return "superseded"
         if (requiresAttributionResolution(task)) return "needs_user"
+        if (task.optJSONObject("error")?.optBoolean("attentionRequired") == true) return "needs_user"
         val approval = task.optJSONObject("approval")
         if (task.optString("status") == "pending" && approval?.optBoolean("required") == true && approval.optString("status") != "approved") return "queued"
         return when (task.optString("status")) {
@@ -18,7 +20,7 @@ object TaskCenterPolicy {
     }
     fun label(state: String): String = when (state) {
         "queued" -> "等待处理"; "running" -> "处理中"; "waiting_network" -> "待联网"
-        "waiting_quota" -> "等待额度"; "needs_user" -> "归属待确认"; "unknown" -> "等待系统确认"
+        "waiting_quota" -> "等待额度"; "needs_user" -> "需要处理"; "unknown" -> "等待系统确认"
         "succeeded" -> "已完成"; "failed" -> "处理失败"; "cancelled" -> "已取消"; "superseded" -> "已有新版本"
         else -> "需要处理"
     }

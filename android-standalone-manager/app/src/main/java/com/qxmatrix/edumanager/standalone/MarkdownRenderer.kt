@@ -1,6 +1,13 @@
 package com.qxmatrix.edumanager.standalone
 
 object MarkdownRenderer {
+    /** Reports retain metadata in the raw file while reading mode starts at the document body. */
+    fun reportBody(markdown: String): String {
+        val normalized = markdown.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
+        if (!normalized.startsWith("---\n")) return normalized
+        val end = normalized.indexOf("\n---\n", 4)
+        return if (end >= 0) normalized.substring(end + 5).trimStart('\n') else normalized
+    }
     fun html(markdown: String, fontSize: Int = 17): String {
         val body = StringBuilder(); val lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split('\n')
         var inCode = false; var inList = false; var inTable = false

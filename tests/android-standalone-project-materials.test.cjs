@@ -30,13 +30,13 @@ test('standalone material authority uses SAF paths, stable versions and bounded 
   assert.doesNotMatch(service, /java\.io\.File\([^)]*relativePath/);
 });
 
-test('standalone material UI exposes four distinct views and keeps contribution confirmation separate', () => {
+test('standalone material UI exposes the current project dashboard and keeps contribution confirmation separate', () => {
   const activity = read('ProjectMaterialsActivity.kt');
   const manifest = fs.readFileSync(path.join(root, 'AndroidManifest.xml'), 'utf8');
-  for (const view of ['materials', 'pending', 'knowledge', 'contributions']) {
+  for (const view of ['dashboard', 'materials', 'pending', 'knowledge', 'outcomes', 'contributions']) {
     assert.match(activity, new RegExp(`"${view}"`));
   }
-  assert.match(activity, /项目资料中心/);
+  assert.match(activity, /项目仪表盘/);
   assert.match(activity, /正式贡献仍须绑定固定资料版本/);
   assert.match(manifest, /ProjectMaterialsActivity/);
 });

@@ -181,6 +181,11 @@ class MarkdownBrowserActivity : Activity() {
 
     private fun openDocument(document: Document) {
         val result = runCatching {
+            if (intent.getStringExtra(EXTRA_MODE) == MODE_PROJECT) {
+                val projectId = requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID))
+                LocalProjectMaterialService(this).requireGeneratedKnowledgeCurrent(projectId, document.path)
+                ProjectOutcomeService(this).requireOutcomeSourcesCurrent(projectId, document.path)
+            }
             val maximumBytes = if (intent.getStringExtra(EXTRA_MODE) in setOf(MODE_CONVERSATION, MODE_CONVERSATION_DIGEST)) MAX_CONVERSATION_BYTES else MAX_MARKDOWN_BYTES
             val text = document.content ?: SafWorkspaceStore(this, Uri.parse(document.rootUri)).readBytes(document.path).also { require(it.size <= maximumBytes) { "Markdown 文档超过浏览上限" } }.toString(Charsets.UTF_8)
             require(text.toByteArray().size <= maximumBytes) { "Markdown 文档超过浏览上限" }; text
@@ -192,7 +197,10 @@ class MarkdownBrowserActivity : Activity() {
     private fun updateDisplay() {
         rawView.text = currentText; rawView.visibility = if (rendered) View.GONE else View.VISIBLE; webView.visibility = if (rendered) View.VISIBLE else View.GONE
         modeButton.text = if (rendered) "查看原文" else "阅读模式"
-        if (rendered) webView.loadDataWithBaseURL("https://local.edu-manager/", MarkdownRenderer.html(currentText), "text/html", "UTF-8", null)
+        if (rendered) {
+            val body = if (intent.getStringExtra(EXTRA_MODE) == MODE_REPORT) MarkdownRenderer.reportBody(currentText) else currentText
+            webView.loadDataWithBaseURL("https://local.edu-manager/", MarkdownRenderer.html(body), "text/html", "UTF-8", null)
+        }
     }
 
     private fun showFailure(message: String) { statusView.text = message; currentText = "# 无法显示\n\n$message"; modeButton.isEnabled = false; updateDisplay() }

@@ -48,8 +48,23 @@ async function writeAtomic(file, content) {
   await fs.rename(temporary, file);
 }
 
-async function finalizeStudentControlledDigest({ student, batch, receiptPath, summaryPath, output, now = () => new Date().toISOString() }) {
-  if (!output?.fullyCommitted) throw new Error('受控知识尚未全部提交，学生资料状态保持待处理');
+async function finalizeStudentControlledDigest({ student, batch, receiptPath, summaryPath, output,
+  registry = null, registered = [], now = () => new Date().toISOString() }) {
+  const byStudentMaterial = new Map((registered || []).map(item => [String(item.studentMaterialId), String(item.projectMaterialId)]));
+  const byProjectMaterial = new Map((registry?.materials || []).map(item => [String(item.materialId), item]));
+  const batchOutcomes = (batch.files || []).map(file => {
+    const materialId = byStudentMaterial.get(String(file.materialId));
+    const record = materialId ? byProjectMaterial.get(materialId) : null;
+    return { file, state: String(record?.processing?.state || ''), error: record?.processing?.error || null };
+  });
+  const exactBatchKnown = batchOutcomes.length > 0 && batchOutcomes.every(item => item.state);
+  const terminalStates = new Set(['completed', 'skipped_unsupported', 'failed_terminal']);
+  const unresolved = exactBatchKnown ? batchOutcomes.filter(item => !terminalStates.has(item.state)) : [];
+  if ((!exactBatchKnown && !output?.fullyCommitted) || unresolved.length) {
+    throw Object.assign(new Error(`当前批次仍有 ${unresolved.length || (batch.files || []).length} 份资料尚未结算，已保留进度等待后续处理`), {
+      code: 'MATERIAL_PARTIAL_RETRY', details: { unresolved: unresolved.map(item => item.file.materialId) },
+    });
+  }
   for (const file of batch.files || []) {
     if (!path.isAbsolute(String(file.path || '')) || await sha1File(file.path) !== String(file.sha1 || '').toLowerCase()) {
       throw Object.assign(new Error('学生原件在消化期间发生变化，未结算当前批次'), { code: 'SOURCE_CHANGED' });
@@ -67,10 +82,19 @@ async function finalizeStudentControlledDigest({ student, batch, receiptPath, su
   if (!currentIndex.includes(marker)) await writeAtomic(indexPath, `${currentIndex.trim()}${currentIndex.trim() ? '\n\n' : ''}${marker}\n## 受控资料消化 ${batch.batchId}\n\n${links.join('\n') || '- 本批没有可提交的知识文件'}\n`);
   let currentLog = ''; try { currentLog = await fs.readFile(logPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!currentLog.includes(marker)) await writeAtomic(logPath, `${currentLog.trim()}${currentLog.trim() ? '\n' : ''}\n${marker} ${now()}：宿主校验并提交 ${(batch.files || []).length} 份资料的受控知识候选。\n`);
+  const completedCount = exactBatchKnown ? batchOutcomes.filter(item => item.state === 'completed').length : (batch.files || []).length;
+  const skippedCount = exactBatchKnown ? batchOutcomes.length - completedCount : 0;
   const receipt = {
     schema: 'edu-manager.digest-result.v1', studentId: String(student.id), digestBatchId: String(batch.batchId),
-    status: 'completed', message: `宿主已校验提交 ${(batch.files || []).length} 份资料的知识候选。`,
-    processed: (batch.files || []).map(file => ({ materialId: String(file.materialId), relativePath: String(file.relativePath || ''), sha1: String(file.sha1 || '').toLowerCase(), artifacts: [indexPath, logPath] })),
+    status: 'completed', message: `宿主已校验当前批次：${completedCount} 份完成${skippedCount ? `，${skippedCount} 份终态跳过` : ''}。`,
+    processed: (batch.files || []).map(file => {
+      const outcome = batchOutcomes.find(item => String(item.file.materialId) === String(file.materialId));
+      const completed = !exactBatchKnown || outcome?.state === 'completed';
+      return { materialId: String(file.materialId), relativePath: String(file.relativePath || ''),
+        sha1: String(file.sha1 || '').toLowerCase(), status: completed ? 'completed' : 'skipped',
+        message: completed ? '' : outcome?.error?.message || '当前管线不支持，原件已保留且不再自动重试。',
+        artifacts: completed ? [indexPath, logPath] : [] };
+    }),
     artifacts: [indexPath, logPath], completedAt: now(),
   };
   await writeAtomic(path.resolve(receiptPath), `${JSON.stringify(receipt, null, 2)}\n`);

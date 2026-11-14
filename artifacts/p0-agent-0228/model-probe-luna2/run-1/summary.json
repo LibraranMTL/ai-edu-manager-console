@@ -1,0 +1,17 @@
+{
+  "processStarted": true,
+  "toolDiscoveryObserved": false,
+  "firstEventAt": "2026-10-30T15:38:50.746Z",
+  "webEventCount": 0,
+  "structuredOutputPresent": false,
+  "exitCode": 1,
+  "timedOut": false,
+  "stderrClass": "other",
+  "eventErrorClass": "",
+  "eventErrorMessage": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6-luna' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}",
+  "evidenceFiles": [
+    "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.worktrees\\windows-0228-agent-closure\\artifacts\\p0-agent-0228\\model-probe-luna2\\run-1\\events.json",
+    "D:\\群星矩阵文件\\智能体开发项目\\AI教育管家\\.worktrees\\windows-0228-agent-closure\\artifacts\\p0-agent-0228\\model-probe-luna2\\run-1\\process-tree.json"
+  ],
+  "failureClass": "tool_discovery"
+}

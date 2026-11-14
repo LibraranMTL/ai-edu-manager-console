@@ -32,7 +32,8 @@ test('state SQLite v2 backup excludes raw project bytes and identifies its scope
     readHostTimeline: () => [], collectEducationArchiveBackups: () => [],
     downloadsDir: () => root, timestampForFilename: () => 'synthetic',
     assetStore: () => ({ backupTo: async target => { const db = new DatabaseSync(target); db.close(); } }),
-    DatabaseSync, appendHostTimeline: () => {} };
+    DatabaseSync, appendHostTimeline: () => {},
+    backupLearningStateDatabases: async () => [] };
   bind(scope, 'backupHostData');
   const receipt = JSON.parse(await scope.backupHostData(''));
   assert.equal(receipt.ok, true, receipt.message);
@@ -62,7 +63,8 @@ test('state-only restore refuses workspace-v1 project records before any host mu
   let mutated = false;
   const scope = { fs, path, mainWindow: {}, dialog: { showOpenDialogSync: () => [backup] },
     readStudentsIndex: () => { mutated = true; throw new Error('read after rejection'); },
-    writeSettings: () => { mutated = true; }, writeProjects: () => { mutated = true; } };
+    writeSettings: () => { mutated = true; }, writeProjects: () => { mutated = true; },
+    restoreLearningStateDatabases: () => ({ count: 0, backups: [] }) };
   bind(scope, 'readHostBackupContainer');
   bind(scope, 'restoreHostData');
   const result = JSON.parse(scope.restoreHostData());

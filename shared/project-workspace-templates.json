@@ -1,0 +1,65 @@
+[
+  {
+    "id": "general",
+    "name": "通用学习项目",
+    "description": "适合普通作业、短期专题和轻量研究。",
+    "folders": ["资料", "进展", "团队成员", "成果"],
+    "knowledgeStrategy": "提取核心概念、关键实体、阶段摘要和可复用问答。",
+    "growthStrategy": "关注主动学习、问题解决和成果表达。",
+    "deliverables": ["项目总结", "最终成果"]
+  },
+  {
+    "id": "portfolio",
+    "name": "作品集项目",
+    "description": "适合作品集规划、过程沉淀与最终成果整理。",
+    "folders": ["参考资料", "过程文档", "最终成果"],
+    "knowledgeStrategy": "提取作品背景、过程决策、反馈修订和最终成果依据。",
+    "growthStrategy": "关注持续创作、反思修订、成果表达和作品迭代。",
+    "deliverables": ["作品集", "过程说明", "项目复盘"]
+  },
+  {
+    "id": "subject",
+    "name": "学科专题",
+    "description": "适合课程学习、错题复盘和阶段总结。",
+    "folders": ["课程资料", "作业与反馈", "错题与问题", "阶段总结", "成果"],
+    "knowledgeStrategy": "聚焦学科概念、错误模式、解题方法和反馈中的改进点。",
+    "growthStrategy": "关注学科理解、迁移应用和学习策略。",
+    "deliverables": ["阶段总结", "学科成果"]
+  },
+  {
+    "id": "competition",
+    "name": "竞赛 / 活动",
+    "description": "适合比赛、活动、作品集和团队协作。",
+    "folders": ["赛事规则", "参考资料", "方案设计", "团队协作", "过程记录", "提交成果"],
+    "knowledgeStrategy": "提取赛事要求、方案选择、技术路线、反馈和最终决策。",
+    "growthStrategy": "关注创新、协作、项目推进和公开表达。",
+    "deliverables": ["参赛作品", "演示材料", "项目复盘"]
+  },
+  {
+    "id": "research",
+    "name": "研究项目",
+    "description": "适合论文、实验、调研和文献综述。",
+    "folders": ["文献资料", "研究问题", "数据与实验", "分析过程", "成果论文"],
+    "knowledgeStrategy": "提取研究问题、文献缺口、方法、数据证据、局限与结论。",
+    "growthStrategy": "关注研究设计、证据推理、数据分析和学术写作。",
+    "deliverables": ["文献综述", "研究报告", "反思"]
+  },
+  {
+    "id": "writing",
+    "name": "写作项目",
+    "description": "适合作文、论文、文书、演讲稿和长文创作。",
+    "folders": ["参考资料", "选题策划", "写作大纲", "写作规则", "草稿", "修改反馈", "定稿"],
+    "knowledgeStrategy": "提取主题、论点、证据、结构、表达规则和修订理由。",
+    "growthStrategy": "关注逻辑表达、受众意识、修订能力和写作风格。",
+    "deliverables": ["定稿", "修订说明"]
+  },
+  {
+    "id": "application",
+    "name": "升学申请",
+    "description": "适合学校申请、文书素材和申请复盘。",
+    "folders": ["学校与项目", "申请材料", "文书素材", "推荐与反馈", "结果与复盘"],
+    "knowledgeStrategy": "提取申请要求、经历证据、个人叙事、院校匹配和反馈。",
+    "growthStrategy": "关注自我认知、领导力、沟通和长期目标。",
+    "deliverables": ["申请材料包", "文书", "申请复盘"]
+  }
+]

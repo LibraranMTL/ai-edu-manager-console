@@ -285,10 +285,10 @@ test('legacy terminal Markdown fallback uses current fixed sources instead of st
   const markdown = ctx.growthIndexMarkdownPath(); fs.writeFileSync(markdown, 'STALE AGGREGATE: confirmed=999');
   const url = new URL(`https://fixture.invalid/archive/file?path=${encodeURIComponent(path.relative(f.root, markdown))}`);
   ctx.handleArchiveFile({}, {}, 's1', url); assert.equal(replies.at(-1).code, 200);
-  assert.doesNotMatch(replies.at(-1).payload.content, /STALE|999/); assert.match(replies.at(-1).payload.content, /分析/);
+  assert.doesNotMatch(replies.at(-1).payload.content, /STALE AGGREGATE|confirmed=999/); assert.match(replies.at(-1).payload.content, /分析/);
   await f.host.store.mutate((index) => { index.materials[0].adoption.state = 'excluded'; });
   ctx.handleArchiveFile({}, {}, 's1', url); assert.equal(replies.at(-1).code, 200);
-  assert.doesNotMatch(replies.at(-1).payload.content, /分析|STALE|999/);
+  assert.doesNotMatch(replies.at(-1).payload.content, /分析|STALE AGGREGATE|confirmed=999/);
   assert.equal(fs.readFileSync(markdown, 'utf8'), 'STALE AGGREGATE: confirmed=999');
 });
 

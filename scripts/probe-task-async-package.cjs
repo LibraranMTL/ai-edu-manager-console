@@ -5,7 +5,7 @@ const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:
 async function run(){
   const archive=path.resolve(process.argv[2]),source=path.resolve(process.argv[3]);
   assert.equal(path.basename(archive),'app.asar');
-  const files=['main.cjs','task-store-service.cjs','task-store-writer.cjs','task-io-client.cjs','task-io-worker.cjs',
+  const files=['main.cjs','task-draft.cjs','task-sql-store.cjs','task-source-queue.cjs','task-source-projection.cjs','task-store-service.cjs','task-store-writer.cjs','task-io-client.cjs','task-io-worker.cjs',
     'task-power-recovery.cjs','task-active-deadlines.cjs','task-executor-circuit.cjs','task-circuit-probe.cjs',
     'workbuddy-controlled.cjs','workbuddy-runtime.cjs','project-material-agent.cjs','practice-task-host.cjs'];
   const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
@@ -21,8 +21,10 @@ async function run(){
       service.write(file,store,store);service.appendEvent({taskId:`synthetic-${i}`,event:'test'});
     }
     await service.flush();
-    assert.equal(JSON.parse(await fs.readFile(file,'utf8')).tasks.length,20);
-    assert.equal((await fs.readFile(path.join(root,'events.jsonl'),'utf8')).trim().split('\n').length,20);
+    assert.equal((await client.request(file,'records')).tasks.length,20);
+    const {DatabaseSync}=require('node:sqlite');
+    const db=new DatabaseSync(path.join(root,'task-state.sqlite3'),{readOnly:true});
+    assert.equal(db.prepare('SELECT count(*) n FROM task_events').get().n,20);db.close();
     assert.equal((await client.request(file,'list')).ready,true);
     client.pause();client.resume();
     const events=[];const power=load('task-power-recovery.cjs').createTaskPowerRecovery({persist:async state=>events.push(state.phase),reconcile:async()=>events.push('checked')});
@@ -36,6 +38,6 @@ async function run(){
       realStudentAccess:false,liveAgentCall:false};
     if(process.argv[4]){const reportPath=path.resolve(process.argv[4]);await fs.mkdir(path.dirname(reportPath),{recursive:true});await fs.writeFile(reportPath,`${JSON.stringify(report,null,2)}\n`);}
     console.log(JSON.stringify(report));
-  }finally{client.close();await fs.rm(root,{recursive:true,force:true});}
+  }finally{await client.close();await fs.rm(root,{recursive:true,force:true});}
 }
 run().then(()=>app.exit(0)).catch(error=>{console.error(error);app.exit(1);});

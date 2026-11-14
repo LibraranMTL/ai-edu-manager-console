@@ -25,6 +25,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
@@ -32,6 +33,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
@@ -119,6 +121,14 @@ class MainActivity : ComponentActivity() {
     private var offlineMigrationReceiverRegistered = false
     private var offlineMigrationCompletedRefreshId: String? = null
     private val offlineMigrationHandler = Handler(Looper.getMainLooper())
+    private val publicCourseSyncHandler = Handler(Looper.getMainLooper())
+    @Volatile private var publicCourseSyncRunning = false
+    private val publicCourseSyncPoll = object : Runnable {
+        override fun run() {
+            if (::courseCatalogService.isInitialized && licenseManager.status().active) refreshPublicCourses(showResult = false)
+            publicCourseSyncHandler.postDelayed(this, PUBLIC_COURSE_SYNC_INTERVAL_MS)
+        }
+    }
     private val offlineMigrationPoll = object : Runnable {
         override fun run() {
             if (offlineMigrationReceiverRegistered) {
@@ -183,10 +193,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         runCatching { CloudReportSync(this).resumePendingWork() }
+        runCatching { AutoDigestSettingsStore(this).ensureScheduled() }
         runCatching { ProjectDigestQueue(this).resumePending() }
         runCatching { ProjectMaterialMaintenanceWorker.schedule(this) }
         runCatching { StudioAutomation.schedule(this) }
         runCatching { HighGrowthMigrationWorker.schedule(this) }
+        runCatching { PublicCourseSyncWorker.schedule(this) }
+        runCatching { AutomationReconciliationWorker.schedule(this) }
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching { BusinessDatabase.get(this@MainActivity).ledger().recoverInterruptedCalls(BusinessDatabase.processSession) }
         }
@@ -241,6 +254,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!::uiState.isInitialized || !::sectionContent.isInitialized) return
+        val currentId = getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        if (currentId.isNotBlank() && currentId != uiState.studentId) {
+            uiState.studentId = currentId
+            renderSection(activeSection)
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         if (!licenseManager.status().active || !::sectionContent.isInitialized || offlineMigrationReceiverRegistered) return
@@ -250,10 +274,13 @@ class MainActivity : ComponentActivity() {
         offlineMigrationReceiverRegistered = true
         offlineMigrationHandler.removeCallbacks(offlineMigrationPoll)
         offlineMigrationHandler.post(offlineMigrationPoll)
+        publicCourseSyncHandler.removeCallbacks(publicCourseSyncPoll)
+        publicCourseSyncHandler.post(publicCourseSyncPoll)
     }
 
     override fun onStop() {
         offlineMigrationHandler.removeCallbacks(offlineMigrationPoll)
+        publicCourseSyncHandler.removeCallbacks(publicCourseSyncPoll)
         if (offlineMigrationReceiverRegistered) {
             unregisterReceiver(offlineMigrationReceiver)
             offlineMigrationReceiverRegistered = false
@@ -405,6 +432,9 @@ class MainActivity : ComponentActivity() {
                 scaleType = ImageView.ScaleType.CENTER_INSIDE
                 contentDescription = "群星矩阵"
             }, LinearLayout.LayoutParams(dp(118), dp(58)))
+            top.addView(themedButton("⌂", YouthButtonRole.COMPACT) { renderSection(AppSection.HOME) }.apply {
+                contentDescription = "返回学情工作台"; minWidth = dp(48); minHeight = dp(48)
+            }, LinearLayout.LayoutParams(dp(50), ViewGroup.LayoutParams.WRAP_CONTENT))
             top.addView(themedButton("⚙", YouthButtonRole.COMPACT) { renderSection(AppSection.SETTINGS) }.apply {
                 contentDescription = "打开系统设置"
                 minWidth = dp(48)
@@ -456,9 +486,8 @@ class MainActivity : ComponentActivity() {
         if (!wideLayout) {
             val core = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(palette.card) }
             listOf(
-                AppSection.HOME to "首页",
                 AppSection.MATERIALS to "收集整理",
-                AppSection.REPORTS to "学情报告",
+                AppSection.REPORTS to "教育档案",
                 AppSection.LEARNING to "学习行动",
                 AppSection.PROJECTS to "项目成果",
             ).forEach { (section, label) ->
@@ -642,7 +671,7 @@ class MainActivity : ComponentActivity() {
         val processing = queue.count(::materialProcessing)
         val recovering = queue.count(::materialAutomaticRecovery)
         val needsHelp = queue.count(::materialNeedsHelp)
-        val projects = projectService.listProjects().size
+        val projects = current?.let { student -> projectService.listProjects().count { student.id in it.studentIds } } ?: 0
         sectionNote("收集资料后，系统自动整理并更新学情；学习结果会作为新证据回到整理流程。")
         sectionContent.addView(TextView(this).apply {
             text = if (current == null) {
@@ -652,6 +681,7 @@ class MainActivity : ComponentActivity() {
             }
             textSize = 16f; setTextColor(palette.text); setPadding(dp(18), dp(16), dp(18), dp(16)); YouthUi.applyStatusCard(this, palette)
         }, matchWrap())
+        if (current != null) addWorkbenchSnapshot(current)
         sectionHeading("学习闭环")
         val stages = listOf(
             PipelineStageUiState(
@@ -698,8 +728,107 @@ class MainActivity : ComponentActivity() {
         sectionHeading("项目与成长")
         addActionGrid(listOf(
             YouthAction("◆", "项目进展", if (projects > 0) "查看 $projects 个项目的阶段、待办和成果" else "建立学习项目并汇总资料与成果", if (projects > 0) "$projects 个项目" else "尚无项目") { renderSection(AppSection.PROJECTS) },
-            YouthAction("↗", "成长变化", "查看自动生成且可追溯的成长模型", "项目成果末尾") { renderSection(AppSection.PROJECTS) },
+            YouthAction("↗", "成长变化", "查看成长模型与来源证据", "教育档案") { renderSection(AppSection.REPORTS) },
         ), preferredColumns = 2, colorful = false)
+        addExpertConsultationCard("android_home")
+    }
+
+    private fun addWorkbenchSnapshot(student: StudentRecord) {
+        sectionHeading("今天最值得推进的一件事")
+        val next = statusCard().apply { text = "正在读取当前学生的已选行动…" }
+        sectionContent.addView(next, matchWrap())
+        sectionHeading("本周行动与重点项目")
+        val activity = statusCard().apply { text = "正在读取当前学生的行动和项目…" }
+        sectionContent.addView(activity, matchWrap())
+        sectionHeading("五维学情")
+        val dimensions = statusCard().apply { text = "正在读取学生自述…" }
+        sectionContent.addView(dimensions, matchWrap())
+        sectionHeading("最近 7 天资料统计")
+        val chart = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(12)); YouthUi.applySurface(this, palette, 18) }
+        chart.addView(statusCard().apply { text = "正在统计当前学生的资料…" }, matchWrap())
+        sectionContent.addView(chart, matchWrap())
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                val actions = ScopedContentRepository(this@MainActivity).list(student.id, listOf("action"), 100)
+                    .filter { it.state in setOf("planned", "doing") }.take(3).map { row ->
+                        val item = JSONObject(row.payload).optJSONObject("itemSnapshot")
+                        item?.optString("title").orEmpty().ifBlank { item?.optString("question").orEmpty() }.ifBlank { row.title }.take(180)
+                    }
+                val projects = ProjectRepository(this@MainActivity).list().filter { student.id in it.studentIds && it.status !in setOf("archived", "sealed") }.take(3)
+                val state = StudentLearningState(this@MainActivity).read(student.id)
+                val dimensionProjection = LearningFiveDimensionPolicy.project(GrowthModelService(this@MainActivity).readPublishedIndex(student.id))
+                val stats = WorkbenchMaterialStatsPolicy.calculate(student.id, FileAssetService(this@MainActivity).materials(student.id),
+                    java.time.LocalDate.now(), java.time.ZoneId.systemDefault())
+                WorkbenchSnapshot(actions, projects, state, dimensionProjection, stats)
+            } }
+            if (activeSection != AppSection.HOME || selectedStudent()?.id != student.id || !chart.isAttachedToWindow) return@launch
+            result.onSuccess { snapshot ->
+                next.text = snapshot.actions.firstOrNull()?.let { "$it\n来自已选行动，可在学习行动中查看。" }
+                    ?: "尚无已选行动。可先查看学习卡片和建议，再选择一项开始。"
+                activity.text = "本周行动：" + (snapshot.actions.takeIf { it.isNotEmpty() }?.joinToString("；") ?: "暂无已选行动") + "（来自待办，未限定截止日期）" +
+                    "\n重点项目：" + (snapshot.projects.takeIf { it.isNotEmpty() }?.joinToString("；") { "${it.name}（${it.status}）" } ?: "暂无关联项目")
+                val self = snapshot.state
+                val projections = snapshot.dimensions.associateBy { it.id }
+                fun line(label: String, id: String, selfValue: String, profileValue: String = ""): String {
+                    if (selfValue.isNotBlank()) return "$label：$selfValue［学生自述］"
+                    if (profileValue.isNotBlank()) return "$label：$profileValue［学生档案］"
+                    val observed = projections[id]
+                    return if (observed != null && observed.source == "confirmed_evidence") "$label：${observed.summary}［已确认证据 ${observed.evidenceIds.size} 条］"
+                    else "$label：资料不足"
+                }
+                dimensions.text = listOf(
+                    line("目标", "goal", self?.optString("goal").orEmpty(), student.goal),
+                    line("心态", "mindset", self?.optString("state").orEmpty()),
+                    line("问题", "problem", self?.optString("problem").orEmpty()),
+                    line("方法", "method", self?.optString("method").orEmpty()),
+                    line("效率", "efficiency", self?.optString("efficiency").orEmpty()),
+                ).joinToString("\n") +
+                    "\n自述、档案与系统证据分开显示；不作为诊断或自动掌握结论。" +
+                    self?.optString("updatedAt").orEmpty().takeIf(String::isNotBlank)?.let { "\n自述更新时间：$it" }.orEmpty()
+                renderWorkbenchChart(chart, snapshot.stats)
+            }.onFailure {
+                next.text = "当前行动暂不可用，请稍后重试。"
+                activity.text = "行动或项目暂不可用。"
+                dimensions.text = "学情数据暂不可用，不代表没有学习记录。"
+                chart.removeAllViews(); chart.addView(statusCard().apply { text = "资料统计暂不可用，原始资料未受影响。" }, matchWrap())
+            }
+        }
+    }
+
+    private data class WorkbenchSnapshot(val actions: List<String>, val projects: List<ProjectRecord>, val state: JSONObject?,
+        val dimensions: List<LearningDimensionProjection>, val stats: WorkbenchMaterialStats)
+
+    private fun renderWorkbenchChart(container: LinearLayout, stats: WorkbenchMaterialStats) {
+        container.removeAllViews()
+        container.addView(TextView(this).apply { text = "最近 7 天资料上传 · 累计 ${stats.total} 项"; textSize = 16f; setTextColor(palette.heading) }, matchWrap())
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM; setPadding(0, dp(12), 0, 0) }
+        val maximum = (stats.days.maxOfOrNull { it.count } ?: 0).coerceAtLeast(1)
+        stats.days.forEach { day ->
+            val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL }
+            column.addView(TextView(this).apply { text = day.count.toString(); setTextColor(palette.heading); gravity = Gravity.CENTER }, matchWrap())
+            column.addView(View(this).apply { setBackgroundColor(palette.accent) }, LinearLayout.LayoutParams(dp(22), dp(if (day.count == 0) 2 else (day.count * 72 / maximum).coerceAtLeast(4))))
+            column.addView(TextView(this).apply { text = day.date.toString().substring(5); textSize = 11f; gravity = Gravity.CENTER; setTextColor(palette.muted) }, matchWrap())
+            row.addView(column, LinearLayout.LayoutParams(0, dp(112), 1f))
+        }
+        container.addView(row, matchWrap())
+        container.addView(TextView(this).apply { text = "按当前学生有效资料首次接收时间计数，含关联项目资料；文件数不代表掌握程度。${if (stats.excludedWithoutDate > 0) " ${stats.excludedWithoutDate} 项缺少有效日期，未纳入逐日统计。" else ""}\n点击图表分享图片"; textSize = 12f; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
+        container.isClickable = true; container.contentDescription = "分享当前学生最近七天资料统计图"
+        container.setOnClickListener { shareWorkbenchChart(container) }
+    }
+
+    private fun shareWorkbenchChart(view: View) {
+        runCatching {
+            require(view.width > 0 && view.height > 0) { "图表尚未显示完成" }
+            val bitmap = android.graphics.Bitmap.createBitmap(view.width, view.height, android.graphics.Bitmap.Config.ARGB_8888)
+            android.graphics.Canvas(bitmap).apply { drawColor(Color.WHITE); view.draw(this) }
+            val directory = File(cacheDir, "weekly-share").apply { mkdirs() }
+            val image = File(directory, "weekly-${java.util.UUID.randomUUID()}.png")
+            image.outputStream().use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
+            bitmap.recycle()
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", image)
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "分享资料统计图"))
+        }.onFailure { showMessage("分享未完成", it.message ?: "无法生成统计图") }
     }
 
     private fun renderArchives() {
@@ -823,6 +952,7 @@ class MainActivity : ComponentActivity() {
         val pending = queue.count(::materialPending)
         val processing = queue.count(::materialProcessing)
         val digestReady = queue.count { materialPending(it) && digestEligible(it) }
+        val processingServiceMissing = runCatching { AgentConfigurationStore(this).load() == null }.getOrDefault(true)
         configureSectionHeader("添加资料并查看自动整理进度", listOf("$pending 等待", "${processing + recovering} 系统处理中", "$needsHelp 归属待确认"))
         addMaterialWorkspaceTabs()
         when (activeMaterialWorkspaceTab) {
@@ -847,6 +977,7 @@ class MainActivity : ComponentActivity() {
                 sectionContent.addView(statusCard().apply {
                     text = when {
                         needsHelp > 0 -> "有 $needsHelp 份资料归属需要确认；其他资料仍会继续处理。"
+                        processingServiceMissing && pending + recovering > 0 -> "资料已保存，但尚未配置 AI 处理服务。请在系统设置中配置并测试服务，之后系统会继续处理。"
                         processing > 0 -> "正在自动整理 $processing 份资料，可以继续使用其他功能。"
                         recovering > 0 -> "$recovering 份资料正在等待系统自动恢复，不需要人工处理。"
                         pending > 0 -> "$pending 份资料正在等待整理。"
@@ -1035,10 +1166,14 @@ class MainActivity : ComponentActivity() {
         ), preferredColumns = 4)
         sectionHeading("课程与分析")
         sectionContent.addView(statusCard().apply {
-            text = if (catalog == null && assigned == 0) "尚未导入离线课程，不影响学习卡片和复测。" else "课程目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "本机快照" }} · 已为 $assigned 名学生保存课程快照"
+            text = if (catalog == null && assigned == 0) "尚未同步到云端课程；联网后会自动重试，离线课程包仍可作为灾备导入。" else "课程目录 ${catalog?.optString("catalogVersion").orEmpty().ifBlank { "本机快照" }} · 已为 $assigned 名学生保存课程快照"
         }, matchWrap())
         addActionGrid(listOf(
-            YouthAction("▶", "课程", "查看课程封面、介绍和学习选项") { chooseStudentForCourses() },
+            YouthAction("▶", "精选课程", "查看课程封面、介绍和学习选项") { chooseStudentForCourses() },
+            YouthAction("↻", "同步云端课程与卡片", "核验并更新公共课程及学习卡模板") { refreshPublicCourses(showResult = true) },
+            YouthAction("▤", "学习卡片", "查看卡片、作答反馈和公共模板") { openLearningStudio("today") },
+            YouthAction("✎", "填写学习状态", "记录自己的目标、状态和学习过程") { showLearningSelfReport() },
+            YouthAction("✦", "学习导师", "选择学习任务并预览、复制提示词") { showLearningMentor() },
             YouthAction("◎", "学习分析", "查看知识点掌握、学习时间线和维度变化") { openLearningInsights(LearningInsightsActivity.TAB_MASTERY) },
             YouthAction("◷", "学习历史", "查看作答、进展、已留存内容和历史建议") { openLearningStudio("history") },
         ), preferredColumns = 3, colorful = false)
@@ -1061,6 +1196,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openPlanningModule(module: String) {
+        withCurrentStudent { student -> startActivity(Intent(this, LearningStudioActivity::class.java)
+            .putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, student.id).putExtra("module", module)) }
+    }
+
+    private fun showLearningSelfReport() {
+        withCurrentStudent { student ->
+            val previous = runCatching { StudentLearningState(this).read(student.id) }.getOrNull()
+            val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), 0, dp(20), 0) }
+            val goal = EditText(this).apply { hint = "当前目标（选填）"; setText(previous?.optString("goal").orEmpty()); body.addView(this, matchWrap()) }
+            val state = EditText(this).apply { hint = "今天的学习状态（选填）"; setText(previous?.optString("state").orEmpty()); body.addView(this, matchWrap()) }
+            val problem = EditText(this).apply { hint = "遇到的问题（选填）"; setText(previous?.optString("problem").orEmpty()); body.addView(this, matchWrap()) }
+            val method = EditText(this).apply { hint = "尝试的学习方法（选填）"; setText(previous?.optString("method").orEmpty()); body.addView(this, matchWrap()) }
+            val efficiency = EditText(this).apply { hint = "对学习效率的感受（选填）"; setText(previous?.optString("efficiency").orEmpty()); body.addView(this, matchWrap()) }
+            val scroll = ScrollView(this).apply { addView(body) }
+            val dialog = AlertDialog.Builder(this).setTitle("填写学习状态").setMessage("仅作为学生自述保存在本机，不自动上传或作为能力结论。")
+                .setView(scroll).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    runCatching {
+                        require(selectedStudent()?.id == student.id) { "当前学生已变化，请重新打开后填写。" }
+                        StudentLearningState(this).save(student.id, goal.text.toString(), state.text.toString(), problem.text.toString(), method.text.toString(), efficiency.text.toString())
+                    }.onSuccess { dialog.dismiss(); showMessage("已保存", "学习状态已作为自述保存。") }
+                        .onFailure { showMessage("保存失败", it.message ?: "请稍后重试") }
+                }
+            }
+            dialog.show()
+        }
+    }
+
+    private fun showLearningMentor() {
+        withCurrentStudent { student ->
+            MentorDialogs.learning(this, student)
+        }
+    }
+
     private fun addGrowthModelActions() {
         val student = selectedStudent()
         val attentionCount = student?.let { runCatching { GrowthModelService(this).attentionCandidates(it.id).size }.getOrDefault(0) } ?: 0
@@ -1068,6 +1239,7 @@ class MainActivity : ComponentActivity() {
         sectionNote("成长模型自动更新；资料充分时自动采用，信息不足时继续观察，只有学生或项目归属冲突需要确认。")
         addActionGrid(listOf(
             YouthAction("↗", "成长模型概览", "查看能力维度、项目贡献和来源证据") { chooseGrowthStudent() },
+            YouthAction("✓", "观察证据核对", "查看原始资料摘录，自愿确认后更新正式报告") { withCurrentStudent { showObservationReview(it) } },
             YouthAction("!", "归属待确认", "仅列出无法确定学生或学习项目归属的候选", if (attentionCount > 0) "$attentionCount 条" else "暂无冲突") { withCurrentStudent { showGrowthAttention(it) } },
         ), preferredColumns = 2, colorful = false)
     }
@@ -1077,9 +1249,9 @@ class MainActivity : ComponentActivity() {
         val queue = student?.let { materialQueueItems(listOf(it)) }.orEmpty()
         val waiting = queue.count(::materialPending) + queue.count(::materialProcessing) + queue.count(::materialAutomaticRecovery)
         val needsHelp = queue.count(::materialNeedsHelp)
-        sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
         student?.let { runCatching { ReportScheduleStore(this).ensureDefaults(it.id) } }
         sectionHeading("最新学情报告")
+        sectionNote("四份报告继续引用同一有效成长快照整组更新；打开本页不会调用模型或覆盖旧报告。")
         sectionContent.addView(statusCard().apply {
             text = when {
                 student == null -> "请先建立或接管学生档案。"
@@ -1109,6 +1281,22 @@ class MainActivity : ComponentActivity() {
             YouthAction("⇩", "导出、分享与打印", "输出正式报告、简明报告或成长卡片") { withCurrentStudent { chooseReportForPublication(it) } },
             YouthAction("⋯", "更多", "周期设置、手动重新生成和云端报告") { withCurrentStudent { showReportMore(it) } },
         ), preferredColumns = 2, colorful = false)
+        addGrowthModelActions()
+        sectionHeading("教育档案与规划指导")
+        addActionGrid(listOf(
+            YouthAction("▣", "学情档案", "浏览当前学生档案明细") { withCurrentStudent { openStudentArchive(it) } },
+            YouthAction("▤", "原始资料", "浏览当前学生的原始资料") { withCurrentStudent { student ->
+                startActivity(Intent(this, RawMaterialBrowserActivity::class.java)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_STUDENT_ID, student.id)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_START_PATH, student.paths.rawPath)
+                    .putExtra(RawMaterialBrowserActivity.EXTRA_TITLE, "${student.name} · 原始资料"))
+            } },
+            YouthAction("◎", "知识点跟踪", "查看学习卡和复测证据") { openLearningInsights(LearningInsightsActivity.TAB_MASTERY) },
+            YouthAction("↗", "升学路径", "查看已生成的升学路径参考") { openPlanningModule("pathways") },
+            YouthAction("◇", "专业探索", "查看已生成的专业参考") { openPlanningModule("majors") },
+            YouthAction("◆", "职业发展", "查看已生成的职业参考") { openPlanningModule("careers") },
+        ), preferredColumns = 3, colorful = false)
+        addExpertConsultationCard("android_report", "learning_report")
     }
 
     private fun openPublishedReport(student: StudentRecord, definition: LearningReportDefinition) {
@@ -1130,13 +1318,20 @@ class MainActivity : ComponentActivity() {
 
     private fun renderProjects() {
         sectionNote("项目灵感、规划参考、比赛建议和成果均保留来源；建议只用于参考，不会自动报名、申请或发布。")
-        val projects = projectService.listProjects()
+        val projects = currentStudentProjects()
         sectionContent.addView(statusCard().apply {
-            text = if (projects.isEmpty()) "当前学生尚无学习项目。可以从“管理项目”新建、接管或导入。" else "本机共有 ${projects.size} 个学习项目；先查看阶段和待办，再进入规划或成果。"
+            text = if (projects.isEmpty()) "当前学生尚无学习项目。可以从“管理项目”新建、接管或导入。" else "当前学生关联 ${projects.size} 个学习项目；先查看阶段和待办，再进入规划或成果。"
         }, matchWrap())
         addActionGrid(listOf(
             YouthAction("◆", "当前项目概览", "查看项目阶段、资料、任务、成果和待处理事项", if (projects.isEmpty()) "尚无项目" else "${projects.size} 个项目") { if (projects.isEmpty()) showProjectManagement() else showProjectOverview() },
             YouthAction("⚙", "管理项目", "新建、接管、导入项目或调整资料位置") { showProjectManagement() },
+        ), preferredColumns = 2, colorful = false)
+        sectionHeading("项目资料与成果")
+        addActionGrid(listOf(
+            YouthAction("☰", "项目报告与成果", "选择项目查看进展报告与成果") { chooseProjectTab("outcomes") },
+            YouthAction("▤", "项目资料", "选择项目浏览原始资料") { chooseProjectTab("materials") },
+            YouthAction("◇", "项目知识", "选择项目查看知识内容") { chooseProjectTab("knowledge") },
+            YouthAction("✦", "项目导师", "选择项目阶段并预览、复制提示词") { chooseProjectTab("outcomes", openMentor = true) },
         ), preferredColumns = 2, colorful = false)
         sectionHeading("已有学习项目")
         projectList = GridLayout(this).apply { columnCount = actionGridColumns(3); alignmentMode = GridLayout.ALIGN_BOUNDS }
@@ -1147,7 +1342,7 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(this, LearningStudioActivity::class.java).putExtra(LearningStudioActivity.EXTRA_STUDENT_ID, student.id).putExtra("module", module))
             } }
         }, preferredColumns = 3, colorful = false)
-        addGrowthModelActions()
+        addExpertConsultationCard("android_project")
     }
 
     private fun showProjectManagement() {
@@ -1160,8 +1355,24 @@ class MainActivity : ComponentActivity() {
         } }.setNegativeButton("关闭", null).show()
     }
 
+    private fun currentStudentProjects(): List<ProjectRecord> {
+        val studentId = selectedStudent()?.id ?: return emptyList()
+        return projectService.listProjects().filter { studentId in it.studentIds }
+    }
+
+    private fun chooseProjectTab(tab: String, openMentor: Boolean = false) {
+        val projects = currentStudentProjects()
+        if (projects.isEmpty()) { showMessage("尚无关联项目", "请先新建、接管或关联当前学生的项目。"); return }
+        AlertDialog.Builder(this).setTitle("选择当前学生的项目").setItems(projects.map { it.name }.toTypedArray()) { _, index ->
+            val project = projects[index]; rememberCurrentProject(project.id)
+            startActivity(Intent(this, ProjectMaterialsActivity::class.java)
+                .putExtra(ProjectMaterialsActivity.EXTRA_PROJECT_ID, project.id).putExtra(ProjectMaterialsActivity.EXTRA_INITIAL_TAB, tab)
+                .putExtra(ProjectMaterialsActivity.EXTRA_OPEN_MENTOR, openMentor))
+        }.setNegativeButton("取消", null).show()
+    }
+
     private fun showProjectOverview() {
-        val projects = projectService.listProjects()
+        val projects = currentStudentProjects()
         if (projects.isEmpty()) { showProjectManagement(); return }
         AlertDialog.Builder(this).setTitle("选择项目").setItems(projects.map { project ->
             "${project.name}\n${project.status} · ${project.studentNames.joinToString().ifBlank { "暂未绑定学生" }}"
@@ -1176,7 +1387,7 @@ class MainActivity : ComponentActivity() {
         sectionHeading("AI 与自动处理")
         agentStatus = statusCard(); sectionContent.addView(agentStatus, matchWrap()); updateAgentStatus()
         addActionGrid(listOf(
-            YouthAction("◷", "资料自动处理", "当前：${if (AutoDigestSettingsStore(this).load().enabled) "已开启" else "已关闭"}；控制识别、理解和整理") { showAutoDigestSettings() },
+            YouthAction("◷", "资料自动处理", AutoDigestSettingsStore(this).load().let { "消化：${if (it.enabled) "已开启" else "已关闭"}；编排：${AutomationMode.from(it.automationMode).label}" }) { showAutoDigestSettings() },
             YouthAction("✦", "AI 处理服务", "查看服务状态，必要时配置、测试或停用") { showAiProcessingServiceMenu() },
             YouthAction("▶", "智能参考建议", "设置自动更新、联网许可和学习提醒") { openLearningStudio("suggestions") },
         ), preferredColumns = 3, colorful = false)
@@ -1220,7 +1431,8 @@ class MainActivity : ComponentActivity() {
             YouthAction("✓", "连接测试", "测试文本和视觉处理服务是否可用") { testAgentConfiguration() },
             YouthAction("☰", "任务回执", "查看当前学生的后台任务、异常和处理记录") { withCurrentStudent { startActivity(Intent(this, TaskCenterActivity::class.java).putExtra(TaskCenterActivity.EXTRA_STUDENT_ID, it.id)) } },
             YouthAction("⚙", "模型任务诊断", "查看当前学生的本机模型任务记录") { withCurrentStudent { showModelCallDiagnostics(it) } },
-            YouthAction("↓", "导入离线课程包", "导入 Windows 平台发布的课程文件") { startPlatformCourseImport() },
+            YouthAction("↻", "同步云端课程", "立即复核签名清单、撤回状态和课程封面") { refreshPublicCourses(showResult = true) },
+            YouthAction("↓", "导入离线课程包", "断网灾备：导入发布者签名的课程文件") { startPlatformCourseImport() },
         ), preferredColumns = 2, colorful = false)
     }
 
@@ -2327,7 +2539,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshProjects() {
         if (!::projectList.isInitialized) return
         projectList.removeAllViews()
-        val projects = projectService.listProjects()
+        val projects = currentStudentProjects()
         if (projects.isEmpty()) {
             projectList.addView(statusCard().apply { text = "尚未建立学习项目。点击上方“新建学习项目”开始。" }, GridLayout.LayoutParams().apply {
                 width = 0; columnSpec = GridLayout.spec(0, projectList.columnCount, 1f); setMargins(dp(6), dp(6), dp(6), dp(6))
@@ -2445,7 +2657,12 @@ class MainActivity : ComponentActivity() {
         val wifi = CheckBox(this).apply { text = "仅在 Wi-Fi 下运行"; isChecked = current.wifiOnly; fields.addView(this, matchWrap()) }
         val charging = CheckBox(this).apply { text = "仅在充电时运行"; isChecked = current.chargingOnly; fields.addView(this, matchWrap()) }
         val maximum = EditText(this).apply { hint = "每名学生单次最多处理份数"; inputType = InputType.TYPE_CLASS_NUMBER; setText(current.maximumPerStudent.toString()); fields.addView(this, matchWrap()) }
-        fields.addView(TextView(this).apply { text = "只处理已准备好的待消化资料；图片/PDF 必须先完成 OCR。失败资料保留在待处理队列，不会静默删除。\n\n${store.summary()}"; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
+        val modes = AutomationMode.entries
+        val mode = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, modes.map { it.label })
+            setSelection(modes.indexOf(AutomationMode.from(current.automationMode))); fields.addView(this, matchWrap())
+        }
+        fields.addView(TextView(this).apply { text = "关闭：只登记资料；保守自动：消化并生成候选，不自动发布报告；完整自动：通过质量门后自动生成并发布。未知结果不会盲目重试。\n\n${store.summary()}"; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
         val dialog = AlertDialog.Builder(this).setTitle("自动消化资料").setView(fields).setNegativeButton("取消", null).setPositiveButton("保存", null).create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -2454,7 +2671,7 @@ class MainActivity : ComponentActivity() {
                 val count = maximum.text.toString().toIntOrNull()
                 if (hour !in 0..23 || minute !in 0..59) { time.error = "请输入 00:00 到 23:59"; return@setOnClickListener }
                 if (count !in 1..100) { maximum.error = "请输入 1 到 100"; return@setOnClickListener }
-                store.save(AutoDigestSettings(enabled.isChecked, requireNotNull(hour), requireNotNull(minute), wifi.isChecked, charging.isChecked, requireNotNull(count)))
+                store.save(AutoDigestSettings(enabled.isChecked, requireNotNull(hour), requireNotNull(minute), wifi.isChecked, charging.isChecked, requireNotNull(count), modes[mode.selectedItemPosition].wireValue))
                 dialog.dismiss(); showMessage("自动消化设置已保存", store.summary())
                 if (activeSection == AppSection.SETTINGS) renderSection(AppSection.SETTINGS)
             }
@@ -3120,30 +3337,149 @@ class MainActivity : ComponentActivity() {
 
     private fun confirmOfficialCloudSwitch(sync: CloudReportSync) {
         AlertDialog.Builder(this).setTitle("切换到阿里云正式服务")
-            .setMessage("将停止并清除本机保存的旧试点云端许可，然后固定使用：\n${sync.officialServiceAddress()}\n\n本机报告不会删除；旧服务上的数据和许可也不会被远程删除。切换后，需要在阿里云管理页为每名学生重新生成一次性开通码。")
+            .setMessage("将停止并清除本机保存的旧试点云端许可，然后固定使用：\n${sync.officialServiceAddress()}\n\n本机报告不会删除；旧服务上的数据和许可也不会被远程删除。有效的 Android 单机版产品授权可免开通码建立云端身份，上传前仍需选择范围并确认授权。")
             .setNegativeButton("取消", null).setPositiveButton("确认切换") { _, _ ->
                 val count = sync.switchToOfficialService()
-                showMessage("已切换到阿里云正式服务", "已停止 $count 名学生的旧云端任务。本机报告保持不变，请使用阿里云管理页生成的新开通码重新开通。")
+                showMessage("已切换到阿里云正式服务", "已停止 $count 名学生的旧云端任务。本机报告保持不变；可使用当前产品授权免码重新建立云端身份。")
             }.show()
     }
 
-    private fun showCloudEnrollmentDialog(student: StudentRecord) {
-        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 12, 40, 0) }
+    private fun showCloudEnrollmentDialog(student: StudentRecord, onSuccess: (() -> Unit)? = null) {
         val sync = CloudReportSync(this)
-        fields.addView(TextView(this).apply {
-            text = "阿里云正式服务\n${sync.officialServiceAddress()}"
-            textSize = 14f; setTextColor(palette.muted); setPadding(0, 0, 0, dp(12)); setTextIsSelectable(true)
-        }, matchWrap())
-        val code = EditText(this).apply { hint = "当前学生的一次性开通码"; fields.addView(this, matchWrap()) }
-        AlertDialog.Builder(this).setTitle("开通 ${student.name} 的云端报告")
-            .setView(fields).setNegativeButton("取消", null).setPositiveButton("确认并开启") { _, _ ->
+        AlertDialog.Builder(this).setTitle("开通 ${student.name} 的云端身份")
+            .setMessage("使用当前 Android 单机版产品授权免开通码建立云端学生身份。此步骤不会上传资料；完成后仍需明确选择字段、资料类别和用途。\n\n服务：${sync.officialServiceAddress()}")
+            .setNegativeButton("取消", null).setNeutralButton("使用旧开通码") { _, _ -> showLegacyCloudEnrollmentDialog(student, onSuccess) }
+            .setPositiveButton("免码开通") { _, _ -> runCloudEnrollment(student, onSuccess) }.show()
+    }
+
+    private fun showLegacyCloudEnrollmentDialog(student: StudentRecord, onSuccess: (() -> Unit)?) {
+        val code = EditText(this).apply { hint = "当前学生的一次性开通码"; setPadding(dp(20), dp(10), dp(20), dp(10)) }
+        AlertDialog.Builder(this).setTitle("兼容旧开通码").setMessage("旧开通码仅用于历史部署兼容；开通后仍需确认上传范围。")
+            .setView(code).setNegativeButton("取消", null).setPositiveButton("开通") { _, _ ->
                 val value = code.text.toString().trim()
                 Thread {
                     val result = runCatching { CloudReportSync(this).enrollOfficial(student.id, value) }
-                    runOnUiThread { result.onSuccess { showMessage("已开启自动上传", "当前正式报告及以后更新将由后台自动上传；无需逐份确认。") }
+                    runOnUiThread { result.onSuccess { completeCloudEnrollment(student, onSuccess) }
                         .onFailure { showMessage("开通失败", it.message ?: "请检查阿里云服务和开通码") } }
                 }.start()
             }.show()
+    }
+
+    private fun runCloudEnrollment(student: StudentRecord, onSuccess: (() -> Unit)?) {
+        Thread {
+            val result = runCatching { CloudReportSync(this).autoEnrollOfficial(student.id) }
+            runOnUiThread { result.onSuccess { completeCloudEnrollment(student, onSuccess) }
+                .onFailure { showMessage("免码开通失败", it.message ?: "请检查产品授权和阿里云服务") } }
+        }.start()
+    }
+
+    private fun completeCloudEnrollment(student: StudentRecord, onSuccess: (() -> Unit)?) {
+        if (onSuccess != null) onSuccess.invoke() else {
+            showMessage("云端身份已建立", "尚未上传资料。请在下一页选择上传范围和用途。")
+            startActivity(Intent(this, CloudSyncActivity::class.java).putExtra(CloudSyncActivity.EXTRA_STUDENT_ID, student.id))
+        }
+    }
+
+    private fun addExpertConsultationCard(sourcePage: String, reportType: String = "", reportRevision: String = "") {
+        val compactLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val card = LinearLayout(this).apply {
+            orientation = if (compactLandscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            gravity = if (compactLandscape) Gravity.CENTER_VERTICAL else Gravity.NO_GRAVITY
+            setPadding(dp(22), if (compactLandscape) dp(10) else dp(18), dp(22), if (compactLandscape) dp(10) else dp(18))
+            contentDescription = "真人专家解读咨询入口"
+            YouthUi.applyExpertCard(this, palette)
+        }
+        val copy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        copy.addView(TextView(this).apply {
+            text = "▣　真人专家"
+            textSize = if (compactLandscape) 13f else 15f
+            setTextColor(Color.rgb(128, 76, 0))
+        }, matchWrap())
+        copy.addView(TextView(this).apply {
+            text = "请求真人专家解读咨询"
+            textSize = if (compactLandscape) 18f else 23f
+            setTextColor(Color.rgb(25, 50, 74))
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            setPadding(0, if (compactLandscape) dp(3) else dp(7), 0, if (compactLandscape) dp(2) else dp(5))
+        }, matchWrap())
+        copy.addView(TextView(this).apply {
+            text = "用户授权后，平台将派遣专家一对一解读咨询。请先核对上传范围；点击本身不会上传或改变授权。"
+            textSize = if (compactLandscape) 13f else 15f
+            setTextColor(Color.rgb(55, 65, 81))
+            if (compactLandscape) maxLines = 2
+        }, matchWrap())
+        val action = themedButton("授权上传学情资料　→", YouthButtonRole.PRIMARY) {
+            openExpertAuthorization(sourcePage, reportType, reportRevision)
+        }.apply {
+            if (compactLandscape) {
+                textSize = 15f
+                minHeight = dp(52)
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+            }
+        }
+        if (compactLandscape) {
+            card.addView(copy, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            card.addView(action, LinearLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(18) })
+        } else {
+            card.addView(copy, matchWrap())
+            card.addView(action, matchWrap().apply { topMargin = dp(10) })
+        }
+        sectionContent.addView(card, matchWrap().apply { topMargin = dp(10); bottomMargin = dp(6) })
+    }
+
+    private fun openExpertAuthorization(sourcePage: String, reportType: String = "", reportRevision: String = "") {
+        withCurrentStudent { student ->
+            val sync = CloudReportSync(this)
+            if (!sync.usesOfficialService()) {
+                AlertDialog.Builder(this).setTitle("先切换到阿里云正式服务")
+                    .setMessage("专家解读资料必须按当前学生和授权范围发送。请先在云端文档设置中切换正式服务；本次点击不会上传资料或创建咨询单。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("打开云端设置") { _, _ -> showCloudReportActions(student) }
+                    .show()
+                return@withCurrentStudent
+            }
+            val status = sync.status(student.id)
+            if (!status.configured) {
+                AlertDialog.Builder(this).setTitle("开通 ${student.name} 的云端授权")
+                    .setMessage("下一步使用当前产品授权免码建立云端学生身份。只有随后明确选择资料范围并确认授权才会启用上传；本次点击不会上传资料或创建咨询单。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("免码开通") { _, _ ->
+                        showCloudEnrollmentDialog(student) { launchExpertAuthorization(student, sourcePage, reportType, reportRevision) }
+                    }.show()
+                return@withCurrentStudent
+            }
+            launchExpertAuthorization(student, sourcePage, reportType, reportRevision)
+        }
+    }
+
+    private fun launchExpertAuthorization(student: StudentRecord, sourcePage: String, reportType: String, reportRevision: String) {
+        if (sourcePage == "android_report" && reportRevision.isBlank()) {
+            Thread {
+                val revision = runCatching { GrowthModelService(this).activeReportPublicationId(student.id) }
+                    .fold({ it ?: "暂无可校验的正式版本" }, { "版本读取或校验失败" })
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed &&
+                        getSharedPreferences(UI_CONTEXT_PREFS, MODE_PRIVATE).getString(KEY_CURRENT_STUDENT_ID, "") == student.id) {
+                        startExpertAuthorization(student, sourcePage, reportType, revision)
+                    }
+                }
+            }.start()
+            return
+        }
+        startExpertAuthorization(student, sourcePage, reportType, reportRevision)
+    }
+
+    private fun startExpertAuthorization(student: StudentRecord, sourcePage: String, reportType: String, reportRevision: String) {
+        startActivity(Intent(this, CloudSyncActivity::class.java)
+            .putExtra(CloudSyncActivity.EXTRA_STUDENT_ID, student.id)
+            .putExtra(CloudSyncActivity.EXTRA_EXPERT_INTENT, true)
+            .putExtra(CloudSyncActivity.EXTRA_SOURCE_PAGE, sourcePage)
+            .putExtra(CloudSyncActivity.EXTRA_REPORT_TYPE, reportType)
+            .putExtra(CloudSyncActivity.EXTRA_REPORT_REVISION, reportRevision)
+            .putStringArrayListExtra(CloudSyncActivity.EXTRA_SUGGESTED_CATEGORIES,
+                if (sourcePage == "android_project") arrayListOf("topic_suggestion", "competition_recommendation") else arrayListOf("learning_report")))
     }
 
     private fun showCloudPairingApprovalDialog(student: StudentRecord) {
@@ -3253,6 +3589,27 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
+    private fun showObservationReview(student: StudentRecord) {
+        val service = GrowthModelService(this)
+        val candidates = runCatching { service.candidates(student.id).filter { it.optString("status") == "watching" } }
+            .getOrElse { showMessage("观察证据不可用", it.message ?: "原数据保持不变"); return }
+        if (candidates.isEmpty()) { showMessage("暂无观察证据", "当前没有可供核对的观察记录。"); return }
+        AlertDialog.Builder(this).setTitle("核对 ${student.name} 的观察证据")
+            .setItems(candidates.map { it.optString("title").ifBlank { "未命名观察" } }.toTypedArray()) { _, index ->
+                val item = candidates[index]
+                AlertDialog.Builder(this).setTitle(item.optString("title").ifBlank { "观察证据" })
+                    .setMessage("请核对观察与原始资料摘录是否一致；确认表示采用该条记录，不代表已证明长期能力或掌握程度。\n\n${item.optString("content")}\n\n来源：${item.optString("sourceUri")}")
+                    .setNegativeButton("继续观察", null).setPositiveButton("确认采用") { _, _ ->
+                        if (selectedStudent()?.id != student.id) { showMessage("学生已切换", "请回到当前学生重新核对。"); return@setPositiveButton }
+                        Thread {
+                            val result = runCatching { service.confirmObservation(student.id, item.getString("id")) }
+                            runOnUiThread { result.onSuccess { showMessage("已确认", "已核对来源并登记，系统将按当前自动化设置更新报告。") }
+                                .onFailure { showMessage("未确认", it.message ?: "原资料和证据保持不变") } }
+                        }.start()
+                    }.show()
+            }.setNegativeButton("关闭", null).show()
+    }
+
     private fun showGrowthAttention(student: StudentRecord) {
         val service = GrowthModelService(this)
         val candidates = runCatching { service.attentionCandidates(student.id) }
@@ -3345,7 +3702,7 @@ class MainActivity : ComponentActivity() {
     private fun chooseStudentForCourses() {
         withCurrentStudent("请先建立学生档案。课程学习与采集必须绑定一个明确学生。") { student ->
             val courses = runCatching { courseCatalogService.effectiveCourses(student.id) }.getOrElse { showMessage("课程目录不可用", it.message ?: "未知错误"); return@withCurrentStudent }
-            if (courses.isEmpty()) showMessage("没有可学习课程", "请导入平台发放的 .edu-coursepkg，或从 Windows 主机为该学生导入 U 盘迁移目录。")
+            if (courses.isEmpty()) showMessage("没有可学习课程", "请先联网同步云端课程；持续离线时可导入平台签名的 .edu-coursepkg，或从 Windows 主机导入 U 盘迁移目录。")
             else showPlatformCourses(student, courses)
         }
     }
@@ -3363,7 +3720,7 @@ class MainActivity : ComponentActivity() {
             if (bitmap != null) cover.setImageBitmap(bitmap)
             coverBox.addView(cover, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             if (bitmap == null) coverBox.addView(TextView(this).apply { text = "封面未载入\n请重新导入课程包"; gravity = Gravity.CENTER; setTextColor(palette.muted); textSize = 13f }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            card.addView(coverBox, LinearLayout.LayoutParams(dp(180), dp(112)))
+            card.addView(coverBox, LinearLayout.LayoutParams(dp(88), dp(76)))
             val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, 0, 0) }
             details.addView(TextView(this).apply { text = course.name; textSize = 19f; setTextColor(palette.heading) }, matchWrap())
             details.addView(TextView(this).apply { text = course.summary; textSize = 14f; setTextColor(palette.text); maxLines = 4; setPadding(0, dp(5), 0, dp(5)) }, matchWrap())
@@ -3388,6 +3745,27 @@ class MainActivity : ComponentActivity() {
             .putExtra(CourseLearningActivity.EXTRA_STUDENT_ID, student.id)
             .putExtra(CourseLearningActivity.EXTRA_COURSE_JSON, course.toJson().toString())
             .putExtra(CourseLearningActivity.EXTRA_AUTO_START_CAPTURE, autoStartCapture))
+    }
+
+    private fun refreshPublicCourses(showResult: Boolean) {
+        if (publicCourseSyncRunning) {
+            if (showResult) showMessage("课程正在同步", "当前同步完成后会自动保留最后可用目录。")
+            return
+        }
+        publicCourseSyncRunning = true
+        val progress = if (showResult) showProgress("正在同步云端课程", "正在复核发布者签名、撤回清单和资源哈希；失败不会覆盖最后可用目录。") else null
+        Thread {
+            val result = runCatching { PublicCourseSyncService(this).sync() }
+            runOnUiThread {
+                publicCourseSyncRunning = false
+                progress?.dismiss()
+                if (showResult) result.onSuccess {
+                    showMessage("云端课程已同步", "修订 ${it.getString("manifestRevision")} · ${it.getInt("courseCount")} 门课程。撤回状态和离线租约已复核。")
+                }.onFailure {
+                    showMessage("本次同步未采用", "${it.message ?: "网络或校验失败"}\n\n原有最后可用课程目录未被替换。")
+                }
+            }
+        }.start()
     }
 
     private fun passwordFields(): Pair<LinearLayout, Pair<EditText, EditText>> {
@@ -3507,6 +3885,7 @@ class MainActivity : ComponentActivity() {
         const val REQUEST_DEVICE_MIGRATION_NOTIFICATION = 2120
         const val REQUEST_PROJECT_PACKAGE_SOURCE = 2121
         const val OFFLINE_MIGRATION_POLL_MS = 1_000L
+        const val PUBLIC_COURSE_SYNC_INTERVAL_MS = 60_000L
         const val UI_CONTEXT_PREFS = "standalone_ui_context"
         const val KEY_CURRENT_STUDENT_ID = "current_student_id"
         const val KEY_CURRENT_PROJECT_ID = "current_project_id"

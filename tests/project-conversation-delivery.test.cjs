@@ -61,6 +61,7 @@ async function fixture(t) {
         references: [{ spaceType: 'project', spaceId: project.id, path: file, role: metadata.role }] };
     },
     readProjects: () => [currentProject], readProjectMetadata: () => [currentProject], normalizeProject: (value) => value,
+    getProjectMetadata: (id) => String(id) === String(currentProject?.id) ? currentProject : null,
     normalizeProjectMetadata: (value) => value, ensureProjectWorkspace: (value) => value,
     isWorkspaceMaterialProject: (value) => value?.materialStorageMode === 'workspace-v1',
     findStudentByKey: (id) => id === student.id ? student : null,
@@ -72,6 +73,10 @@ async function fixture(t) {
       sourceScopeId: student.id, sourceScopeName: student.name }),
     stableGovernanceId: (...parts) => `delivery-${crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex')}`,
     updateProjectRecord: (_id, change) => {
+      currentProject = change(currentProject);
+      return { project: currentProject, projects: [currentProject] };
+    },
+    updateProjectMetadataRecord: (_id, change) => {
       currentProject = change(currentProject);
       return { project: currentProject, projects: [currentProject] };
     },

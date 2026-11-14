@@ -8,17 +8,20 @@ const { test } = require('node:test');
 const root = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
-test('cloud settings are split into three user-facing secondary pages with selectable upload scope', () => {
+test('cloud settings are split into four user-facing secondary pages with selectable upload scope', () => {
   const panel = read('src/CloudDocumentsPanel.tsx');
-  for (const label of ['连接设置与授权', '同步结果', '云端成果收件箱', 'Windows主机下载许可', '本机学生上传与授权', '已下载的本机副本']) {
+  for (const label of ['上传与下载设置', '同步结果', '外部 Agent 云端访问', '云端成果收件箱', 'Windows主机下载许可', '授权上传学情资料', '已下载的本机副本']) {
     assert.match(panel, new RegExp(label));
   }
   assert.match(panel, /data-cloud-page="connection"/);
   assert.match(panel, /data-cloud-page="results"/);
+  assert.match(panel, /data-cloud-page="agents"/);
   assert.match(panel, /data-cloud-page="inbox"/);
   assert.match(panel, /基础信息（默认全部选择，可手工调整）/);
   assert.match(panel, /姓名（建档必需）/);
   assert.match(panel, /健康资料：未授权/);
+  assert.match(panel, /授权上传学情资料，平台将派遣专属真人专家进行分析提供建议/);
+  assert.match(panel, /资料按类别授权，不按单文件授权/);
   assert.match(panel, /cloudReportSetUploadScope/);
   assert.match(panel, /savedUploadScope/);
   assert.match(panel, /uploadScopePersistence/);

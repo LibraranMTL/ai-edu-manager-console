@@ -6,6 +6,9 @@ const { DatabaseSync } = require('node:sqlite');
 const REQUIRED_TABLES = Object.freeze([
   'student_profile_revisions', 'student_profile_current', 'v2_grants', 'device_student_bindings',
   'transfer_receipts', 'sync_events', 'remote_agent_sessions', 'cloud_inbox_submissions', 'schema_migrations',
+  'material_current', 'material_index_jobs', 'material_search_documents', 'material_search_fts',
+  'oauth_clients', 'oauth_authorization_codes', 'oauth_access_tokens',
+  'source_auto_bindings', 'health_records', 'cloud_inbox_attachments',
 ]);
 const REQUIRED_COLUMNS = Object.freeze({
   devices: ['public_key', 'revoked_at'],
@@ -13,6 +16,8 @@ const REQUIRED_COLUMNS = Object.freeze({
   documents: ['material_category', 'material_id', 'revision_id', 'idempotency_key', 'project_id', 'scope_fingerprint'],
   remote_agent_sessions: ['task_id', 'execution_id', 'task_type', 'idempotency_key', 'status', 'result_submission_id', 'updated_at', 'student_ids_json'],
   cloud_inbox_submissions: ['student_ids_json'],
+  health_records: ['health_record_id', 'revision_id', 'idempotency_key', 'deleted_at'],
+  cloud_inbox_attachments: ['submission_id', 'attachment_id', 'content_sha256', 'object_name'],
 });
 
 function safeCount(db, table) {

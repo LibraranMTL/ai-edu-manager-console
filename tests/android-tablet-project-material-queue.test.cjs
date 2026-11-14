@@ -13,6 +13,7 @@ function javaTool(name) {
   const candidates = [
     process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', `${name}${suffix}`) : '',
     path.join(root, '.android-tools', 'jdk', 'jdk-21.0.11+10', 'bin', `${name}${suffix}`),
+    path.resolve(root, '..', '..', '平板部署', 'edu-launcher-app', '.android-tools', 'jdk', 'jdk-21.0.11+10', 'bin', `${name}${suffix}`),
     `${name}${suffix}`,
   ].filter(Boolean);
   for (const candidate of candidates) {

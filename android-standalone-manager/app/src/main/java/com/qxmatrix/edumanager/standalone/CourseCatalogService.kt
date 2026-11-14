@@ -2,10 +2,14 @@ package com.qxmatrix.edumanager.standalone
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.security.KeyFactory
+import java.security.Signature
+import java.security.spec.X509EncodedKeySpec
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -46,6 +50,49 @@ private fun jsonStrings(array: JSONArray?): List<String> = buildList {
     if (array != null) for (index in 0 until array.length()) add(array.optString(index).trim())
 }.filter { it.isNotBlank() }
 
+internal object CoursePublisherTrustPolicy {
+    const val SCHEMA = "edu-manager.course-trust-policy.v1"
+    const val EXPECTED_REVISION = "course-trust-transition-2026-11-06-v1"
+    private val acceptedStatuses = setOf("active", "transition")
+
+    data class TrustedIssuer(val keyId: String, val status: String, val publicKey: String, val fingerprint: String)
+
+    fun load(context: Context): Map<String, TrustedIssuer> {
+        val payload = context.resources.openRawResource(R.raw.trusted_course_issuers).bufferedReader().use { JSONObject(it.readText()) }
+        require(payload.getString("schema") == SCHEMA && payload.getString("policyRevision") == EXPECTED_REVISION) { "课程信任策略合同或修订无效" }
+        val result = linkedMapOf<String, TrustedIssuer>()
+        val issuers = payload.getJSONArray("issuers")
+        for (index in 0 until issuers.length()) {
+            val issuer = issuers.getJSONObject(index)
+            val keyId = issuer.getString("keyId").trim()
+            val status = issuer.getString("status").trim()
+            val pem = issuer.getString("publicKey").trim() + "\n"
+            require(keyId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9_-]{2,79}$")) && status in setOf("active", "transition", "revoked")) { "课程信任策略发布者无效" }
+            val der = Base64.decode(pem.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "").trim(), Base64.DEFAULT)
+            val actualFingerprint = MessageDigest.getInstance("SHA-256").digest(der).joinToString("") { "%02x".format(it) }
+            require(actualFingerprint == issuer.getString("fingerprint").lowercase(Locale.US)) { "课程发布密钥指纹不一致：$keyId" }
+            require(result.put(keyId, TrustedIssuer(keyId, status, pem, actualFingerprint)) == null) { "课程信任策略包含重复 keyId：$keyId" }
+        }
+        require(result.values.any { it.status in acceptedStatuses }) { "课程信任策略没有可用发布者" }
+        return result
+    }
+
+    fun trustedIssuer(context: Context, keyId: String): TrustedIssuer {
+        val issuer = load(context)[keyId]
+        require(issuer != null && issuer.status in acceptedStatuses) { "课程发布密钥不受信任：$keyId" }
+        return issuer
+    }
+}
+
+internal fun verifyCoursePublisherSignature(context: Context, keyId: String, payload: ByteArray, encodedSignature: String): Boolean {
+    val pem = CoursePublisherTrustPolicy.trustedIssuer(context, keyId).publicKey
+    val der = Base64.decode(pem.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "").trim(), Base64.DEFAULT)
+    val publicKey = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))
+    return Signature.getInstance("SHA256withRSA").run {
+        initVerify(publicKey); update(payload); verify(Base64.decode(encodedSignature, Base64.DEFAULT))
+    }
+}
+
 data class PlatformCourse(
     val courseId: String,
     val name: String,
@@ -81,7 +128,7 @@ data class PlatformCourse(
             val hosts = jsonStrings(value.optJSONArray("allowedHosts")).map(::normalizeHost).distinct()
             require(hosts.isNotEmpty()) { "课程必须声明允许域名" }
             val cover = requiredText(value, "coverAsset")
-            require(cover.matches(Regex("^(platform-assets|custom-assets|catalog-assets|offline-assets)/[a-zA-Z0-9._-]+\\.(png|jpg|jpeg|webp)$"))) { if (type == "platform_standard") "平台课程封面路径无效" else "机构课程封面路径无效" }
+            require(cover.matches(Regex("^(platform-assets|custom-assets|catalog-assets|offline-assets|cloud-assets)/[a-zA-Z0-9._-]+\\.(png|jpg|jpeg|webp)$"))) { if (type == "platform_standard") "平台课程封面路径无效" else "机构课程封面路径无效" }
             return PlatformCourse(
                 courseId = id,
                 name = requiredText(value, "name"),
@@ -110,7 +157,7 @@ data class PlatformCourse(
 
         fun normalizeUrl(value: String, allowedHosts: List<String>): String {
             val uri = Uri.parse(value.trim())
-            require(uri.scheme in setOf("https", "http") && uri.userInfo == null) { "课程链接必须是无账号信息的 HTTP/HTTPS URL" }
+            require(uri.scheme == "https" && uri.userInfo == null) { "课程链接必须是无账号信息的 HTTPS URL" }
             require(normalizeHost(uri.host ?: "") in allowedHosts) { "课程链接域名不在允许列表" }
             return uri.buildUpon().fragment(null).build().toString()
         }
@@ -128,6 +175,7 @@ class CourseCatalogService(private val context: Context) {
         val coverPayloads = linkedMapOf<String, ByteArray>()
         var manifestBytes: ByteArray? = null
         var catalogBytes: ByteArray? = null
+        var signatureBytes: ByteArray? = null
         var total = 0L
         context.contentResolver.openInputStream(uri)?.use { input ->
             ZipInputStream(input).use { zip ->
@@ -144,6 +192,7 @@ class CourseCatalogService(private val context: Context) {
                     when {
                         name == "manifest.json" -> manifestBytes = bytes
                         name == "catalog.json" -> catalogBytes = bytes
+                        name == "signature.json" -> signatureBytes = bytes
                         name.startsWith("assets/") -> {
                             require(coverPayloads.values.sumOf { it.size.toLong() } + bytes.size <= MAX_COVER_TOTAL_BYTES) { "课程封面合计不能超过 50 MB" }
                             coverPayloads[name] = bytes
@@ -155,7 +204,9 @@ class CourseCatalogService(private val context: Context) {
         } ?: error("无法读取课程包")
 
         val manifest = JSONObject(requireNotNull(manifestBytes) { "课程包缺少 manifest.json" }.toString(Charsets.UTF_8))
-        require(manifest.optString("schema") in setOf(ProtocolBaseline.COURSE_PACKAGE_SCHEMA, "edu-manager.course-package.v2")) { "课程包 Schema 不受支持" }
+        require(manifest.optString("schema") == ProtocolBaseline.COURSE_PACKAGE_SCHEMA) { "仅允许导入发布者签名的 v3 课程包" }
+        val signatureRecord = JSONObject(requireNotNull(signatureBytes) { "v3 课程包缺少 signature.json" }.toString(Charsets.UTF_8))
+        verifyPackageSignature(manifest, signatureRecord)
         val declared = manifest.getJSONArray("files")
         val declaredNames = linkedSetOf<String>()
         for (index in 0 until declared.length()) {
@@ -168,6 +219,7 @@ class CourseCatalogService(private val context: Context) {
         require(declaredNames == entries.keys.filter { it !in setOf("manifest.json", "signature.json") }.toSet()) { "课程包文件清单与归档内容不一致" }
         val catalog = JSONObject(requireNotNull(catalogBytes) { "课程包缺少 catalog.json" }.toString(Charsets.UTF_8))
         validateCatalog(catalog, setOf("platform_standard"))
+        require(catalog.getString("keyId") == signatureRecord.getString("keyId")) { "目录与课程包签名 keyId 不一致" }
         val courses = catalog.getJSONArray("courses")
         for (index in 0 until courses.length()) {
             val cover = courses.getJSONObject(index).getString("coverAsset").substringAfterLast('/')
@@ -213,17 +265,25 @@ class CourseCatalogService(private val context: Context) {
             .put("tenantCount", (0 until normalized.length()).count { normalized.getJSONObject(it).getString("type") == "tenant_custom" })
     }
 
-    fun lastGoodCatalog(): JSONObject? = try { JSONObject(state.readBytes(LAST_GOOD).toString(Charsets.UTF_8)) } catch (_: Exception) { null }
+    fun lastGoodCatalog(): JSONObject? {
+        val cloud = PublicCourseSyncService(context)
+        if (cloud.hasCloudCache()) return cloud.cloudCatalog()
+        return try { JSONObject(state.readBytes(LAST_GOOD).toString(Charsets.UTF_8)) } catch (_: Exception) { null }
+    }
     fun offlineSnapshot(studentId: String): JSONObject? = try { JSONObject(state.readBytes("$OFFLINE_ROOT/${safeStudentId(studentId)}.json").toString(Charsets.UTF_8)) } catch (_: Exception) { null }
 
     fun effectiveCourses(studentId: String? = null, now: Date = Date()): List<PlatformCourse> {
         val merged = linkedMapOf<String, PlatformCourse>()
-        val arrays = buildList {
-            lastGoodCatalog()?.optJSONArray("courses")?.let(::add)
-            if (!studentId.isNullOrBlank()) offlineSnapshot(studentId)?.optJSONArray("courses")?.let(::add)
+        val cloud = PublicCourseSyncService(context)
+        val cloudManaged = cloud.hasCloudCache()
+        val revoked = if (cloudManaged) cloud.revokedCourseIds() else emptySet()
+        val arrays = buildList<Pair<JSONArray, Boolean>> {
+            lastGoodCatalog()?.optJSONArray("courses")?.let { add(it to false) }
+            if (!studentId.isNullOrBlank()) offlineSnapshot(studentId)?.optJSONArray("courses")?.let { add(it to true) }
         }
-        for (array in arrays) for (index in 0 until array.length()) {
+        for ((array, studentSnapshot) in arrays) for (index in 0 until array.length()) {
             val course = PlatformCourse.fromJson(array.getJSONObject(index))
+            if (course.courseId in revoked || (cloudManaged && studentSnapshot && course.type == "platform_standard")) continue
             if (course.status != "active") continue
             if (parseDate(course.effectiveAt)?.after(now) == true) continue
             if (course.expiresAt.isNotBlank() && parseDate(course.expiresAt)?.before(now) != false) continue
@@ -232,9 +292,11 @@ class CourseCatalogService(private val context: Context) {
         return merged.values.toList()
     }
 
-    fun coverBytes(course: PlatformCourse): ByteArray = if (course.coverAsset.startsWith("offline-assets/"))
-        state.readBytes("$OFFLINE_COVER_ROOT/${course.coverAsset.substringAfterLast('/')}")
-    else state.readBytes("$COVER_ROOT/${course.coverAsset.substringAfterLast('/')}")
+    fun coverBytes(course: PlatformCourse): ByteArray = when {
+        course.coverAsset.startsWith("offline-assets/") -> state.readBytes("$OFFLINE_COVER_ROOT/${course.coverAsset.substringAfterLast('/')}")
+        course.coverAsset.startsWith("cloud-assets/") -> state.readBytes("${PublicCourseSyncService.CLOUD_ASSET_ROOT}/${course.coverAsset.substringAfterLast('/')}")
+        else -> state.readBytes("$COVER_ROOT/${course.coverAsset.substringAfterLast('/')}")
+    }
 
     private fun validateCatalog(catalog: JSONObject, allowedTypes: Set<String>) {
         require(catalog.getInt("schemaVersion") == 1) { "课程目录 Schema 版本不受支持" }
@@ -243,6 +305,9 @@ class CourseCatalogService(private val context: Context) {
         require(compareVersions(APP_PROTOCOL_VERSION, catalog.optString("minHostVersion", "0.0.0")) >= 0) { "当前 APK 版本低于课程目录要求" }
         val expected = sha256(CourseCatalogCanonicalJson.canonicalize(unsignedCatalog(catalog)).toByteArray(Charsets.UTF_8))
         require(expected == catalog.getString("checksum")) { "课程目录校验值不匹配" }
+        val keyId = catalog.getString("keyId")
+        val signedPayload = "$expected\n${CourseCatalogCanonicalJson.canonicalize(unsignedCatalog(catalog))}".toByteArray(Charsets.UTF_8)
+        require(verifyCoursePublisherSignature(context, keyId, signedPayload, catalog.getString("signature"))) { "课程目录发布者签名验证失败" }
         val ids = linkedSetOf<String>(); val courses = catalog.getJSONArray("courses")
         for (index in 0 until courses.length()) {
             val course = PlatformCourse.fromJson(courses.getJSONObject(index))
@@ -254,6 +319,13 @@ class CourseCatalogService(private val context: Context) {
 
     private fun unsignedCatalog(value: JSONObject): JSONObject = JSONObject().also { output ->
         value.keys().forEach { key -> if (key !in setOf("checksum", "signature")) output.put(key, value.get(key)) }
+    }
+
+    private fun verifyPackageSignature(manifest: JSONObject, record: JSONObject) {
+        require(record.getString("schema") == "edu-manager.course-package-signature.v1" && record.getString("algorithm") == "RSA-SHA256") { "课程包签名格式不受支持" }
+        val canonical = CourseCatalogCanonicalJson.canonicalize(manifest).toByteArray(Charsets.UTF_8)
+        require(sha256(canonical) == record.getString("manifestSha256")) { "课程包清单签名哈希不匹配" }
+        require(verifyCoursePublisherSignature(context, record.getString("keyId"), canonical, record.getString("signature"))) { "课程包发布者签名验证失败" }
     }
 
     private fun safeEntry(input: String, directory: Boolean): String {
@@ -299,5 +371,6 @@ class CourseCatalogService(private val context: Context) {
         const val OFFLINE_ROOT = "courses/offline"
         const val OFFLINE_COVER_ROOT = "courses/offline-covers"
         const val OFFLINE_SNAPSHOT_SCHEMA = "edu-manager.student-course-snapshot.v1"
+        const val TRUSTED_COURSE_KEY_ID = "course-catalog-primary-2026" // v2 compatibility metadata only; v3 uses the trust policy bundle.
     }
 }

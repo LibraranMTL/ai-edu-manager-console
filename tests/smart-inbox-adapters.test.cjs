@@ -10,7 +10,7 @@ const { createProjectMaterialExtractor } = require('../electron/project-material
 
 async function temporary(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'smart-adapter-test-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true })); return directory;
+  t.after(async () => { await t.closeTaskHost?.(); await fs.rm(directory, {recursive:true,force:true}); }); return directory;
 }
 const answer = input => ({ candidates: [{ studentId: input.context.studentId, type: 'project', id: input.context.projects[0].id,
   categoryId: '', score: .98, evidence: input.context.projects[0].id, reason: '项目编号' }], sensitive: false, conflict: false, reason: '' });
@@ -22,15 +22,18 @@ for (const partial of [false, true]) test(`real DOCX extraction and real task st
   const original = path.join(source, 'report.docx'); await fs.writeFile(original, await zip.generateAsync({ type: 'nodebuffer' }));
   await fs.utimes(original, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
   const taskHost = await require('./helpers/smart-inbox-task-host.cjs').createTaskHost(path.join(directory, 'tasks'));
-  t.after(() => taskHost.close());
+  t.closeTaskHost=()=>taskHost.close();
   const executable = path.join(directory, 'synthetic-cli'); await fs.writeFile(executable, 'test identity only');
   const p = { id: 'project-a', name: '实验项目', studentIds: ['a'], materialStorageMode: 'workspace-v1', workspacePath: path.join(directory, 'workspace'), managerPath: path.join(directory, 'manager'), rawPath: path.join(directory, 'raw') };
-  const materialHost = createProjectMaterialHost(p); let calls = 0, delivered = 0;
+  const materialHost = createProjectMaterialHost(p); let calls = 0, delivered = 0, categoryReads = 0;
+  materialHost.store.readCategories = () => { throw new Error('SmartInbox must not parse the project registry on the main path'); };
   const h = createSmartInboxHost({ directory: path.join(directory, 'state'), student: id => id === 'a' ? { id, name: '虚构学生' } : null,
-    students: () => [], projects: () => [p], isWorkspace: () => true, materialHost: () => materialHost, canWrite: () => true,
+    students: () => [], projects: () => [p], isWorkspace: () => true, materialHost: () => materialHost,
+    materialCategories: async () => { categoryReads++; return [{ categoryId: 'reference', name: '参考资料', relativePath: '参考资料', active: true }]; },
+    canWrite: () => true,
     forbiddenRoots: () => [p.workspacePath], automaticAllowed: () => true, acquire: () => () => {}, legacySettings: () => ({}),
-    beginBatch: taskHost.beginBatch, endBatch: taskHost.endBatch,
-    agent: { select: () => ({ id: 'codex', executable }), run: async (_, input) => { calls++; if (input.context.studentId === 'a') assert.equal(input.context.extractionLimitations.length, 2); return answer(input); } },
+    beginBatch: taskHost.beginBatch, endBatch: taskHost.endBatch, settleItems: taskHost.settleItems,
+    agent: { select: () => ({ id: 'codex', executable }), run: async (_, input) => { calls++; if (input.context.studentId === 'a') { assert.equal(input.context.extractionLimitations.length, 2); assert.equal(input.context.projects[0].categories[0].categoryId, 'reference'); } return answer(input); } },
     validateTarget: async () => ({ project: p }),
     deliver: async (snapshot, _, item) => {
       delivered++; const copy = path.join(p.workspacePath, '收件箱', 'report.docx'); await fs.mkdir(path.dirname(copy), { recursive: true }); await fs.copyFile(snapshot, copy);
@@ -39,6 +42,7 @@ for (const partial of [false, true]) test(`real DOCX extraction and real task st
     },
   });
   t.after(() => h.engine.close()); await h.initialize();
+  taskHost.context.smartInboxHostRuntime = { engine: h.engine };
   const s = await h.engine.updateSource({ folder: source, studentId: '', enabled: true, automatic: true });
   await h.engine.requestScan(s.id); await h.engine.tick();
   const row = (await h.engine.list()).rows[0];
@@ -47,6 +51,7 @@ for (const partial of [false, true]) test(`real DOCX extraction and real task st
   let item = await h.engine.detail(row.id);
   assert.equal(calls, 2); assert.equal(item.truncated, false); assert.equal(item.extractionPartial, partial);
   assert.equal(item.status, 'delivered'); assert.equal(delivered, 1);
+  assert.ok(categoryReads >= 1);
   if (partial) assert.match(item.message, /图片|公式/);
   assert.equal(item.extractionReuse.reused, true); assert.equal(delivered, 1);
   assert.ok(taskHost.disk().tasks.every(task => task.status === 'succeeded'));
@@ -138,6 +143,21 @@ test('classification falls through only when the structured adapter proves the r
     'trae:synthetic-student', 'trae:private-student', 'qoder-work:synthetic-student', 'qoder-work:private-student',
   ]);
 });
+test('post-send WorkBuddy authentication error retains diagnostic origin and never retries', async t => {
+  const dir = await temporary(t), executable = path.join(dir, 'fake-cli'); await fs.writeFile(executable, 'v1');
+  const calls = [];
+  const agent = createRoutingAgent({ route: async () => ({ providers: ['workbuddy', 'codex'], policyVersion: 1 }),
+    select: async (_student, id) => id === 'workbuddy' ? { id, runtime: { cliPath: executable, nodePath: executable } } : { id, executable },
+    run: async (adapter, input) => { calls.push(`${adapter.id}:${input.context.studentId}`);
+      if (input.context.studentId === 'synthetic-student') return answer(input);
+      throw Object.assign(Error('authentication error'), { code: 'AUTHENTICATION_REQUIRED', stopConfirmed: true, diagnosticOrigin: 'stderr' }); } });
+  await assert.rejects(agent.classify({ context: { studentId: 'private-student', projects: [{ id: 'private-project', categories: [] }] }, text: 'private-project' }), error => {
+    assert.equal(error.code, 'execution_unknown'); assert.equal(error.blockReason.code, 'AUTHENTICATION_REQUIRED');
+    assert.equal(error.blockReason.processExitConfirmed, true); assert.equal(error.blockReason.diagnosticOrigin, 'stderr');
+    assert.equal(error.blockReason.recoverable, false); return true;
+  });
+  assert.deepEqual(calls, ['workbuddy:synthetic-student', 'workbuddy:private-student']);
+});
 
 test('host adapter reuses the real text extractor, retains provenance and imports frozen conversation bytes', async t => {
   const directory = await temporary(t), source = path.join(directory, 'inputs'), destination = path.join(directory, 'received');
@@ -168,6 +188,41 @@ test('host adapter reuses the real text extractor, retains provenance and import
   await h.engine.requestScan(entry.id); await h.engine.tick();
   assert.equal((await h.engine.list({ status: 'delivered' })).total, 1); assert.equal(receivedFrozen, true); assert.equal(modelCalls, 0);
   assert.equal((await h.engine.sources()).statistics.extracted, 1);
+});
+
+test('workspace hints resolve actual paths only within the authorized student projects', async t => {
+  const directory = await temporary(t), a = path.join(directory, 'project-a'), b = path.join(directory, 'project-b');
+  await fs.mkdir(a); await fs.mkdir(b);
+  const h = createSmartInboxHost({ directory: path.join(directory, 'state'), student: id => ({ id }), students: () => [],
+    projects: () => [{ id: 'a-project', studentIds: ['a'], workspacePath: a }, { id: 'b-project', studentIds: ['b'], workspacePath: b }],
+    isWorkspace: () => true, agent: {} });
+  assert.deepEqual(await h.workspaceCandidates('a', [a, b]), ['a-project']);
+  assert.deepEqual(await h.workspaceCandidates('a', [path.join(a, 'missing')]), []);
+  assert.deepEqual(await h.workspaceCandidates('', [a]), []);
+});
+
+test('duplicate same-student project intake reuses registered material and records distinct associations', async t => {
+  const directory = await temporary(t), source = path.join(directory, 'source'); await fs.mkdir(source);
+  const p = { id: 'project-a', name: 'a', studentIds: ['a'], materialStorageMode: 'workspace-v1',
+    workspacePath: path.join(directory, 'workspace'), managerPath: path.join(directory, 'manager'), rawPath: path.join(directory, 'raw') };
+  const materialHost = createProjectMaterialHost(p), s = { id: 'a', name: 'synthetic' }; let copies = 0;
+  const h = createSmartInboxHost({ directory: path.join(directory, 'state'), student: id => id === 'a' ? s : null, students: () => [s],
+    projects: () => [p], isWorkspace: () => true, materialHost: () => materialHost, canWrite: () => true,
+    forbiddenRoots: () => [p.workspacePath], automaticAllowed: () => true, acquire: () => () => {}, legacySettings: () => ({}),
+    agent: { select: () => { throw Error('unexpected classifier'); } }, validateTarget: async () => ({ project: p }),
+    deliver: async (snapshot, _, item) => { copies++; const file = path.join(p.workspacePath, '收件箱', `${item.id}.txt`);
+      await fs.mkdir(path.dirname(file), { recursive: true }); await fs.copyFile(snapshot, file);
+      const result = await materialHost.registerTerminalUpload(file, { eventId: item.id, studentId: 'a', sourceType: 'host_material_source',
+        intakeAssociation: { itemId: item.id, operationId: item.operationId } });
+      return { ok: true, path: file, recordId: result.material.materialId }; } });
+  t.after(() => h.engine.close()); await h.initialize();
+  for (const name of ['one.txt', 'two.txt']) { const file = path.join(source, name); await fs.writeFile(file, 'project-a 相同资料'); await fs.utimes(file, new Date(Date.now() - 5000), new Date(Date.now() - 5000)); }
+  const entry = await h.engine.updateSource({ folder: source, studentId: 'a', enabled: true, automatic: true,
+    target: { studentId: 'a', type: 'project', id: p.id } });
+  await h.engine.requestScan(entry.id); await h.engine.tick();
+  assert.equal((await h.engine.list({ status: 'delivered' })).total, 2); assert.equal(copies, 1);
+  const index = await materialHost.store.read(); assert.equal(index.materials.length, 1);
+  assert.equal(index.intakeAssociations.filter(a => a.active).length, 2);
 });
 
 for (const shared of [false, true]) test(`host delivery transfers full extraction; digest cache with ${shared ? 'per-item confirmation' : 'bound source'}`, async t => {

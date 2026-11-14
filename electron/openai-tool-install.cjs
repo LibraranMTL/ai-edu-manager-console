@@ -41,6 +41,13 @@ function selectNewestCodexCliCandidate(candidates = []) {
     .sort((left, right) => compareCodexCliVersions(right.version, left.version))[0] || null;
 }
 
+function codexDesktopCliCandidatePaths(input = {}) {
+  const desktop = normalizeOpenAiDesktopPackage(input);
+  const appRoot = desktop.appPath ? path.dirname(desktop.appPath)
+    : desktop.installLocation ? path.join(desktop.installLocation, 'app') : '';
+  return appRoot ? [path.join(appRoot, 'resources', 'codex.exe')] : [];
+}
+
 function mergeOpenAiToolInstall(cliInstall = {}, desktopInstall = {}) {
   const desktop = normalizeOpenAiDesktopPackage(desktopInstall);
   const cliInstalled = Boolean(cliInstall.installed && cliInstall.exePath);
@@ -56,9 +63,12 @@ function mergeOpenAiToolInstall(cliInstall = {}, desktopInstall = {}) {
 }
 
 module.exports = {
+  codexDesktopCliCandidatePaths,
   compareCodexCliVersions,
   mergeOpenAiToolInstall,
   normalizeOpenAiDesktopPackage,
   parseCodexCliVersion,
   selectNewestCodexCliCandidate,
 };
+const path = require('node:path');
+

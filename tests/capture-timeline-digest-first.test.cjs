@@ -331,7 +331,11 @@ test('deleting a session removes its report and recomputes affected day totals',
     deleteSemanticSession(root, session.studentId, session.id);
     assert.equal(fs.existsSync(windowPath), false);
     assert.equal(readReports(root, session.studentId, date, session.id).session, null);
-    assert.equal(readReports(root, session.studentId, date).day.behaviorReport.screenshotCount, 0);
+    const rebuiltDay = readReports(root, session.studentId, date).day;
+    assert.equal(rebuiltDay.behaviorReport.screenshotCount, 0);
+    assert.equal(rebuiltDay.behaviorReport.durationEstimate.coveredMinutes, 0);
+    assert.deepEqual(rebuiltDay.behaviorReport.activityShares, []);
+    assert.deepEqual(rebuiltDay.behaviorReport.timelineActivities, []);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

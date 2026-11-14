@@ -177,6 +177,8 @@ function createAgentMemoryStore(options = {}) {
       origin: bounded(input.origin, 80) || 'unspecified',
       title: bounded(input.title || input.objective, 500),
       sourceNodeId: bounded(input.sourceNodeId, 240),
+      workspacePath: bounded(input.workspacePath, 2000),
+      repositoryPath: bounded(input.repositoryPath, 2000),
       taskId: bounded(input.taskId, 240),
       status: 'active',
       startedAt: now,

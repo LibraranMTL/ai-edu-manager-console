@@ -21,7 +21,8 @@ object MaterialProcessingPolicy {
 
     fun ocrNeedsHelp(material: JSONObject): Boolean = attributionConflict(material)
 
-    fun digestNeedsHelp(material: JSONObject): Boolean = attributionConflict(material)
+    fun digestNeedsHelp(material: JSONObject): Boolean = attributionConflict(material) ||
+        material.optString("automationAttentionReason") in setOf("legacy_source_unverifiable", "digest_recovery_unverified")
 
     fun awaitingAutomaticRecovery(material: JSONObject): Boolean = !attributionConflict(material) && (
         MaterialStatus.normalize(material.optString("status")) == MaterialStatus.FAILED ||

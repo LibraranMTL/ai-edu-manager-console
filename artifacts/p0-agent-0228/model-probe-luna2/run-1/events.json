@@ -1,0 +1,30 @@
+[
+  {
+    "at": "2026-10-30T15:38:50.746Z",
+    "type": "thread.started",
+    "itemType": "",
+    "status": "",
+    "actionType": ""
+  },
+  {
+    "at": "2026-10-30T15:38:50.748Z",
+    "type": "turn.started",
+    "itemType": "",
+    "status": "",
+    "actionType": ""
+  },
+  {
+    "at": "2026-10-30T15:38:56.527Z",
+    "type": "error",
+    "itemType": "",
+    "status": "",
+    "actionType": ""
+  },
+  {
+    "at": "2026-10-30T15:38:56.527Z",
+    "type": "turn.failed",
+    "itemType": "",
+    "status": "",
+    "actionType": ""
+  }
+]

@@ -84,7 +84,10 @@ test('W10 formal release pipeline rejects debug or repository-owned keys and ver
   assert.match(releaseScript, /aapt dump badging \$verificationApk/);
   assert.match(releaseScript, /APK Signature Scheme v2\\\): true/);
   assert.match(releaseScript, /com\.qxmatrix\.edumanager\.standalone/);
-  assert.match(releaseScript, /\[IO\.File\]::Copy\(\$stagedPath, \$finalPath, \$false\)[\s\S]{0,320}Get-FileHash -LiteralPath \$finalPath -Algorithm SHA256[\s\S]{0,320}\[IO\.File\]::Delete\(\$stagedPath\)/);
+  assert.match(releaseScript, /\[IO\.FileMode\]::CreateNew/);
+  assert.match(releaseScript, /\$sourceStream\.CopyTo\(\$destinationStream\)/);
+  assert.match(releaseScript, /\$destinationStream\.Flush\(\$true\)/);
+  assert.match(releaseScript, /Get-FileHash -LiteralPath \$finalPath -Algorithm SHA256[\s\S]{0,500}\[IO\.File\]::Delete\(\$stagedPath\)/);
   assert.doesNotMatch(releaseScript, /Copy-Item -LiteralPath \$stagedPath -Destination \$finalPath -Force/);
   assert.match(releaseScript, /正式发布目标已存在，请先提升版本号/);
   assert.match(releaseScript, /\[string\]\$OutputDirectory/);

@@ -11,7 +11,7 @@ test('W11 presents the streamlined personal-learning navigation', () => {
   const source = read('MainActivity.kt');
   const navigation = read('StandaloneNavigation.kt');
   const strings = fs.readFileSync(path.join(root, 'res', 'values', 'strings.xml'), 'utf8');
-  for (const label of ['首页', '管理学生档案', '收集整理', '学习行动', '学情报告', '项目成果', '系统设置']) {
+  for (const label of ['学情工作台', '管理学生档案', '收集整理', '学习行动', '教育档案', '项目成果', '系统设置']) {
     assert.match(strings, new RegExp(label));
   }
   assert.doesNotMatch(source, /AI助手问答|AppSection\.ASSISTANT|renderAssistant/);

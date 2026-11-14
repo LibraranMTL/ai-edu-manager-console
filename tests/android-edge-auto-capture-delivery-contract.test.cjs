@@ -79,7 +79,9 @@ test('edge capture delivery retains scope and does not broaden Android conversat
       assert.match(activity, /previewConversationLink\(text\)/u, client.name);
       assert.match(activity, /\/api\/student-session\/conversation-link\/preview/u, client.name);
     } else {
-      assert.match(activity, /当前分享只有链接，请复制对话正文后再粘贴/u, client.name);
+      assert.match(activity, /previewTeacherConversationLink\(text\)/u, client.name);
+      assert.match(activity, /\/api\/conversation-import\/link-preview/u, client.name);
+      assert.match(activity, /学生已切换，已丢弃旧预览/u, client.name);
     }
     assert.doesNotMatch(activity, /scanPrivateConversationDatabase|AccessibilityService|NotificationListenerService/u, client.name);
   }

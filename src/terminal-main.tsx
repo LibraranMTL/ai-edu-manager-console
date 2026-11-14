@@ -6,10 +6,14 @@ import {
   ArrowRight,
   Bot,
   BookOpen,
+  Camera,
+  Copy,
+  Download,
   FileText,
   FolderSync,
   LibraryBig,
   LogOut,
+  Mic,
   MonitorUp,
   RefreshCw,
   Settings,
@@ -52,8 +56,8 @@ type TerminalConfig = {
 type CaptureSource = { id: string; name: string; type: 'screen' | 'window'; available?: boolean; blocked?: boolean; blockReason?: string };
 type CaptureItem = { id: string; path: string; filename: string; capturedAt: string; sequence: number };
 type CaptureSession = { id: string; status: string; sourceName: string; sourceType?: 'screen' | 'window'; count: number; files: string[]; items?: CaptureItem[]; target?: UploadTarget; startedAt?: string; plannedEndAt?: string; endedAt?: string; endReason?: string; deliveryStatus?: string; options?: CaptureOptions; candidateFrameCount?: number; deduplicatedCount?: number; highlightedCount?: number; courseId?: string; courseProvider?: string; courseUrl?: string; courseStartedAt?: string; courseCompletedAt?: string };
-type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string };
-type CourseCatalogResponse = { ok: boolean; catalogVersion?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
+type Course = { courseId: string; name: string; provider: string; url: string; allowedHosts: string[]; coverUrl: string; summary: string; gradeRange: string[]; languages: string[]; accountRequirement: string; legalNotice: string; offlineOpenUntil: string };
+type CourseCatalogResponse = { ok: boolean; schemaVersion?: 2; hostId?: string; projectionRevision?: string; manifestRevision?: string; policyRevision?: string; studentId?: string; courses?: Course[]; disclaimer?: string };
 type Progress = { status: string; current?: number; total?: number; filename?: string; success?: number; failed?: number; pending?: number; delivered?: number };
 type UploadQueueItem = { queueId: string; uploadId: string; state: 'queued' | 'uploading' | 'receipt_unknown' | 'received'; hostId: string; dataGeneration: string; studentId: string; target: UploadTarget; filename: string; size: number; sourceType: string; attempt: number; createdAt?: string; updatedAt?: string; receivedAt?: string; lastError?: string; pauseCode?: string; receipt?: { materialId?: string; materialVersion?: number; receivedAt?: string } | null };
 type UploadQueueState = { version: number; updatedAt?: string; total: number; counts: Record<string, number>; items: UploadQueueItem[]; hostScope?: { hostId?: string; dataGeneration?: string }; observedHostScope?: { hostId?: string; dataGeneration?: string } };
@@ -70,7 +74,38 @@ type DiscoveredHost = { deviceId: string; machineCode: string; displayName: stri
 type PendingPairRequest = { requestId: string; status: string; hostId: string; hostMachineCode: string; hostName: string; hostUrl: string; createdAt?: string; expiresAt?: string };
 type TailscaleStatus = { installed: boolean; canOpen: boolean; version?: string; downloadUrl: string };
 type ConnectionMethod = 'lan' | 'tailscale';
-type StudentWorkspace = 'courses' | 'auto-delivery' | 'capture' | 'documents' | 'practice' | 'planning' | 'inbox' | null;
+type StudentWorkspace = 'courses' | 'auto-delivery' | 'capture' | 'documents' | 'project-report' | 'practice' | 'planning' | 'inbox' | 'collaboration' | 'conversation' | 'trajectory' | null;
+type StudentPrimaryModule = 'collection' | 'connection' | 'archive' | 'learning' | 'project';
+type StudentPrimaryView = 'home' | StudentPrimaryModule;
+type LearningStatusInput = { overallState: 'smooth' | 'normal' | 'difficult'; currentContent: string; completed: string; difficulties: string; nextPlan: string; helpNeeded: string; notes: string };
+type LearningStatusEntry = LearningStatusInput & { id: string; submissionId: string; recordedByRole: 'student' | 'teacher'; recordingMode: string; createdAt: string };
+type LearningTrajectoryState = { knowledgePoint: { id: string; label: string; subject: string }; state: string; confidence?: number | null; evidenceCount: number; lastPracticedAt?: string; reviewPriority?: string; recommendedReviewAt?: string; retentionNote?: string; updatedAt?: string };
+
+function durableSubmissionId(storageKey: string, fingerprint: string, prefix: string) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(storageKey) || '{}') as { fingerprint?: string; submissionId?: string };
+    if (saved.fingerprint === fingerprint && saved.submissionId) return saved.submissionId;
+    const submissionId = `${prefix}-${crypto.randomUUID()}`;
+    window.localStorage.setItem(storageKey, JSON.stringify({ fingerprint, submissionId }));
+    return submissionId;
+  } catch {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+}
+
+function clearDurableSubmission(storageKey: string) {
+  try { window.localStorage.removeItem(storageKey); } catch { /* app storage unavailable */ }
+}
+
+function currentIsoWeekKey(date = new Date()) {
+  const value = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = value.getUTCDay() || 7;
+  value.setUTCDate(value.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(value.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((value.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${value.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
 type PracticeCard = { id: string; studentId: string; status: string; content: { title: string; subject: string; knowledgePoint: string; prompt: string; hint?: string; answer?: string; explanation?: string; rationale?: string }; createdAt?: string };
 type PracticeDashboard = { current?: PracticeCard | null; history?: PracticeCard[] };
 type PlanningKind = 'guidance' | 'topics' | 'competitions';
@@ -128,6 +163,9 @@ type TerminalBridge = {
   getAgentCapture: () => Promise<AgentCaptureState>;
   setAgentCapture: (enabled: boolean) => Promise<AgentCaptureState>;
   runAgentCapture: () => Promise<AgentCaptureState>;
+  getAgentBridge: () => Promise<{ enabled: boolean; port: number; startedAt?: string; queryCount?: number; lastQueryAt?: string; lastError?: string; descriptorFile?: string; studentId?: string }>;
+  setAgentBridge: (enabled: boolean) => Promise<{ enabled: boolean; port: number; startedAt?: string; queryCount?: number; lastQueryAt?: string; lastError?: string; descriptorFile?: string; studentId?: string }>;
+  copyAgentBridgeConfig: () => Promise<{ ok: boolean; message?: string; config?: string }>;
   getUploadQueue: () => Promise<UploadQueueState>;
   retryUploadQueue: () => Promise<{ ok?: boolean; queue: UploadQueueState }>;
   acknowledgeUploadGeneration: () => Promise<{ ok: boolean; message?: string; queue: UploadQueueState }>;
@@ -135,7 +173,7 @@ type TerminalBridge = {
   chooseAutoFolder: () => Promise<{ ok: boolean; folder: string }>;
   configureAutoDelivery: (input: { enabled: boolean; folder: string; target: UploadTarget }) => Promise<{ ok: boolean }>;
   runAutoDelivery: () => Promise<{ ok: boolean }>;
-  getLearningCapabilities: () => Promise<{ capabilities?: { practice?: boolean; planningRead?: boolean; planningFavorites?: boolean; remoteInbox?: boolean } }>;
+  getLearningCapabilities: () => Promise<{ capabilities?: { practice?: boolean; planningRead?: boolean; planningFavorites?: boolean; remoteInbox?: boolean; learningStatus?: boolean; learningTrajectory?: boolean; projectComprehensiveReport?: boolean; weeklyKnowledgeGrowthImage?: boolean; conversationImport?: boolean } }>;
   getPracticeDashboard: () => Promise<{ studentId: string; dashboard: PracticeDashboard; synchronization?: { pending?: number; rejected?: Array<{ attemptId: string; cardId: string; answer: string; error: string }>; warning?: string } }>;
   startPracticeCard: (cardId: string) => Promise<{ studentId: string; card: PracticeCard }>;
   submitPracticeCard: (cardId: string, input: { attemptId: string; answer: string; difficulty: string; confidence: number }) => Promise<{ studentId: string; card?: PracticeCard; duplicate?: boolean; pending?: boolean; message?: string }>;
@@ -145,6 +183,24 @@ type TerminalBridge = {
   getLearningInbox: () => Promise<{ studentId: string; items: Array<{ itemId: string; originalName: string; receivedAt: string; status: string }> }>;
   submitLearningInbox: (input: { eventId: string; title: string; text: string }) => Promise<{ studentId: string; duplicate?: boolean }>;
   listLearningReports: () => Promise<{ reports?: LearningReport[] }>;
+  getLearningStatus: () => Promise<{ entries?: LearningStatusEntry[] }>;
+  submitLearningStatus: (input: LearningStatusInput & { submissionId: string }) => Promise<{ entry: LearningStatusEntry }>;
+  getProjectComprehensiveReport: (projectId: string) => Promise<{ title: string; status: string; content: string; updatedAt?: string }>;
+  listKnowledgeGrowthWeeks: () => Promise<{ weeks?: string[]; currentWeek?: string }>;
+  getKnowledgeGrowthImage: (week: string) => Promise<{ week: string; mimeType: string; imageBase64: string; status?: string }>;
+  getLearningTrajectory: () => Promise<{ status: string; message?: string; taxonomyVersion?: string; states?: LearningTrajectoryState[] }>;
+  uploadCapturedMedia: (input: { kind: 'photo' | 'audio'; mimeType: string; base64: string; sourceEventId: string }, target: UploadTarget) => Promise<{ success?: number; failed?: number; pending?: number; total?: number; localRecoveryPath?: string }>;
+  quickScreenshot: (sourceId: string, target: UploadTarget) => Promise<{ success?: number; failed?: number; pending?: number; total?: number }>;
+  exportKnowledgeGrowthImage: (input: { week: string; mimeType: string; imageBase64: string }, action: 'save' | 'copy' | 'share') => Promise<{ ok: boolean; cancelled?: boolean; message?: string; path?: string }>;
+  exportStudentMaterialStatsImage: (input: { week: string; mimeType: string; imageBase64: string }, action: 'save' | 'share') => Promise<{ ok: boolean; cancelled?: boolean; message?: string; path?: string }>;
+  showCompanion: () => Promise<{ ok: boolean }>;
+  showCompanionPanel: (mode: 'learning' | 'project-tutor') => Promise<{ ok: boolean; message?: string }>;
+  chooseConversationFile: () => Promise<{ cancelled?: boolean; name?: string; text?: string }>;
+  previewConversationLink: (url: string) => Promise<{ content: string; finalUrl?: string; title?: string }>;
+  submitConversation: (input: { text: string; title?: string; target: UploadTarget; submissionId: string }) => Promise<{ message?: string; receipt?: { status?: string } }>;
+  takeConversationImport: () => Promise<{ draftId: string; source: string; link?: string; text?: string; name?: string; receivedAt?: string } | null>;
+  checkUpdate: () => Promise<{ available: boolean; currentVersion: string; versionName: string; url: string; sha256?: string; size?: number; notes?: string }>;
+  downloadUpdate: (update: Record<string, unknown>) => Promise<{ ok: boolean; path: string; sha256: string }>;
   getGrowthSummary: () => Promise<GrowthSummary>;
   readLearningReport: (reportId: string) => Promise<LearningReport & { content?: string }>;
   listArchiveFiles: () => Promise<{ files?: ArchiveFile[] }>;
@@ -163,6 +219,8 @@ type TerminalBridge = {
   listCourses: () => Promise<CourseCatalogResponse>;
   openCourse: (courseId: string) => Promise<{ ok: boolean; open?: boolean; course?: Course; message?: string }>;
   closeCourse: () => Promise<{ ok: boolean; open?: boolean }>;
+  setCourseViewTop: (top: number) => Promise<{ ok: boolean; top: number }>;
+  setCourseLearningFullscreen: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; message?: string }>;
   listCaptureSources: () => Promise<CaptureSource[]>;
   startCapture: (input: Record<string, unknown>) => Promise<CaptureSession>;
   stopCapture: () => Promise<CaptureSession | null>;
@@ -172,8 +230,11 @@ type TerminalBridge = {
   onAutoDelivery: (handler: (payload: Progress) => void) => void;
   onCaptureChanged: (handler: (payload: CaptureSession) => void) => void;
   onCourseBrowserChanged: (handler: (payload: { open: boolean; courseId?: string; name?: string; blocked?: boolean; message?: string }) => void) => void;
+  onCourseLearningFullscreen: (handler: (payload: { enabled: boolean }) => void) => () => void;
   onAgentCaptureChanged: (handler: (payload: AgentCaptureState) => void) => () => void;
   onPairingChanged: (handler: (payload: { state: PairingState; config: TerminalConfig }) => void) => () => void;
+  onCompanionNavigate: (handler: (payload: { action: string }) => void) => () => void;
+  onConversationImport: (handler: (payload: { draftId: string }) => void) => () => void;
 };
 
 declare global {
@@ -184,25 +245,46 @@ function targetKey(target?: UploadTarget | null) {
   return target?.id ? `${target.type}:${target.id}` : '';
 }
 
+function growthLabel(value: unknown, fallback = '待标注') {
+  const normalized = String(value || '').replace(/[\r\n\t]+/g, ' ').trim();
+  if (!normalized) return fallback;
+  const segments = normalized.replace(/\\/g, '/').split('/').filter(Boolean);
+  const compact = segments.length > 1 && /^[a-z]:$/i.test(segments[0] || '') ? segments.at(-1) || normalized : normalized;
+  return compact.replace(/[|]/g, '／').trim().slice(0, 110) || fallback;
+}
+
 function formatGrowthSummary(payload: GrowthSummary) {
   const summary = payload.summary || {};
   const abilities = payload.abilities || [];
   const projects = payload.projects || [];
   const evidence = payload.recentEvidence || [];
+  const number = (value: unknown) => Number(value || 0);
+  const tableCell = (value: unknown, fallback = '—') => growthLabel(value, fallback).replace(/\|/g, '／');
   const lines = [
-    `更新时间：${payload.updatedAt ? payload.updatedAt.replace('T', ' ').slice(0, 16) : '等待主机更新'}`,
+    '# 我的成长模型',
     '',
-    `成长证据 ${summary.evidenceCount || 0} 条 · 已确认 ${summary.confirmedCount || 0} 条 · 观察中 ${summary.watchingCount || 0} 条`,
-    `能力维度 ${summary.abilityCount || 0} 个 · 关联项目 ${summary.projectCount || 0} 个`,
+    `> 更新于 ${payload.updatedAt ? payload.updatedAt.replace('T', ' ').slice(0, 16) : '等待主机更新'}。此页呈现资料和项目的成长证据状态，**不等同于学习掌握度或能力结论**。`,
     '',
-    '能力画像',
-    ...(abilities.length ? abilities.map((item) => `• ${item.name || '待标注'}：${item.maturityLabel || '证据不足'}，${item.trendLabel || '尚不足以判断'}；证据 ${item.evidenceCount || 0} 条${item.projectNames?.length ? `；项目 ${item.projectNames.join('、')}` : ''}`) : ['暂无已形成的能力画像。']),
+    '| 成长证据 | 已确认 | 观察中 | 能力维度 | 关联项目 |',
+    '| ---: | ---: | ---: | ---: | ---: |',
+    `| ${number(summary.evidenceCount)} 条 | ${number(summary.confirmedCount)} 条 | ${number(summary.watchingCount)} 条 | ${number(summary.abilityCount)} 个 | ${number(summary.projectCount)} 个 |`,
     '',
-    '项目贡献',
-    ...(projects.length ? projects.map((item) => `• ${item.projectName || '未命名项目'}：${item.reviewStatusLabel || '积累中'}；已确认 ${item.confirmedEvidenceCount || 0}/${item.evidenceCount || 0} 条${item.abilityNames?.length ? `；能力 ${item.abilityNames.join('、')}` : ''}`) : ['暂无项目贡献记录。']),
+    '## 能力画像',
+    ...(abilities.length ? [
+      '| 能力维度 | 当前状态 | 变化趋势 | 证据 | 关联项目 |',
+      '| --- | --- | --- | ---: | --- |',
+      ...abilities.map((item) => `| ${tableCell(item.name)} | ${tableCell(item.maturityLabel, '证据不足')} | ${tableCell(item.trendLabel, '尚不足以判断')} | ${number(item.evidenceCount)} 条 | ${(item.projectNames || []).map((name) => tableCell(name)).join('、') || '—'} |`),
+    ] : ['暂无已形成的能力画像。']),
     '',
-    '近期成长证据',
-    ...(evidence.length ? evidence.map((item) => `• ${item.title || '成长证据'}（${item.statusLabel || '观察中'}${item.ability ? ` · ${item.ability}` : ''}${item.projectName ? ` · ${item.projectName}` : ''}）`) : ['暂无已确认或观察中的成长证据。']),
+    '## 项目贡献',
+    ...(projects.length ? [
+      '| 项目 | 当前状态 | 已确认 / 证据 | 关联能力 |',
+      '| --- | --- | ---: | --- |',
+      ...projects.map((item) => `| ${tableCell(item.projectName, '未命名项目')} | ${tableCell(item.reviewStatusLabel, '积累中')} | ${number(item.confirmedEvidenceCount)} / ${number(item.evidenceCount)} 条 | ${(item.abilityNames || []).map((name) => tableCell(name)).join('、') || '—'} |`),
+    ] : ['暂无项目贡献记录。']),
+    '',
+    '## 近期成长证据',
+    ...(evidence.length ? evidence.map((item) => `- **${growthLabel(item.title, '成长证据')}** · ${growthLabel(item.statusLabel, '观察中')}${item.ability ? ` · ${growthLabel(item.ability)}` : ''}${item.projectName ? ` · ${growthLabel(item.projectName)}` : ''}`) : ['暂无已确认或观察中的成长证据。']),
   ];
   return lines.join('\n');
 }
@@ -362,6 +444,7 @@ function TerminalApp() {
   const [selectedKnowledgeProjectId, setSelectedKnowledgeProjectId] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [documentContent, setDocumentContent] = useState('');
+  const [readerDialogOpen, setReaderDialogOpen] = useState(false);
   const [dismissedReminderDate, setDismissedReminderDate] = useState('');
   const [pairingState, setPairingState] = useState<PairingState | null>(null);
   const [hostMachineCodeQuery, setHostMachineCodeQuery] = useState('');
@@ -372,10 +455,14 @@ function TerminalApp() {
   const [courseCatalogVersion, setCourseCatalogVersion] = useState('');
   const [courseDisclaimer, setCourseDisclaimer] = useState('');
   const [courseBrowser, setCourseBrowser] = useState<{ open: boolean; courseId?: string; name?: string }>({ open: false });
+  const [courseLearningFullscreen, setCourseLearningFullscreen] = useState(false);
   const [activeWorkspace, setActiveWorkspace] = useState<StudentWorkspace>(null);
+  const [activePrimaryModule, setActivePrimaryModule] = useState<StudentPrimaryView>('home');
   const [agentCapture, setAgentCapture] = useState<AgentCaptureState>({ enabled: false, active: false, registrations: {}, warnings: [], installedCount: 0, connectedCount: 0, pending: 0 });
   const [agentCaptureBusy, setAgentCaptureBusy] = useState(false);
-  const [learningCapabilities, setLearningCapabilities] = useState<{ practice?: boolean; publications?: boolean; planningRead?: boolean; planningFavorites?: boolean; remoteInbox?: boolean }>({});
+  const [agentBridge, setAgentBridge] = useState<{ enabled: boolean; port: number; startedAt?: string; queryCount?: number; lastQueryAt?: string; lastError?: string; descriptorFile?: string; studentId?: string }>({ enabled: false, port: 0 });
+  const [agentBridgeBusy, setAgentBridgeBusy] = useState(false);
+  const [learningCapabilities, setLearningCapabilities] = useState<{ practice?: boolean; publications?: boolean; planningRead?: boolean; planningFavorites?: boolean; remoteInbox?: boolean; learningStatus?: boolean; learningTrajectory?: boolean; projectComprehensiveReport?: boolean; weeklyKnowledgeGrowthImage?: boolean; conversationImport?: boolean }>({});
   const [practiceDashboard, setPracticeDashboard] = useState<PracticeDashboard | null>(null);
   const [rejectedPracticeAttempts, setRejectedPracticeAttempts] = useState<Array<{ attemptId: string; cardId: string; answer: string; error: string }>>([]);
   const [practiceAnswer, setPracticeAnswer] = useState('');
@@ -390,7 +477,30 @@ function TerminalApp() {
   const [inboxText, setInboxText] = useState('');
   const [inboxEventId, setInboxEventId] = useState('');
   const [learningBusy, setLearningBusy] = useState(false);
+  const [learningStatusForm, setLearningStatusForm] = useState<LearningStatusInput>({ overallState: 'normal', currentContent: '', completed: '', difficulties: '', nextPlan: '', helpNeeded: '', notes: '' });
+  const [learningStatusEntries, setLearningStatusEntries] = useState<LearningStatusEntry[]>([]);
+  const [collaborationProjectId, setCollaborationProjectId] = useState('');
+  const [projectReport, setProjectReport] = useState<{ title: string; status: string; content: string; updatedAt?: string } | null>(null);
+  const [growthWeeks, setGrowthWeeks] = useState<string[]>([]);
+  const [growthImage, setGrowthImage] = useState<{ week: string; mimeType: string; imageBase64: string; status?: string } | null>(null);
+  const [growthImageLoadError, setGrowthImageLoadError] = useState('');
+  const [learningTrajectory, setLearningTrajectory] = useState<{ status: string; message?: string; taxonomyVersion?: string; states: LearningTrajectoryState[] } | null>(null);
+  const [mediaCaptureMode, setMediaCaptureMode] = useState<'photo' | 'audio' | null>(null);
+  const [mediaCaptureBlob, setMediaCaptureBlob] = useState<Blob | null>(null);
+  const [mediaCaptureUrl, setMediaCaptureUrl] = useState('');
+  const [mediaCaptureReady, setMediaCaptureReady] = useState(false);
+  const [mediaCaptureError, setMediaCaptureError] = useState('');
+  const [mediaRecording, setMediaRecording] = useState<'idle' | 'recording' | 'paused'>('idle');
+  const [conversationText, setConversationText] = useState('');
+  const [conversationLink, setConversationLink] = useState('');
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const mediaVideoRef = useRef<HTMLVideoElement | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaChunksRef = useRef<Blob[]>([]);
+  const mediaCaptureRequestRef = useRef(0);
+  const conversationImportActiveRef = useRef(false);
+  const courseBrowserAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const selectedStudent = useMemo(
     () => students.find((student) => student.id === selectedStudentId) || null,
@@ -404,6 +514,345 @@ function TerminalApp() {
     }).catch(() => { if (current) setLearningCapabilities({}); });
     return () => { current = false; };
   }, [api, selectedStudentId]);
+
+  useEffect(() => {
+    let current = true;
+    setGrowthWeeks([]);
+    setGrowthImage(null);
+    setGrowthImageLoadError('');
+    if (!api || !selectedStudentId || !learningCapabilities.weeklyKnowledgeGrowthImage) return () => { current = false; };
+    void (async () => {
+      try {
+        const payload = await api.listKnowledgeGrowthWeeks();
+        if (!current) return;
+        const weeks = payload.weeks || [];
+        setGrowthWeeks(weeks);
+        const week = payload.currentWeek || weeks[0];
+        if (!week) {
+          setGrowthImageLoadError('家庭主机没有返回可用的本周资料统计。');
+          return;
+        }
+        const image = await api.getKnowledgeGrowthImage(week);
+        if (!current) return;
+        setGrowthImage(image);
+      } catch (error) {
+        if (!current) return;
+        setGrowthImageLoadError(`本周资料统计暂不可用：${(error as Error).message}`);
+      }
+    })();
+    return () => { current = false; };
+  }, [api, selectedStudentId, learningCapabilities.weeklyKnowledgeGrowthImage]);
+
+  useEffect(() => {
+    if (!api?.getAgentBridge || !selectedStudentId) { setAgentBridge({ enabled: false, port: 0 }); return; }
+    void api.getAgentBridge().then(setAgentBridge).catch(() => setAgentBridge({ enabled: false, port: 0 }));
+  }, [api, selectedStudentId, config?.terminalMode]);
+
+  useEffect(() => {
+    if (!api?.checkUpdate) return;
+    void api.checkUpdate().then(async update => {
+      if (!update.available) return;
+      const accepted = window.confirm(`发现学生端新版本 ${update.versionName}\n\n${update.notes || ''}\n\n是否现在下载更新？`);
+      if (!accepted) return;
+      setMessage('正在下载并校验更新…');
+      const result = await api.downloadUpdate(update as unknown as Record<string, unknown>);
+      setMessage(`更新文件已校验并打开：${result.path}`);
+    }).catch(() => { /* 启动更新检查失败不阻止使用 */ });
+  }, [api]);
+
+  const openCollaboration = async () => {
+    if (!api) return;
+    setActiveWorkspace('collaboration'); setLearningBusy(true); setProjectReport(null);
+    try {
+      const [statusResult, growthResult] = await Promise.allSettled([api.getLearningStatus(), api.listKnowledgeGrowthWeeks()]);
+      if (statusResult.status === 'fulfilled') setLearningStatusEntries(statusResult.value.entries || []);
+      else setMessage(`学习状态暂不可用：${statusResult.reason instanceof Error ? statusResult.reason.message : String(statusResult.reason)}`);
+      if (growthResult.status === 'fulfilled') {
+        setGrowthWeeks(growthResult.value.weeks || []);
+        setGrowthImageLoadError('');
+      } else {
+        setGrowthImageLoadError(`本周资料统计暂不可用：${growthResult.reason instanceof Error ? growthResult.reason.message : String(growthResult.reason)}`);
+      }
+      const linked = projects.filter(project => project.studentIds?.includes(selectedStudentId));
+      setCollaborationProjectId(current => linked.some(project => project.id === current) ? current : linked[0]?.id || '');
+    } finally { setLearningBusy(false); }
+  };
+
+  const saveLearningStatus = async () => {
+    if (!api) return; setLearningBusy(true);
+    try {
+      const fingerprint = JSON.stringify({ selectedStudentId, ...learningStatusForm });
+      const submissionId = durableSubmissionId('terminal-learning-status-submission', fingerprint, 'learning-status');
+      await api.submitLearningStatus({ ...learningStatusForm, submissionId });
+      clearDurableSubmission('terminal-learning-status-submission');
+      const result = await api.getLearningStatus(); setLearningStatusEntries(result.entries || []);
+      setMessage('学习状态已提交。');
+    } catch (error) { setMessage(`学习状态提交失败：${(error as Error).message}`); }
+    finally { setLearningBusy(false); }
+  };
+
+  const openProjectReport = async () => {
+    if (!api || !collaborationProjectId) return; setLearningBusy(true);
+    try {
+      const report = await api.getProjectComprehensiveReport(collaborationProjectId);
+      setProjectReport(report);
+      setDocumentTitle(report.title || '项目综合报告');
+      setDocumentContent(report.content || '主机尚未生成该项目综合报告。');
+      setReaderDialogOpen(true);
+    }
+    catch (error) { setMessage(`项目综合报告读取失败：${(error as Error).message}`); }
+    finally { setLearningBusy(false); }
+  };
+
+  const copyOpenDocument = async () => {
+    if (!documentContent) return;
+    try { await navigator.clipboard.writeText(documentContent); setMessage('正文已复制。'); }
+    catch { setMessage('复制失败，请在正文中选择需要的内容。'); }
+  };
+
+  const openGrowthImage = async (week: string) => {
+    if (!api) return; setLearningBusy(true);
+    try { setGrowthImage(await api.getKnowledgeGrowthImage(week)); setGrowthImageLoadError(''); }
+    catch (error) { setGrowthImageLoadError(`本周资料统计暂不可用：${(error as Error).message}`); }
+    finally { setLearningBusy(false); }
+  };
+
+  const importConversationFile = async () => {
+    if (!api) return;
+    try { const result = await api.chooseConversationFile(); if (!result.cancelled) setConversationText(result.text || ''); }
+    catch (error) { setMessage(`导入对话文件失败：${(error as Error).message}`); }
+  };
+
+  const previewConversationUrl = async () => {
+    if (!api || !conversationLink.trim()) return; setLearningBusy(true);
+    try { const result = await api.previewConversationLink(conversationLink.trim()); setConversationText(result.content); setMessage('链接正文已读取，请确认后提交。'); }
+    catch (error) { setMessage(`链接解析失败：${(error as Error).message}`); }
+    finally { setLearningBusy(false); }
+  };
+
+  const acceptNextConversationImport = async () => {
+    if (!api?.takeConversationImport || !selectedStudentId) return;
+    if (conversationImportActiveRef.current || conversationText.trim() || conversationLink.trim()) return;
+    const draft = await api.takeConversationImport();
+    if (!draft) return;
+    conversationImportActiveRef.current = true;
+    setActivePrimaryModule('collection');
+    setActiveWorkspace('conversation');
+    if (draft.link) setConversationLink(draft.link);
+    if (draft.text) setConversationText(draft.text);
+    setMessage(`已恢复${draft.name ? `“${draft.name}”` : '外部分享'}草稿，请预览并确认后提交。`);
+  };
+
+  useEffect(() => {
+    if (!api?.takeConversationImport || !selectedStudentId) return;
+    void acceptNextConversationImport();
+    if (!api.onConversationImport) return;
+    return api.onConversationImport(() => { void acceptNextConversationImport(); });
+  }, [api, selectedStudentId, conversationText, conversationLink]);
+
+  useEffect(() => {
+    if (!conversationText.trim() && !conversationLink.trim()) conversationImportActiveRef.current = false;
+  }, [conversationText, conversationLink]);
+
+  const submitConversation = async () => {
+    if (!api || !selectedTarget || !conversationText.trim()) return; setLearningBusy(true);
+    try {
+      const fingerprint = JSON.stringify({ text: conversationText.trim(), target: selectedTarget });
+      const submissionId = durableSubmissionId('terminal-conversation-submission', fingerprint, 'windows-conversation');
+      const result = await api.submitConversation({ text: conversationText.trim(), title: '导入对话', target: selectedTarget, submissionId });
+      clearDurableSubmission('terminal-conversation-submission');
+      conversationImportActiveRef.current = false;
+      setConversationText(''); setConversationLink(''); setMessage(result.message || '对话已提交主机。');
+    } catch (error) { setMessage(`对话提交结果未确认：${(error as Error).message}`); }
+    finally { setLearningBusy(false); }
+  };
+
+  const releaseMediaCapture = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
+    mediaRecorderRef.current = null;
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
+    if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl);
+    setMediaCaptureUrl('');
+    setMediaCaptureBlob(null);
+    setMediaRecording('idle');
+    setMediaCaptureReady(false);
+  };
+
+  const closeMediaCapture = () => {
+    mediaCaptureRequestRef.current += 1;
+    releaseMediaCapture();
+    setMediaCaptureError('');
+    setMediaCaptureMode(null);
+  };
+
+  const openMediaCapture = async (mode: 'photo' | 'audio') => {
+    const requestId = mediaCaptureRequestRef.current + 1;
+    mediaCaptureRequestRef.current = requestId;
+    releaseMediaCapture();
+    setActivePrimaryModule('collection');
+    setMediaCaptureMode(mode);
+    setMediaCaptureError('');
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前运行环境不支持摄像头或麦克风授权。');
+      const stream = await navigator.mediaDevices.getUserMedia(mode === 'photo' ? { video: true, audio: false } : { video: false, audio: true });
+      if (mediaCaptureRequestRef.current !== requestId) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      mediaStreamRef.current = stream;
+      setMediaCaptureReady(true);
+      window.requestAnimationFrame(() => {
+        if (mediaCaptureRequestRef.current === requestId && mediaVideoRef.current) mediaVideoRef.current.srcObject = stream;
+      });
+    } catch (error) {
+      if (mediaCaptureRequestRef.current !== requestId) return;
+      const detail = `${mode === 'photo' ? '摄像头' : '麦克风'}不可用：${(error as Error).message}`;
+      // Keep the dialog open: the student can read the reason, retry after
+      // granting Windows permission, or cancel deliberately instead of seeing
+      // a flash-close with no recovery path.
+      setMediaCaptureReady(false);
+      setMediaCaptureError(detail);
+      setMessage(detail);
+    }
+  };
+
+  const takePhoto = async () => {
+    const video = mediaVideoRef.current;
+    if (!video?.videoWidth || !video.videoHeight) { setMessage('摄像头画面尚未准备好。'); return; }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d')?.drawImage(video, 0, 0);
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', .9));
+    if (!blob) { setMessage('拍照失败，请重试。'); return; }
+    if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl);
+    const url = URL.createObjectURL(blob);
+    setMediaCaptureBlob(blob); setMediaCaptureUrl(url);
+  };
+
+  const startAudioRecording = () => {
+    const stream = mediaStreamRef.current;
+    if (!stream) { setMessage('麦克风尚未准备好。'); return; }
+    const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find(type => MediaRecorder.isTypeSupported(type)) || '';
+    const recorder = new MediaRecorder(stream, preferred ? { mimeType: preferred } : undefined);
+    mediaChunksRef.current = [];
+    recorder.ondataavailable = event => { if (event.data.size) mediaChunksRef.current.push(event.data); };
+    const requestId = mediaCaptureRequestRef.current;
+    recorder.onstop = () => {
+      if (mediaCaptureRequestRef.current !== requestId) return;
+      const blob = new Blob(mediaChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+      if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl);
+      const url = URL.createObjectURL(blob);
+      setMediaCaptureBlob(blob); setMediaCaptureUrl(url); setMediaRecording('idle');
+    };
+    recorder.start(1000); mediaRecorderRef.current = recorder; setMediaRecording('recording');
+  };
+
+  const toggleAudioPause = () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    if (recorder.state === 'recording') { recorder.pause(); setMediaRecording('paused'); }
+    else if (recorder.state === 'paused') { recorder.resume(); setMediaRecording('recording'); }
+  };
+
+  const stopAudioRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+  };
+
+  const submitCapturedMedia = async () => {
+    if (!api || !selectedTarget || !mediaCaptureMode || !mediaCaptureBlob) return;
+    setBusy(true);
+    try {
+      const reader = new FileReader();
+      const dataUrl = await new Promise<string>((resolve, reject) => { reader.onload = () => resolve(String(reader.result || '')); reader.onerror = () => reject(reader.error); reader.readAsDataURL(mediaCaptureBlob); });
+      const result = await api.uploadCapturedMedia({ kind: mediaCaptureMode, mimeType: mediaCaptureBlob.type, base64: dataUrl, sourceEventId: `${mediaCaptureMode}-${crypto.randomUUID()}` }, selectedTarget);
+      setMessage(result.pending ? '资料已安全保存，恢复连接后会继续发送。' : result.success ? '主机已接收采集资料。' : `采集资料发送失败${result.localRecoveryPath ? '，原件仍保留在本机' : ''}。`);
+      closeMediaCapture();
+      await refresh();
+    } catch (error) { setMessage(`采集资料提交失败：${(error as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
+  const openLearningTrajectory = async () => {
+    if (!api) return;
+    setActivePrimaryModule('archive'); setActiveWorkspace('trajectory'); setLearningBusy(true);
+    try {
+      const result = await api.getLearningTrajectory();
+      setLearningTrajectory({ ...result, states: result.states || [] });
+    } catch (error) { setLearningTrajectory(null); setMessage(`知识点跟踪读取失败：${(error as Error).message}`); }
+    finally { setLearningBusy(false); }
+  };
+
+  const exportGrowthImage = async (action: 'save' | 'copy' | 'share') => {
+    if (!api || !growthImage) return;
+    try {
+      const result = await api.exportKnowledgeGrowthImage(growthImage, action);
+      if (!result.cancelled) setMessage(result.message || '知识增长图已处理。');
+    } catch (error) { setMessage(`知识增长图导出失败：${(error as Error).message}`); }
+  };
+
+  const exportMaterialStatsImage = async () => {
+    if (!api) return;
+    if (!growthImage) {
+      setMessage(growthImageLoadError || '本周资料统计正在从家庭主机读取，请稍后重试。');
+      return;
+    }
+    try {
+      const result = await api.exportKnowledgeGrowthImage(growthImage, 'share');
+      if (!result.cancelled) setMessage(result.message || '本周资料上传统计图已导出并定位，可选择应用分享。');
+    } catch (error) { setMessage(`资料统计图导出失败：${(error as Error).message}`); }
+  };
+
+  const openCompanionPanel = async (mode: 'learning' | 'project-tutor') => {
+    if (!api) return;
+    try {
+      const result = await api.showCompanionPanel(mode);
+      if (!result.ok) setMessage(result.message || '导师工具暂不可用。');
+    } catch (error) { setMessage(`打开${mode === 'learning' ? '学习导师' : '项目导师'}失败：${(error as Error).message}`); }
+  };
+
+  useEffect(() => {
+    if (!api?.onCompanionNavigate) return;
+    return api.onCompanionNavigate(({ action }) => {
+      if (action === 'collection') selectPrimaryModule('collection');
+      else if (action === 'upload') { setActivePrimaryModule('collection'); void uploadFiles(); }
+      else if (action === 'photo') void openMediaCapture('photo');
+      else if (action === 'audio') void openMediaCapture('audio');
+      else if (action === 'screenshot') { setActivePrimaryModule('collection'); openCapturePanel(); }
+      else if (action === 'queue' || action === 'agents') selectPrimaryModule('connection');
+      else if (action === 'learning') selectPrimaryModule('learning');
+    });
+  }, [api, selectedTargetKey, mediaCaptureUrl]);
+
+  useEffect(() => () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') mediaRecorderRef.current.stop();
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, []);
+
+  useEffect(() => {
+    if (!courseBrowser.open || !api?.setCourseViewTop) return;
+    const anchor = courseBrowserAnchorRef.current;
+    if (!anchor) return;
+    let frame = 0;
+    const syncCourseViewport = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const top = Math.ceil(anchor.getBoundingClientRect().bottom + 8);
+        void api.setCourseViewTop(top);
+      });
+    };
+    syncCourseViewport();
+    const observer = new ResizeObserver(syncCourseViewport);
+    observer.observe(document.documentElement);
+    observer.observe(anchor);
+    window.addEventListener('resize', syncCourseViewport);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', syncCourseViewport);
+    };
+  }, [api, courseBrowser.open, courseBrowser.courseId, courseLearningFullscreen, captureSession?.status, captureSources.length]);
 
   const openPractice = async () => {
     if (!api || !selectedStudentId) return;
@@ -442,7 +891,7 @@ function TerminalApp() {
   };
   const openPlanning = async (kind: PlanningKind = 'guidance') => {
     if (!api || !selectedStudentId) return;
-    setActiveWorkspace('planning'); setPlanningKind(kind); setPlanningView(null); setLearningBusy(true);
+    setActivePrimaryModule('archive'); setActiveWorkspace('planning'); setPlanningKind(kind); setPlanningView(null); setLearningBusy(true);
     try {
       const result = await api.getPlanningView(kind);
       if (result.studentId === selectedStudentId) setPlanningView(result);
@@ -515,6 +964,20 @@ function TerminalApp() {
   const newSinceLastDigestCount = progress.newSinceLastDigestCount ?? selectedStudent?.newSinceLastDigestCount ?? 0;
   const queuedUploadCount = (uploadQueue.counts.queued || 0) + (uploadQueue.counts.uploading || 0);
   const unknownUploadCount = uploadQueue.counts.receipt_unknown || 0;
+  const dashboardWeek = growthWeeks[0] || currentIsoWeekKey();
+  const materialStats = useMemo(() => [
+    { label: '资料积累', value: recentUploadCount7, note: '近 7 日新增资料' },
+    { label: '学习投入', value: activeDays30, note: '近 30 日有记录天数' },
+    { label: '知识证据', value: knowledgeAssetCount, note: '已登记知识资产' },
+    { label: '资料整理', value: selectedStudent?.processedDigestCount || 0, note: '已完成处理资料' },
+    { label: '项目参与', value: knowledgeProjects.length, note: '当前关联项目' },
+  ], [recentUploadCount7, activeDays30, knowledgeAssetCount, selectedStudent?.processedDigestCount, knowledgeProjects.length]);
+  const todayPriority = useMemo(() => {
+    if (newSinceLastDigestCount > 0) return { title: `核对并补充 ${newSinceLastDigestCount} 份待整理资料`, detail: '资料已进入当前学生空间，补充归属或来源后可继续整理。', action: 'collection' as const };
+    if (practiceDashboard?.current) return { title: `完成“${practiceDashboard.current.content.title || '今日学习卡片'}”`, detail: '提交后由主机依据过程与证据进行反馈。', action: 'learning' as const };
+    if (courses.length > 0) return { title: `继续学习“${courses[0].name}”`, detail: '打开课程不会自动认定完成；需要时可主动采集学习资料。', action: 'learning' as const };
+    return { title: '补充一次今日学习状态', detail: '记录当前内容、困难和下一步，帮助主机形成后续建议。', action: 'learning' as const };
+  }, [newSinceLastDigestCount, practiceDashboard?.current, courses]);
   const uploadGenerationChanged = Boolean(uploadQueue.hostScope?.hostId
     && uploadQueue.hostScope.hostId === uploadQueue.observedHostScope?.hostId
     && uploadQueue.hostScope.dataGeneration !== uploadQueue.observedHostScope?.dataGeneration);
@@ -542,7 +1005,7 @@ function TerminalApp() {
     try {
       const payload = await api.listCourses();
       setCourses(payload.courses || []);
-      setCourseCatalogVersion(payload.catalogVersion || '');
+      setCourseCatalogVersion(payload.manifestRevision || '');
       setCourseDisclaimer(payload.disclaimer || '');
     } catch (error) {
       setCourses([]);
@@ -550,6 +1013,12 @@ function TerminalApp() {
       setMessage(`精选课程暂不可用：${(error as Error).message}`);
     }
   };
+
+  useEffect(() => {
+    if (!api || !selectedStudentId) return undefined;
+    const timer = window.setInterval(() => { void loadCourses(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [api, selectedStudentId]);
 
   const refresh = async () => {
     if (!api) return;
@@ -582,8 +1051,10 @@ function TerminalApp() {
     api.onCaptureChanged(setCaptureSession);
     api.onCourseBrowserChanged((payload) => {
       setCourseBrowser({ open: payload.open, courseId: payload.courseId, name: payload.name });
+      if (!payload.open) setCourseLearningFullscreen(false);
       if (payload.blocked) setMessage(payload.message || '已阻止课程页面跳转到非白名单域名。');
     });
+    const removeCourseFullscreenListener = api.onCourseLearningFullscreen((payload) => setCourseLearningFullscreen(Boolean(payload.enabled)));
     const removeAgentCaptureListener = api.onAgentCaptureChanged(setAgentCapture);
     const removeUploadQueueListener = api.onUploadQueueChanged(setUploadQueue);
     const removePairingListener = api.onPairingChanged((payload) => {
@@ -596,12 +1067,14 @@ function TerminalApp() {
       removeAgentCaptureListener();
       removeUploadQueueListener();
       removePairingListener();
+      removeCourseFullscreenListener();
     };
   }, [api]);
 
   useEffect(() => {
     setCourses([]);
     setCourseBrowser({ open: false });
+    setCourseLearningFullscreen(false);
     setActiveWorkspace(null);
     setSelectedKnowledgeProjectId('');
     setProjectKnowledgeFiles([]);
@@ -843,6 +1316,23 @@ function TerminalApp() {
     }
   };
 
+  const toggleAgentBridge = async () => {
+    if (!api || config?.terminalMode !== 'personal') return;
+    setAgentBridgeBusy(true);
+    try {
+      const result = await api.setAgentBridge(!agentBridge.enabled);
+      setAgentBridge(result);
+      setMessage(result.enabled ? '当前学生的外部 Agent 只读查询已启用。' : '外部 Agent 查询授权已关闭。');
+    } catch (error) { setMessage(`外部 Agent 查询设置失败：${(error as Error).message}`); }
+    finally { setAgentBridgeBusy(false); }
+  };
+
+  const copyAgentBridgeConfig = async () => {
+    if (!api) return;
+    try { const result = await api.copyAgentBridgeConfig(); setMessage(result.message || 'MCP 配置已复制。'); }
+    catch (error) { setMessage(`复制 Agent 连接配置失败：${(error as Error).message}`); }
+  };
+
   const uploadFiles = async () => {
     if (!api || !selectedTarget) return;
     setBusy(true);
@@ -959,6 +1449,7 @@ function TerminalApp() {
       setDocumentTitle('我的成长模型');
       setDocumentContent(formatGrowthSummary(payload));
       setDocumentMode('growth');
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取成长模型失败：${(error as Error).message}`);
     } finally {
@@ -1013,6 +1504,7 @@ function TerminalApp() {
       const payload = await api.readLearningReport(report.id);
       setDocumentTitle(payload.title || report.title);
       setDocumentContent(payload.content || '当前报告暂无正文。');
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取学情报告失败：${(error as Error).message}`);
     } finally {
@@ -1027,6 +1519,7 @@ function TerminalApp() {
       const payload = await api.readArchiveFile(file.path);
       setDocumentTitle(file.name || file.path.split('/').pop() || '教育档案');
       setDocumentContent(payload.content || '当前档案暂无正文。');
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取教育档案失败：${(error as Error).message}`);
     } finally {
@@ -1042,6 +1535,7 @@ function TerminalApp() {
       const project = knowledgeProjects.find((item) => item.id === selectedKnowledgeProjectId);
       setDocumentTitle(`${project?.name || payload.projectName || '关联项目'} · ${file.name || file.path.split('/').pop() || '项目知识'}`);
       setDocumentContent(payload.content || '当前项目知识暂无正文。');
+      setReaderDialogOpen(false);
     } catch (error) {
       setMessage(`读取项目知识失败：${(error as Error).message}`);
     } finally {
@@ -1056,6 +1550,7 @@ function TerminalApp() {
       const result = await api.openCourse(course.courseId);
       if (!result.ok) throw new Error(result.message || '课程暂不可用。');
       setCourseBrowser({ open: true, courseId: course.courseId, name: course.name });
+      setCourseLearningFullscreen(false);
       setMessage(`已在隔离浏览器中打开 ${course.name}。课程内容由 ${course.provider} 提供。`);
     } catch (error) {
       setMessage(`打开课程失败：${(error as Error).message}`);
@@ -1068,6 +1563,21 @@ function TerminalApp() {
     if (!api) return;
     await api.closeCourse();
     setCourseBrowser({ open: false });
+    setCourseLearningFullscreen(false);
+  };
+
+  const toggleCourseLearningFullscreen = async (enabled: boolean) => {
+    if (!api) return;
+    const previous = courseLearningFullscreen;
+    setCourseLearningFullscreen(enabled);
+    try {
+      const result = await api.setCourseLearningFullscreen(enabled);
+      if (!result.ok) throw new Error(result.message || '无法切换全屏学习模式。');
+      setCourseLearningFullscreen(Boolean(result.enabled));
+    } catch (error) {
+      setCourseLearningFullscreen(previous);
+      setMessage(`切换全屏学习模式失败：${(error as Error).message}`);
+    }
   };
 
   const toggleCapture = async () => {
@@ -1136,6 +1646,17 @@ function TerminalApp() {
     }
   };
 
+  const takeQuickScreenshot = async () => {
+    if (!api || !selectedTarget || !captureSourceId) return;
+    setBusy(true);
+    try {
+      const result = await api.quickScreenshot(captureSourceId, selectedTarget);
+      setMessage(result.pending ? '截屏已安全保存，恢复连接后会继续发送。' : result.success ? '主机已接收快速截屏。' : '快速截屏发送失败，请重试。');
+      if (result.success) await refresh();
+    } catch (error) { setMessage(`快速截屏失败：${(error as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
   const revealWorkspace = (workspace: Exclude<StudentWorkspace, null>) => {
     setActiveWorkspace(workspace);
     window.requestAnimationFrame(() => {
@@ -1143,12 +1664,34 @@ function TerminalApp() {
     });
   };
 
+  const selectPrimaryModule = (module: StudentPrimaryView) => {
+    setActivePrimaryModule(module);
+    setActiveWorkspace(null);
+    setCapturePanelOpen(false);
+    setSettingsOpen(module === 'connection');
+    if (module === 'connection') window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  };
+
   const openDocumentWorkspace = (mode: Exclude<typeof documentMode, 'closed'>) => {
+    setActivePrimaryModule('archive');
     revealWorkspace('documents');
     if (mode === 'growth') void showGrowthSummary();
     if (mode === 'reports') void showLearningReports();
     if (mode === 'archive') void showArchiveFiles();
     if (mode === 'project-knowledge') void showProjectKnowledge();
+  };
+
+  const openProjectReportWorkspace = () => {
+    const linkedProjects = projects.filter(project => project.studentIds?.includes(selectedStudentId));
+    setCollaborationProjectId(current => linkedProjects.some(project => project.id === current) ? current : linkedProjects[0]?.id || '');
+    setActivePrimaryModule('project');
+    revealWorkspace('project-report');
+  };
+
+  const openProjectKnowledgeWorkspace = (projectId?: string) => {
+    setActivePrimaryModule('project');
+    revealWorkspace('documents');
+    void showProjectKnowledge(projectId);
   };
 
   if (!config?.connected) {
@@ -1261,17 +1804,20 @@ function TerminalApp() {
         ? `已完成 · ${captureSession.count} 张待确认`
         : '待开始 · 不会自动录屏';
     return (
-      <main className="terminal-shell terminal-course-shell">
-        <header className="terminal-topbar">
-          <div><div className="terminal-brand">精选课程</div><h1>{openedCourse?.name || courseBrowser.name}</h1></div>
-          <div className="terminal-host-state"><span className="online-dot" />{openedCourse?.provider || '第三方提供方'}<button onClick={closeCourse}>返回课程列表</button></div>
+      <main className={`terminal-shell terminal-course-shell${courseLearningFullscreen ? ' is-learning-fullscreen' : ''}`}>
+        <header className="terminal-topbar terminal-course-header" aria-label="课程操作">
+          <div className="terminal-host-state"><span className="online-dot" />{openedCourse?.provider || '第三方提供方'}<button onClick={() => void toggleCourseLearningFullscreen(true)}>全屏学习</button><button onClick={closeCourse}>返回课程列表</button></div>
+        </header>
+        <header className="terminal-course-focusbar" aria-label="全屏学习操作">
+          <strong>专注学习</strong>
+          <div><button className="terminal-secondary" onClick={() => void toggleCourseLearningFullscreen(false)}>退出全屏（Esc）</button><button onClick={closeCourse}>返回课程列表</button></div>
         </header>
         <section className="terminal-course-toolbar" aria-label="课程浏览与主动采集控制">
           <strong>{captureState}</strong>
           <select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)} disabled={captureSession?.status === 'capturing'}>
             {targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}
           </select>
-          <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'}>选择采集屏幕</button>
+          <button className="terminal-secondary" onClick={loadCaptureSources} disabled={busy || captureSession?.status === 'capturing'} title="选择采集屏幕" aria-label="选择采集屏幕">选择屏幕</button>
           <select value={captureSourceId} onChange={(event) => setCaptureSourceId(event.target.value)} disabled={captureSession?.status === 'capturing'}>
             <option value="">选择屏幕或窗口</option>
             {captureSources.map((source) => <option value={source.id} key={source.id} disabled={source.blocked || source.available === false}>{source.name}</option>)}
@@ -1282,12 +1828,12 @@ function TerminalApp() {
           <select value={captureDuration} onChange={(event) => setCaptureDuration(Number(event.target.value))} disabled={captureSession?.status === 'capturing'} aria-label="采集时长">
             {[15, 30, 45, 60, 90, 120].map((minutes) => <option value={minutes} key={minutes}>最长 {minutes} 分钟</option>)}
           </select>
-          <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget}>
+          <button className={captureSession?.status === 'capturing' ? 'terminal-danger' : 'terminal-primary'} onClick={toggleCapture} disabled={busy || !selectedTarget} title={captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}>
             {captureSession?.status === 'capturing' ? '结束采集' : '开始采集'}
           </button>
-          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length}>提前重试送达</button>
+          <button className="terminal-secondary" onClick={uploadCapture} disabled={busy || captureSession?.status !== 'completed' || captureSession.courseId !== openedCourse?.courseId || !captureSession.files?.length} title="提前重试送达" aria-label="提前重试送达">重试送达</button>
         </section>
-        <div className="terminal-course-browser-placeholder">课程网页在隔离视图中加载。非白名单跳转、下载、弹窗和权限申请会被阻止。</div>
+        <div ref={courseBrowserAnchorRef} className="terminal-course-browser-anchor" aria-hidden="true" />
         {message ? <div className="terminal-toast" role="status">{message}</div> : null}
       </main>
     );
@@ -1296,45 +1842,49 @@ function TerminalApp() {
   return (
     <main className="terminal-shell terminal-home-shell">
       <header className="terminal-topbar student-home-topbar">
-        <div className="student-brand-lockup">
+        <button className="student-brand-lockup" type="button" onClick={() => selectPrimaryModule('home')} aria-label="返回学生端首页">
           <span className="student-brand-mark" aria-hidden="true">AI</span>
           <span><strong>AI教育管家</strong><small>Windows 学生端</small></span>
-        </div>
+        </button>
         <div className="student-home-controls">
           <div className="student-identity-chip"><span aria-hidden="true"><UserRound size={19} /></span><small>正在学习</small><strong>{selectedStudent.name}</strong></div>
           <div className="student-host-chip" title={config.hostUrl}><Wifi size={16} /><span>家庭主机 · 已连接</span></div>
           <button className="student-topbar-button" onClick={refresh} disabled={busy} aria-label="刷新学生端数据"><RefreshCw size={17} />刷新</button>
-          <button className="student-topbar-button" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}><Settings size={17} />设置</button>
+          <button className="student-topbar-button" onClick={() => void api?.showCompanion()} aria-label="显示学习工具条"><MonitorUp size={17} />工具条</button>
+          <button className="student-topbar-button" onClick={() => selectPrimaryModule('connection')} aria-current={activePrimaryModule === 'connection' ? 'page' : undefined}><Settings size={17} />主机连接</button>
           <button className="student-topbar-button quiet" onClick={leaveStudent} disabled={busy || captureSession?.status === 'capturing'}><LogOut size={17} />退出</button>
         </div>
       </header>
 
-      {settingsOpen ? (
+      <div className="student-app-frame">
+        <nav className="student-primary-nav" aria-label="学生端五个模块">
+          <button className={activePrimaryModule === 'collection' ? 'active' : ''} onClick={() => selectPrimaryModule('collection')}><Upload size={21} /><span>资料搜集</span><small>上传、采集与导入</small></button>
+          <button className={activePrimaryModule === 'connection' ? 'active' : ''} onClick={() => selectPrimaryModule('connection')}><Wifi size={21} /><span>主机连接</span><small>连接与学生空间</small></button>
+          <button className={activePrimaryModule === 'archive' ? 'active' : ''} onClick={() => selectPrimaryModule('archive')}><Archive size={21} /><span>教育档案</span><small>报告、知识点与规划</small></button>
+          <button className={activePrimaryModule === 'learning' ? 'active' : ''} onClick={() => selectPrimaryModule('learning')}><BookOpen size={21} /><span>学习行动</span><small>课程、练习与状态</small></button>
+          <button className={activePrimaryModule === 'project' ? 'active' : ''} onClick={() => selectPrimaryModule('project')}><LibraryBig size={21} /><span>项目管理</span><small>资料、报告与项目导师</small></button>
+        </nav>
+        <div className="student-app-stage">
+
+      {activePrimaryModule === 'connection' ? (
         <section className="terminal-card target-card student-settings-panel">
-          <div className="card-heading"><div><h2>使用模式</h2><p>模式切换后会结束当前学生会话。</p></div></div>
+          <div className="card-heading"><div><h2>主机连接与学生空间</h2><p>当前已连接到 {config.hostUrl}。在这里管理终端模式、学生空间和远程连接支持；模式切换后会结束当前学生会话。</p></div></div>
           <div className="mode-grid">
             <button className={config.terminalMode === 'personal' ? 'mode-card active' : 'mode-card'} onClick={() => changeMode('personal')} disabled={busy}><strong>个人终端</strong><span>固定绑定当前学生，可使用自动投递。</span></button>
             <button className={config.terminalMode === 'shared' ? 'mode-card active' : 'mode-card'} onClick={() => changeMode('shared')} disabled={busy}><strong>共享终端</strong><span>退出后由下一位学生输入个人 ID。</span></button>
           </div>
-          <section className={`student-agent-capture-card${agentCapture.enabled ? ' enabled' : ''}`} aria-labelledby="agent-capture-title">
+          <section className={`student-agent-capture-card${agentBridge.enabled ? ' enabled' : ''}`} aria-labelledby="agent-bridge-title">
             <span className="student-agent-capture-icon" aria-hidden="true"><Bot size={24} /></span>
             <div>
-              <h3 id="agent-capture-title">自动会话记忆</h3>
-              <p>{config.terminalMode === 'personal'
-                ? '一次授权后，采集本机受支持 Agent 的后续会话，并只归档到当前绑定学生。已打开的 Codex 会话在 Hook 已生效时，从下一条提问开始采集；不扫描授权前历史、系统提示、密钥或任务中心上下文。'
-                : '共享终端不支持自动会话采集，避免不同学生之间混入会话。'}</p>
-              <small>{config.terminalMode === 'personal'
-                ? (agentCapture.enabled
-                    ? `${agentCapture.connectedCount}/${agentCapture.installedCount} 个已安装 Agent 已接入${agentCapture.pending ? ` · ${agentCapture.pending} 条待补交` : ''}`
-                    : (agentCapture.installedCount
-                        ? `已检测到 ${agentCapture.installedCount} 个受支持 Agent · 授权后接入`
-                        : '暂未检测到已安装的受支持 Agent'))
-                : '请切换到个人终端并完成固定绑定后使用。'}</small>
-              {agentCapture.warnings.length ? <small className="student-agent-capture-warning">{agentCapture.warnings[0]}</small> : null}
+              <h3 id="agent-bridge-title">外部 Agent 查询</h3>
+              <p>{config.terminalMode === 'personal' ? '让本机 Codex、WorkBuddy 或其他 MCP Agent 只读查询当前绑定学生的教育档案和关联项目资料。不会提供其他学生名单、主机路径或管理权限。' : '共享终端不开放长期 Agent 查询，避免切换学生后跨空间读取。'}</p>
+              <small>{agentBridge.enabled ? `本地桥接已启用 · 查询 ${agentBridge.queryCount || 0} 次${agentBridge.lastQueryAt ? ` · 最近 ${agentBridge.lastQueryAt.slice(0, 16).replace('T', ' ')}` : ''}` : '授权仅在本学生端运行期间有效'}</small>
+              {agentBridge.lastError ? <small className="student-agent-capture-warning">{agentBridge.lastError}</small> : null}
             </div>
-            <button className={agentCapture.enabled ? 'terminal-danger' : 'terminal-primary'} type="button" onClick={toggleAgentCapture} disabled={busy || agentCaptureBusy || config.terminalMode !== 'personal'}>
-              {agentCaptureBusy ? '正在设置…' : agentCapture.enabled ? '停止采集' : '授权采集'}
-            </button>
+            <div className="document-actions">
+              {agentBridge.enabled ? <button className="terminal-secondary" type="button" onClick={() => void copyAgentBridgeConfig()}>复制 MCP 配置</button> : null}
+              <button className={agentBridge.enabled ? 'terminal-danger' : 'terminal-primary'} type="button" onClick={() => void toggleAgentBridge()} disabled={agentBridgeBusy || config.terminalMode !== 'personal'}>{agentBridgeBusy ? '正在设置…' : agentBridge.enabled ? '撤销查询' : '启用只读查询'}</button>
+            </div>
           </section>
           <section className={`student-agent-capture-card${unknownUploadCount ? ' enabled' : ''}`} aria-labelledby="upload-queue-title">
             <span className="student-agent-capture-icon" aria-hidden="true"><Upload size={24} /></span>
@@ -1358,16 +1908,16 @@ function TerminalApp() {
         </section>
       ) : null}
 
-      <section className="student-home-dashboard" aria-labelledby="student-home-title">
+      {activePrimaryModule !== 'connection' ? <section className="student-home-dashboard" aria-labelledby="student-home-title">
         <div className="student-dashboard-heading">
-          <div><span className="student-dashboard-eyebrow">{selectedStudent.grade ? `${selectedStudent.grade} · ` : ''}我的学习工作台</span><h1 id="student-home-title">今天想先做什么？</h1><p>选择一个方块开始，资料只会进入当前学生本人或已关联项目。</p></div>
-          <label className="student-target-picker">
+          <div><span className="student-dashboard-eyebrow">{selectedStudent.grade ? `${selectedStudent.grade} · ` : ''}我的学习工作台</span><h1 id="student-home-title">{activePrimaryModule === 'home' ? '我的学情工作台' : activePrimaryModule === 'collection' ? '资料搜集' : activePrimaryModule === 'archive' ? '教育档案' : activePrimaryModule === 'project' ? '项目管理' : '学习行动'}</h1><p>{activePrimaryModule === 'home' ? '从一件最值得推进的事开始，再查看本周行动、项目和资料变化。' : activePrimaryModule === 'collection' ? '主动提交的资料只会进入当前学生本人或已关联项目。' : activePrimaryModule === 'archive' ? '查看报告、知识点证据与规划建议。' : activePrimaryModule === 'project' ? '查看本人关联项目的资料、综合报告，并使用项目导师推进下一步。' : '从课程、学习卡片、导师到学习状态，推进今天的学习。'}</p></div>
+          {activePrimaryModule === 'collection' ? <label className="student-target-picker">
             <span className="student-target-icon" aria-hidden="true"><Target size={20} /></span>
             <span className="student-target-copy"><small>当前资料目标</small><select value={selectedTarget ? targetKey(selectedTarget) : ''} onChange={(event) => setSelectedTargetKey(event.target.value)} aria-label="当前资料目标">{targets.map((target) => <option value={targetKey(target)} key={targetKey(target)}>{target.name}</option>)}</select></span>
-          </label>
+          </label> : null}
         </div>
 
-        {reminderVisible ? <section className="student-reminder-strip" role="status">
+        {activePrimaryModule === 'collection' && reminderVisible ? <section className="student-reminder-strip" role="status">
           <div><strong>记得提交本日学习资料</strong><span>作业、笔记、试卷或截图都可以。</span></div>
           <button className="terminal-primary" onClick={uploadFiles} disabled={busy || !selectedTarget}>现在上传</button>
           <button className="student-reminder-dismiss" onClick={dismissReminderToday}>稍后再说</button>
@@ -1380,20 +1930,76 @@ function TerminalApp() {
           <div><span>近 30 天学习</span><strong>{activeDays30} 天</strong><small>{newSinceLastDigestCount} 份待整理</small></div>
         </section>
 
-        <section className="student-action-grid" aria-label="学生端常用功能">
-          <StudentActionTile icon={Upload} title="上传学习资料" description="作业、试卷、笔记或项目文件" meta={uploadProgress?.status === 'uploading' ? `上传中 ${uploadProgress.current || 0}/${uploadProgress.total || 0}` : unknownUploadCount ? `${unknownUploadCount} 个结果待核对` : queuedUploadCount ? `${queuedUploadCount} 个已存本机待上传` : `今日已提交 ${submittedToday} 份`} tone="tone-upload" disabled={busy || !selectedTarget} onClick={uploadFiles} />
-          <StudentActionTile icon={BookOpen} title="我的课程" description="继续已分配的精选课程" meta={`${courses.length} 门可用课程`} tone="tone-course" active={activeWorkspace === 'courses'} onClick={() => revealWorkspace('courses')} />
-          <StudentActionTile icon={MonitorUp} title="屏幕资料采集" description="截取学习屏幕或应用窗口" meta={captureSession?.status === 'capturing' ? `采集中 · ${captureSession.count} 张` : captureSession?.status === 'paused' ? `已暂停 · ${captureSession.count} 张` : captureSession?.status === 'completed' ? `${captureSession.count} 张待上传` : '需要时主动开启'} tone="tone-capture" active={capturePanelOpen || captureSession?.status === 'capturing' || captureSession?.status === 'paused'} onClick={openCapturePanel} />
+        {activePrimaryModule === 'home' ? <section className="student-workbench" aria-label="学情工作台">
+          <article className="student-today-focus">
+            <div><span>今天最值得推进的一件事</span><h2>{todayPriority.title}</h2><p>{todayPriority.detail}</p></div>
+            <button className="terminal-primary" onClick={() => selectPrimaryModule(todayPriority.action)}>现在推进<ArrowRight size={17} /></button>
+          </article>
+          <div className="student-workbench-grid">
+            <article className="student-workbench-card student-weekly-actions"><div className="student-workbench-card-heading"><span>本周行动</span><small>只显示当前学生范围内的资料与任务</small></div><ol>
+              <li><strong>整理资料</strong><span>{newSinceLastDigestCount ? `${newSinceLastDigestCount} 份待整理，先核对来源和归属` : '本周暂无待整理资料'}</span><button onClick={() => selectPrimaryModule('collection')}>去查看</button></li>
+              <li><strong>保持学习节奏</strong><span>近 30 天已有 {activeDays30} 天学习记录，本周新增 {recentUploadCount7} 份资料</span><button onClick={() => selectPrimaryModule('learning')}>去学习</button></li>
+              <li><strong>回顾学习证据</strong><span>当前已登记 {knowledgeAssetCount} 项知识资产，结论仍以主机证据审核为准</span><button onClick={() => selectPrimaryModule('archive')}>看档案</button></li>
+            </ol></article>
+            <article className="student-workbench-card student-project-focus"><div className="student-workbench-card-heading"><span>重点项目</span><small>{knowledgeProjects.length ? `${knowledgeProjects.length} 个本人关联项目` : '尚未关联项目'}</small></div>{knowledgeProjects.length ? <div className="student-project-list">{knowledgeProjects.slice(0, 3).map((project) => <button key={project.id} onClick={() => openProjectKnowledgeWorkspace(project.id)}><strong>{project.name}</strong><span>{project.status === 'sealed' ? '已封存，只读查看' : '查看项目资料与下一步'}</span><ArrowRight size={16} /></button>)}</div> : <p>当主机将你关联到项目后，这里会显示项目资料、综合报告和项目导师入口。</p>}<button className="terminal-secondary student-project-manage-button" onClick={() => selectPrimaryModule('project')}>进入项目管理</button></article>
+          </div>
+          <div className="student-workbench-grid student-workbench-bottom-grid">
+            <article className="student-workbench-card student-five-dimensions"><div className="student-workbench-card-heading"><span>五维学情</span><small>统计与活动记录，不等同于掌握结论</small></div><div>{materialStats.map((item) => <div className="student-dimension-row" key={item.label}><span>{item.label}</span><strong>{item.value}</strong><small>{item.note}</small></div>)}</div></article>
+            <article className="student-workbench-card student-material-chart"><div className="student-workbench-card-heading"><span>我的资料统计图</span><small>{growthImage?.week || dashboardWeek} · 单学生本周资料上传</small></div>{growthImage ? <button className="student-material-chart-button student-weekly-growth-chart-button" onClick={() => void exportMaterialStatsImage()} title="导出并定位本周资料上传统计图，可选择应用分享"><img src={`data:${growthImage.mimeType};base64,${growthImage.imageBase64}`} alt={`${growthImage.week} 单学生本周资料上传统计图`} /><span>点击导出并分享本周资料上传统计图</span></button> : <div className="student-weekly-growth-pending"><strong>{growthImageLoadError ? '本周资料统计暂不可用' : '正在读取本周资料上传统计…'}</strong><small>{growthImageLoadError ? '请确认 Windows 主机已更新到包含资料图表运行时的候选版本后重试。' : '统计仅包含当前学生成功写入资产索引的去重资料。'}</small>{growthImageLoadError ? <button className="terminal-secondary" type="button" onClick={() => void openGrowthImage(dashboardWeek)} disabled={learningBusy}>重新读取</button> : null}</div>}</article>
+          </div>
+          <section className="student-action-grid student-home-module-grid" aria-label="学生端主要模块">
+            <StudentActionTile icon={Upload} title="资料搜集" description="文件、图片、拍照、录音与对话" meta={queuedUploadCount ? `${queuedUploadCount} 份待发送` : '立即收集'} tone="tone-upload" onClick={() => selectPrimaryModule('collection')} />
+            <StudentActionTile icon={Archive} title="教育档案" description="报告、知识点与规划" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" onClick={() => selectPrimaryModule('archive')} />
+            <StudentActionTile icon={BookOpen} title="学习行动" description="课程、学习卡片与学习导师" meta={`${courses.length} 门课程`} tone="tone-growth" onClick={() => selectPrimaryModule('learning')} />
+            <StudentActionTile icon={LibraryBig} title="项目管理" description="项目资料、报告与项目导师" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" onClick={() => selectPrimaryModule('project')} />
+          </section>
+        </section> : null}
+
+        {activePrimaryModule === 'collection' ? <section className="student-action-grid" aria-label="资料搜集功能">
+          <StudentActionTile icon={Upload} title="上传资料" description="选择作业、试卷、笔记或项目文件" meta={uploadProgress?.status === 'uploading' ? `上传中 ${uploadProgress.current || 0}/${uploadProgress.total || 0}` : unknownUploadCount ? `${unknownUploadCount} 个结果待核对` : queuedUploadCount ? `${queuedUploadCount} 个已存本机待上传` : `今日已提交 ${submittedToday} 份`} tone="tone-upload" disabled={busy || !selectedTarget} onClick={uploadFiles} />
+          <StudentActionTile icon={Camera} title="拍照" description="调用摄像头拍摄并确认上传" meta="预览后发送" tone="tone-capture" disabled={busy || !selectedTarget} onClick={() => void openMediaCapture('photo')} />
+          <StudentActionTile icon={Mic} title="录音" description="录制学习讲解或谈话资料" meta="原件保留" tone="tone-report" disabled={busy || !selectedTarget} onClick={() => void openMediaCapture('audio')} />
+          <StudentActionTile icon={MonitorUp} title="屏幕采集" description="主动截取学习屏幕或应用窗口" meta={captureSession?.status === 'capturing' ? `采集中 · ${captureSession.count} 张` : captureSession?.status === 'paused' ? `已暂停 · ${captureSession.count} 张` : captureSession?.status === 'completed' ? `${captureSession.count} 张待上传` : '需要时主动开启'} tone="tone-capture" active={capturePanelOpen || captureSession?.status === 'capturing' || captureSession?.status === 'paused'} onClick={openCapturePanel} />
           <StudentActionTile icon={FolderSync} title="自动投递" description={config.terminalMode === 'personal' ? '监测指定文件夹中的新资料' : '共享终端不持续监测文件夹'} meta={config.terminalMode === 'personal' ? (autoEnabled ? '已开启' : '未开启') : '个人终端可用'} tone="tone-auto" active={activeWorkspace === 'auto-delivery'} onClick={() => revealWorkspace('auto-delivery')} />
+          {learningCapabilities.conversationImport ? <StudentActionTile icon={Bot} title="对话采集" description="AI 对话分享导入与会话自动采集" meta={agentCapture.enabled ? '自动采集已开启' : '预览确认后写入'} tone="tone-upload" active={activeWorkspace === 'conversation'} disabled={busy} onClick={() => revealWorkspace('conversation')} /> : null}
+          {learningCapabilities.remoteInbox ? <StudentActionTile icon={FileText} title="分享收件箱" description="把主动分享的文字送入主机待整理" meta="只限当前学生" tone="tone-knowledge" active={activeWorkspace === 'inbox'} disabled={busy} onClick={() => void openLearningInbox()} /> : null}
+        </section> : null}
+
+        {activePrimaryModule === 'archive' ? <section className="student-action-grid" aria-label="教育档案功能">
           <StudentActionTile icon={TrendingUp} title="成长模型" description="查看能力与项目成长证据" meta="只读查看" tone="tone-growth" active={activeWorkspace === 'documents' && documentMode === 'growth'} disabled={busy} onClick={() => openDocumentWorkspace('growth')} />
           <StudentActionTile icon={FileText} title="学情报告" description="查看掌握情况和学习建议" meta="只读查看" tone="tone-report" active={activeWorkspace === 'documents' && documentMode === 'reports'} disabled={busy} onClick={() => openDocumentWorkspace('reports')} />
+          <StudentActionTile icon={Archive} title="学情档案" description="查找本人已公开的档案内容" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" active={activeWorkspace === 'documents' && documentMode === 'archive'} disabled={busy} onClick={() => openDocumentWorkspace('archive')} />
+          {learningCapabilities.learningTrajectory ? <StudentActionTile icon={TrendingUp} title="知识点跟踪" description="按学科查看证据和复习优先级" meta="主机只读数据" tone="tone-growth" active={activeWorkspace === 'trajectory'} disabled={busy} onClick={() => void openLearningTrajectory()} /> : null}
+          {learningCapabilities.planningRead ? <StudentActionTile icon={TrendingUp} title="规划指导" description="查看规划、选题和比赛" meta="建议与来源只读" tone="tone-knowledge" active={activeWorkspace === 'planning'} disabled={busy} onClick={() => void openPlanning()} /> : null}
+        </section> : null}
+
+        {activePrimaryModule === 'project' ? <section className="student-action-grid" aria-label="项目管理功能">
+          <StudentActionTile icon={LibraryBig} title="项目资料" description="阅读本人关联项目的资料与知识" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" active={activeWorkspace === 'documents' && documentMode === 'project-knowledge'} disabled={busy} onClick={openProjectKnowledgeWorkspace} />
+          {learningCapabilities.projectComprehensiveReport ? <StudentActionTile icon={FileText} title="项目综合报告" description="查看阶段、证据、成果与下一步建议" meta="主机生成 · 只读" tone="tone-report" active={activeWorkspace === 'project-report'} disabled={busy} onClick={openProjectReportWorkspace} /> : null}
+          <StudentActionTile icon={Bot} title="项目导师" description="使用工具条中的项目引导与资料梳理模式" meta={knowledgeProjects.length ? '仅限本人关联项目' : '需要先关联项目'} tone="tone-growth" disabled={!knowledgeProjects.length} onClick={() => void openCompanionPanel('project-tutor')} />
+        </section> : null}
+
+        {activePrimaryModule === 'learning' ? <section className="student-action-grid" aria-label="学习行动功能">
+          <StudentActionTile icon={BookOpen} title="精选课程" description="继续已分配的课程" meta={`${courses.length} 门可用课程`} tone="tone-course" active={activeWorkspace === 'courses'} onClick={() => revealWorkspace('courses')} />
           {learningCapabilities.practice ? <StudentActionTile icon={Target} title="学习卡片" description="完成主机为我准备的练习" meta="作答后明确提交" tone="tone-report" active={activeWorkspace === 'practice'} disabled={busy} onClick={() => void openPractice()} /> : null}
-          {learningCapabilities.planningRead ? <StudentActionTile icon={TrendingUp} title="规划与发现" description="查看我的规划、选题和比赛" meta="建议与来源只读" tone="tone-knowledge" active={activeWorkspace === 'planning'} disabled={busy} onClick={() => void openPlanning()} /> : null}
-          {learningCapabilities.remoteInbox ? <StudentActionTile icon={FileText} title="分享收件箱" description="把文字资料送入主机待整理" meta="只限当前学生" tone="tone-knowledge" active={activeWorkspace === 'inbox'} disabled={busy} onClick={() => void openLearningInbox()} /> : null}
-          <StudentActionTile icon={Archive} title="教育档案" description="查找本人已公开的档案内容" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" active={activeWorkspace === 'documents' && documentMode === 'archive'} disabled={busy} onClick={() => openDocumentWorkspace('archive')} />
-          <StudentActionTile icon={LibraryBig} title="查看关联项目知识" description="阅读本人关联项目的知识资料" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" active={activeWorkspace === 'documents' && documentMode === 'project-knowledge'} disabled={busy} onClick={() => openDocumentWorkspace('project-knowledge')} />
-        </section>
-      </section>
+          {learningCapabilities.learningStatus ? <StudentActionTile icon={TrendingUp} title="学习状态与每周成长" description="填写状态并查看、分享每周知识增长图" meta="一个入口" tone="tone-growth" active={activeWorkspace === 'collaboration'} disabled={busy} onClick={() => void openCollaboration()} /> : null}
+          <StudentActionTile icon={Bot} title="学习导师" description="使用工具条中的学习模式，生成受控学习提示词" meta="不直接代写或认定掌握" tone="tone-knowledge" onClick={() => void openCompanionPanel('learning')} />
+        </section> : null}
+      </section> : null}
+
+      {mediaCaptureMode ? <aside className="student-media-capture" role="dialog" aria-modal="true" aria-labelledby="student-media-capture-title">
+        <header><div><span>资料搜集</span><h2 id="student-media-capture-title">{mediaCaptureMode === 'photo' ? '拍照上传' : '录音采集'}</h2></div><button className="student-workspace-close" onClick={closeMediaCapture} aria-label="关闭采集"><X size={19} /></button></header>
+        <p>当前学生：{selectedStudent.name} · 资料目标：{selectedTarget?.name || '尚未选择'}。确认后直接进入可靠上传队列。</p>
+        {mediaCaptureError ? <div className="student-media-capture-error" role="alert"><strong>授权或设备尚未就绪</strong><p>{mediaCaptureError}</p><button className="terminal-secondary" type="button" onClick={() => void openMediaCapture(mediaCaptureMode)}>重新尝试</button></div> : null}
+        {mediaCaptureMode === 'photo' ? <>
+          {!mediaCaptureBlob ? <video ref={mediaVideoRef} autoPlay playsInline muted /> : <img src={mediaCaptureUrl} alt="拍照预览" />}
+          <div className="document-actions"><button className="terminal-secondary" onClick={() => { setMediaCaptureBlob(null); if (mediaCaptureUrl) URL.revokeObjectURL(mediaCaptureUrl); setMediaCaptureUrl(''); }}>重拍</button><button className="terminal-primary" onClick={() => void takePhoto()} disabled={!mediaCaptureReady || Boolean(mediaCaptureBlob)}>拍照</button></div>
+        </> : <>
+          {mediaCaptureUrl ? <audio controls src={mediaCaptureUrl} /> : <div className="student-audio-status">{mediaRecording === 'recording' ? '正在录音' : mediaRecording === 'paused' ? '录音已暂停' : mediaCaptureReady ? '麦克风已准备' : '正在等待麦克风授权'}</div>}
+          <div className="document-actions"><button className="terminal-primary" onClick={startAudioRecording} disabled={!mediaCaptureReady || mediaRecording !== 'idle' || Boolean(mediaCaptureBlob)}>开始录音</button><button className="terminal-secondary" onClick={toggleAudioPause} disabled={mediaRecording === 'idle'}>{mediaRecording === 'paused' ? '继续' : '暂停'}</button><button className="terminal-secondary" onClick={stopAudioRecording} disabled={mediaRecording === 'idle'}>结束并预览</button></div>
+        </>}
+        <footer><button className="terminal-secondary" onClick={closeMediaCapture}>取消</button><button className="terminal-primary" onClick={() => void submitCapturedMedia()} disabled={busy || !mediaCaptureBlob || !selectedTarget}>{busy ? '正在提交…' : '确认并上传'}</button></footer>
+      </aside> : null}
 
       {capturePanelOpen ? <aside className="student-capture-flyout" role="dialog" aria-modal="false" aria-labelledby="student-capture-flyout-title">
         <header>
@@ -1425,13 +2031,14 @@ function TerminalApp() {
         <small className="student-capture-policy-hint">{CAPTURE_MODE_COPY[captureMode].description}</small>
         <footer>
           <button className="terminal-secondary" type="button" onClick={loadCaptureSources} disabled={busy}>刷新屏幕</button>
+          <button className="terminal-secondary" type="button" onClick={() => void takeQuickScreenshot()} disabled={busy || !selectedTarget || !captureSourceId}>立即截屏并上传</button>
           <button className="terminal-primary" type="button" onClick={toggleCapture} disabled={busy || !selectedTarget || !captureSourceId}>{busy ? '正在启动…' : `开始采集（最长 ${captureDuration} 分钟）`}</button>
         </footer>
       </aside> : null}
 
       {activeWorkspace ? <section className="student-workspace-panel" ref={workspaceRef} aria-label="当前功能工作区">
         <header className="student-workspace-heading">
-          <div><span>当前功能</span><h2>{activeWorkspace === 'courses' ? '我的课程' : activeWorkspace === 'auto-delivery' ? '自动投递' : activeWorkspace === 'capture' ? '屏幕资料采集' : activeWorkspace === 'practice' ? '学习卡片' : activeWorkspace === 'planning' ? '规划与发现' : activeWorkspace === 'inbox' ? '分享收件箱' : '成长与档案'}</h2></div>
+          <div><span>当前功能</span><h2>{activeWorkspace === 'courses' ? '我的课程' : activeWorkspace === 'auto-delivery' ? '自动投递' : activeWorkspace === 'capture' ? '屏幕资料采集' : activeWorkspace === 'practice' ? '学习卡片' : activeWorkspace === 'trajectory' ? '知识点跟踪' : activeWorkspace === 'planning' ? '规划与发现' : activeWorkspace === 'inbox' ? '分享收件箱' : activeWorkspace === 'conversation' ? '对话采集' : activeWorkspace === 'collaboration' ? '学习状态与成长' : activeWorkspace === 'project-report' ? '项目综合报告' : '成长与档案'}</h2></div>
           <button className="student-workspace-close" type="button" onClick={() => setActiveWorkspace(null)} aria-label="关闭当前功能工作区"><X size={20} /></button>
         </header>
 
@@ -1501,9 +2108,23 @@ function TerminalApp() {
             <h3>{planningKind === 'guidance' ? '当前规划' : planningKind === 'topics' ? '选题建议' : '推荐比赛'} · 第 {planningView.current.version || 1} 版</h3>
             <small>核验时间：{planningView.current.verifiedAt || planningView.current.createdAt || '未记录'}</small>
             {planningKind === 'guidance' ? <><h4>规划依据与发现</h4><ul>{(planningView.current.findings || []).map((item, index) => <li key={index}>{item}</li>)}</ul><h4>近期行动</h4><ul>{(planningView.current.nearTermActions || []).map((item, index) => <li key={index}>{item}</li>)}</ul></> : null}
-            {(planningView.current.candidates || []).map(item => <section key={item.id}><h4>{item.title || item.name}</h4>{item.fitReason ? <p>{item.fitReason}</p> : null}{item.matchReasons?.length ? <p>{item.matchReasons.join('；')}</p> : null}{item.deadline ? <small>截止时间：{item.deadline}</small> : null}{item.officialUrl ? <p><a href={item.officialUrl} target="_blank" rel="noreferrer">官方来源</a></p> : null}{learningCapabilities.planningFavorites && planningKind !== 'guidance' ? <button className="terminal-secondary" disabled={learningBusy} onClick={() => void togglePlanningFavorite(item.id, !planningFavorites.some(favorite => favorite.candidateId === item.id))}>{planningFavorites.some(favorite => favorite.candidateId === item.id) ? '取消收藏' : '收藏建议'}</button> : null}</section>)}
+            {(planningView.current.candidates || []).map(item => <section key={item.id}><h4>{item.title || item.name}</h4>{item.fitReason ? <MarkdownDocument content={item.fitReason} /> : null}{item.matchReasons?.length ? <div className="student-planning-reasons">{item.matchReasons.map((reason, index) => <MarkdownDocument key={index} content={`- ${reason}`} />)}</div> : null}{item.deadline ? <small>截止时间：{item.deadline}</small> : null}{item.officialUrl ? <p><a href={item.officialUrl} target="_blank" rel="noreferrer">官方来源</a></p> : null}{learningCapabilities.planningFavorites && planningKind !== 'guidance' ? <button className="terminal-secondary" disabled={learningBusy} onClick={() => void togglePlanningFavorite(item.id, !planningFavorites.some(favorite => favorite.candidateId === item.id))}>{planningFavorites.some(favorite => favorite.candidateId === item.id) ? '取消收藏' : '收藏建议'}</button> : null}</section>)}
           </article> : null}
           {planningFavorites.length > 0 && planningKind !== 'guidance' ? <article className="terminal-card"><h3>已收藏的历史建议</h3>{planningFavorites.map(item => <section key={item.candidateId}><h4>{item.candidate.title || item.candidate.name}</h4><small>保存于 {item.savedAt}</small><button className="terminal-secondary" disabled={learningBusy} onClick={() => void togglePlanningFavorite(item.candidateId, false)}>取消收藏</button></section>)}</article> : null}
+        </div> : null}
+
+        {activeWorkspace === 'trajectory' ? <div className="student-tool-form student-trajectory">
+          <p>以下状态来自主机中已核验的练习与学习证据，只用于安排复习，不代表已经掌握或遗忘。</p>
+          {learningBusy ? <p>正在读取知识点跟踪…</p> : null}
+          {!learningBusy && learningTrajectory?.message ? <div className="terminal-empty-state">{learningTrajectory.message}</div> : null}
+          <div className="student-trajectory-grid">
+            {(learningTrajectory?.states || []).map(item => <article key={item.knowledgePoint.id}>
+              <span>{item.knowledgePoint.subject || '未分类'}</span><h3>{item.knowledgePoint.label || item.knowledgePoint.id}</h3>
+              <strong>{item.retentionNote || item.state || '证据不足'}</strong>
+              <p>证据 {item.evidenceCount || 0} 条{item.lastPracticedAt ? ` · 最近练习 ${item.lastPracticedAt.slice(0, 10)}` : ''}</p>
+              <small>复习优先级：{item.reviewPriority || '待判断'}{item.recommendedReviewAt ? ` · 建议 ${item.recommendedReviewAt.slice(0, 10)}` : ''}</small>
+            </article>)}
+          </div>
         </div> : null}
 
         {activeWorkspace === 'inbox' ? <div className="student-tool-form">
@@ -1514,13 +2135,61 @@ function TerminalApp() {
           <h3>最近接收</h3>{inboxItems.slice(0, 20).map(item => <p key={item.itemId}>{item.originalName} · {item.status} · {item.receivedAt}</p>)}
         </div> : null}
 
+        {activeWorkspace === 'conversation' ? <div className="student-tool-form student-conversation-capture">
+          <section className="student-conversation-import" aria-labelledby="conversation-import-title">
+          <h3 id="conversation-import-title">AI 对话分享导入</h3>
+          <p>支持从其他 AI 应用分享、粘贴文字、导入文本文件或解析公开 HTTPS 链接。内容先在本机预览，确认当前学生和资料目标后才提交主机。</p>
+          <div className="document-actions"><button className="terminal-secondary" onClick={() => void importConversationFile()} disabled={learningBusy}>导入 .md/.txt/.json</button></div>
+          <label><span>公开HTTPS对话链接</span><div className="folder-row"><input value={conversationLink} onChange={event => setConversationLink(event.target.value)} placeholder="https://…" /><button onClick={() => void previewConversationUrl()} disabled={learningBusy || !conversationLink.startsWith('https://')}>解析链接</button></div></label>
+          <label><span>对话正文</span><textarea value={conversationText} onChange={event => setConversationText(event.target.value)} rows={10} maxLength={60000} placeholder="粘贴或导入对话正文" /></label>
+          <p>当前学生：{selectedStudent.name} · 写入位置：{selectedTarget?.name || '请先选择资料目标'}</p>
+          <button className="terminal-primary" onClick={() => void submitConversation()} disabled={learningBusy || !selectedTarget || !conversationText.trim()}>确认并提交主机</button>
+          </section>
+          <section className={`student-agent-capture-card${agentCapture.enabled ? ' enabled' : ''}`} aria-labelledby="agent-capture-title">
+            <span className="student-agent-capture-icon" aria-hidden="true"><Bot size={24} /></span>
+            <div>
+              <h3 id="agent-capture-title">会话自动采集</h3>
+              <p>{config.terminalMode === 'personal'
+                ? '一次授权后，只采集本机受支持 Agent 的后续用户对话并归入当前绑定学生；不扫描授权前历史、系统提示、密钥或其他学生内容。'
+                : '共享终端不支持自动会话采集，避免不同学生之间混入会话。'}</p>
+              <small>{config.terminalMode === 'personal'
+                ? (agentCapture.enabled
+                    ? `${agentCapture.connectedCount}/${agentCapture.installedCount} 个已安装 Agent 已接入${agentCapture.pending ? ` · ${agentCapture.pending} 条待补交` : ''}`
+                    : (agentCapture.installedCount ? `已检测到 ${agentCapture.installedCount} 个受支持 Agent · 授权后接入` : '暂未检测到已安装的受支持 Agent'))
+                : '请切换到个人终端并完成固定绑定后使用。'}</small>
+              {agentCapture.warnings.length ? <small className="student-agent-capture-warning">{agentCapture.warnings[0]}</small> : null}
+            </div>
+            <button className={agentCapture.enabled ? 'terminal-danger' : 'terminal-primary'} type="button" onClick={toggleAgentCapture} disabled={busy || agentCaptureBusy || config.terminalMode !== 'personal'}>
+              {agentCaptureBusy ? '正在设置…' : agentCapture.enabled ? '停止采集' : '授权采集'}
+            </button>
+          </section>
+        </div> : null}
+
+        {activeWorkspace === 'project-report' ? <div className="student-tool-form student-project-report-launcher">
+          <p>报告由家庭主机根据已经登记的项目资料和学习证据生成，学生端只读展示，不在本机拼接结论。</p>
+          <label><span>选择关联项目</span><select value={collaborationProjectId} onChange={event => setCollaborationProjectId(event.target.value)}>{projects.filter(project => project.studentIds?.includes(selectedStudentId)).map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+          <button className="terminal-primary" onClick={() => void openProjectReport()} disabled={!collaborationProjectId || learningBusy}>{learningBusy ? '正在读取…' : '打开项目综合报告'}</button>
+          {!projects.some(project => project.studentIds?.includes(selectedStudentId)) ? <div className="terminal-empty-state">当前学生还没有关联项目。</div> : null}
+        </div> : null}
+
+        {activeWorkspace === 'collaboration' ? <div className="student-tool-form">
+          <p>学生本人填写学习状态。教师端代填时使用完全相同的字段，并由主机标记真实记录人。</p>
+          <label><span>今日总体状态</span><select value={learningStatusForm.overallState} onChange={event => setLearningStatusForm(value => ({ ...value, overallState: event.target.value as LearningStatusInput['overallState'] }))}><option value="smooth">顺利</option><option value="normal">一般</option><option value="difficult">遇到困难</option></select></label>
+          {([['currentContent', '当前在学内容'], ['completed', '已完成事项'], ['difficulties', '遇到的困难'], ['nextPlan', '下一步计划'], ['helpNeeded', '需要的帮助'], ['notes', '补充说明']] as const).map(([key, label]) => <label key={key}><span>{label}</span><textarea rows={2} value={learningStatusForm[key]} onChange={event => setLearningStatusForm(value => ({ ...value, [key]: event.target.value }))} /></label>)}
+          <button className="terminal-primary" onClick={() => void saveLearningStatus()} disabled={learningBusy}>提交学习状态</button>
+          <article className="terminal-card"><h3>最近学习状态</h3>{learningStatusEntries.slice(0, 5).map(entry => <p key={entry.id}><strong>{entry.recordedByRole === 'teacher' ? '教师谈话代填' : '学生自填'}</strong> · {entry.createdAt?.slice(0, 16).replace('T', ' ')}<br />{entry.currentContent || entry.notes || '已记录状态'}</p>)}{!learningStatusEntries.length ? <p>暂无记录。</p> : null}</article>
+          {learningCapabilities.projectComprehensiveReport ? <article className="terminal-card"><h3>项目综合报告</h3><div className="folder-row"><select value={collaborationProjectId} onChange={event => setCollaborationProjectId(event.target.value)}>{projects.filter(project => project.studentIds?.includes(selectedStudentId)).map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select><button onClick={() => void openProjectReport()} disabled={!collaborationProjectId || learningBusy}>查看报告</button></div>{projectReport ? <small>{projectReport.status} · {projectReport.updatedAt || '未记录更新时间'} · 已在只读弹窗打开</small> : null}</article> : null}
+          {learningCapabilities.weeklyKnowledgeGrowthImage ? <article className="terminal-card student-weekly-growth-card"><h3>每周资料增长图</h3><p>仅统计当前学生成功写入资产索引的去重资料；文件数量不代表掌握度或学习效果。</p><div className="document-actions">{growthWeeks.map(week => <button className={`terminal-secondary${growthImage?.week === week ? ' active' : ''}`} key={week} onClick={() => void openGrowthImage(week)}>{week}</button>)}</div>{growthImageLoadError ? <div className="student-weekly-growth-error" role="status">{growthImageLoadError}<small>学习状态仍可正常记录。请升级 Windows 主机候选包后再读取资料图。</small></div> : null}{growthImage ? <><img className="student-weekly-growth-image" src={`data:${growthImage.mimeType};base64,${growthImage.imageBase64}`} alt={`${growthImage.week} 单学生每周资料增长图`} /><div className="document-actions"><button className="terminal-secondary" onClick={() => void exportGrowthImage('copy')}><Copy size={16} />复制图片</button><button className="terminal-secondary" onClick={() => void exportGrowthImage('save')}><Download size={16} />导出图片</button><button className="terminal-primary" onClick={() => void exportGrowthImage('share')}>准备分享</button></div></> : null}</article> : null}
+        </div> : null}
+
         {activeWorkspace === 'documents' ? <div className="student-documents-workspace">
-          <p className="student-workspace-description">成长模型、学情报告、教育档案与项目知识只读取当前学生自己的内容，不显示其他学生或未关联项目。</p>
+          <p className="student-workspace-description">{activePrimaryModule === 'project' ? '项目资料与知识只读取当前学生本人已关联项目的内容，不显示其他学生或未关联项目。' : '成长模型、学情报告与教育档案只读取当前学生自己的内容，不显示其他学生内容。'}</p>
           <div className="document-actions">
-            <button className={documentMode === 'growth' ? 'terminal-primary' : 'terminal-secondary'} onClick={showGrowthSummary} disabled={busy}>查看成长模型</button>
-            <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>学情报告</button>
-            <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>教育档案</button>
-            <button className={documentMode === 'project-knowledge' ? 'terminal-primary' : 'terminal-secondary'} onClick={() => showProjectKnowledge()} disabled={busy}>项目资料与知识</button>
+            {activePrimaryModule === 'project' ? <button className={documentMode === 'project-knowledge' ? 'terminal-primary' : 'terminal-secondary'} onClick={() => showProjectKnowledge()} disabled={busy}>项目资料与知识</button> : <>
+              <button className={documentMode === 'growth' ? 'terminal-primary' : 'terminal-secondary'} onClick={showGrowthSummary} disabled={busy}>查看成长模型</button>
+              <button className={documentMode === 'reports' ? 'terminal-primary' : 'terminal-secondary'} onClick={showLearningReports} disabled={busy}>学情报告</button>
+              <button className={documentMode === 'archive' ? 'terminal-primary' : 'terminal-secondary'} onClick={showArchiveFiles} disabled={busy}>教育档案</button>
+            </>}
           </div>
           {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 ? <label className="project-knowledge-selector">
             <span>关联项目</span>
@@ -1543,10 +2212,20 @@ function TerminalApp() {
               {documentMode === 'project-knowledge' && knowledgeProjects.length === 0 ? <small>当前学生还没有关联学习项目。</small> : null}
               {documentMode === 'project-knowledge' && knowledgeProjects.length > 0 && projectKnowledgeFiles.length === 0 ? <small>当前项目还没有可查看的知识文件。</small> : null}
             </div>
-            <article className="document-reader"><h3>{documentTitle || '请选择一份内容查看'}</h3><MarkdownDocument content={documentContent || '正文将在这里显示。'} /></article>
+            <article className={`document-reader student-document-reader-inline${documentMode === 'growth' ? ' student-growth-reader' : ''}`}><h3>{documentTitle || '请选择一份内容查看'}</h3>{documentContent ? <><p className="student-document-reader-caption">来自家庭主机 · 只读渲染</p><div className="student-reader-scroll"><MarkdownDocument content={documentContent} /></div><div className="document-actions"><button className="terminal-secondary" type="button" onClick={() => void copyOpenDocument()}><Copy size={16} />复制正文</button><button className="terminal-secondary" type="button" onClick={() => window.print()}><Download size={16} />打印 / 保存 PDF</button></div></> : <p>选择左侧条目后，正文会在此右侧阅读区按 Markdown 格式渲染。</p>}</article>
           </div> : null}
         </div> : null}
       </section> : null}
+
+      {readerDialogOpen && documentContent ? <div className="student-reader-backdrop" role="presentation" onMouseDown={event => { if (event.currentTarget === event.target) setReaderDialogOpen(false); }}>
+        <section className="student-reader-dialog" role="dialog" aria-modal="true" aria-labelledby="student-reader-title">
+          <header><div><span>来自家庭主机 · 只读</span><h2 id="student-reader-title">{documentTitle || '教育档案'}</h2></div><button className="student-workspace-close" type="button" onClick={() => setReaderDialogOpen(false)} aria-label="关闭文档"><X size={20} /></button></header>
+          <div className="student-reader-scroll"><MarkdownDocument content={documentContent} /></div>
+          <footer><button className="terminal-secondary" type="button" onClick={() => void copyOpenDocument()}><Copy size={16} />复制正文</button><button className="terminal-secondary" type="button" onClick={() => window.print()}><Download size={16} />打印 / 保存 PDF</button><button className="terminal-primary" type="button" onClick={() => setReaderDialogOpen(false)}>关闭</button></footer>
+        </section>
+      </div> : null}
+        </div>
+      </div>
 
       {message ? <div className="terminal-toast student-home-toast" role="status">{message}</div> : null}
       <footer className="student-home-footer">学生终端 v{config.version} · 资料由 Windows 主机集中处理</footer>

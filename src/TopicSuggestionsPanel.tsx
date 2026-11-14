@@ -13,14 +13,21 @@ type Topic = {
 type TopicSet = { id: string; version: number; createdAt: string; candidates: Topic[]; notice: string };
 export function TopicSuggestionsPanel({ studentId, studentName, current, busy, message, api, onRefresh, onAdopt, onProfile }: {
   studentId: string; studentName: string; current: TopicSet | null; busy: boolean; message: string; api?: ResearchApi;
-  onRefresh: () => void; onAdopt: (topic: Topic, versionId?: string) => void; onProfile: () => void;
+  onRefresh: () => void; onAdopt: (topic: Topic, versionId?: string) => Promise<void>; onProfile: () => void;
 }) {
   const favorites = usePlanningFavorites<Topic>(studentId, 'topics', api);
   const [view, setView] = useState<'suggestions' | 'favorites'>('suggestions'), [category, setCategory] = useState('all'), [difficulty, setDifficulty] = useState('all');
   const [ignored, setIgnored] = useState<string[]>([]), [compare, setCompare] = useState<string[]>([]);
+  const [adoptingId, setAdoptingId] = useState('');
   const candidates = view === 'favorites' ? favorites.items.map(item => item.candidate) : current?.candidates || [];
   const filtered = candidates.filter(item => (view === 'favorites' || !ignored.includes(item.id)) && (category === 'all' || item.category === category) && (difficulty === 'all' || item.difficulty === difficulty));
   function changeView(next: typeof view) { setView(next); setCategory('all'); setDifficulty('all'); setCompare([]); }
+  async function adopt(topic: Topic, versionId?: string) {
+    if (adoptingId) return;
+    setAdoptingId(topic.id);
+    try { await onAdopt(topic, versionId); }
+    finally { setAdoptingId(''); }
+  }
   return <section className="panel planning-panel topic-suggestions-panel">
     <div className="panel-heading"><div><h2>选题建议</h2><p>面向 {studentName} 的科创项目与社会实践候选。事实、推断和缺失信息分别标注。</p></div>
       <div><button className="primary compact" onClick={onRefresh} disabled={busy}><RefreshCw size={16} />{busy ? '更新中…' : '手动更新'}</button><PlanningShareButton studentId={studentId} kind="topics" api={api} disabled={busy || !current} /></div></div>
@@ -39,7 +46,7 @@ export function TopicSuggestionsPanel({ studentId, studentName, current, busy, m
         <div className="topic-card-meta"><span>{suggestion.collaboration}</span><span>{suggestion.regionScope}</span><span>{suggestion.freshness.internetVerified ? '生成时已联网核验' : '生成时未联网核验'}</span></div>
         <div className="actions compact-actions"><button className={`secondary compact ${saved ? 'active' : ''}`} aria-pressed={Boolean(saved)} disabled={favorites.busy || !favorites.ready} onClick={() => void favorites.toggle(saved?.versionId || current?.id || '', suggestion.id)}><Star size={15} />{saved ? '取消收藏' : '收藏'}</button>
           {view === 'suggestions' && <button className="secondary compact" onClick={() => setIgnored(items => [...new Set([...items, suggestion.id])])}>忽略</button>}
-          <button className={`secondary compact ${compare.includes(suggestion.id) ? 'active' : ''}`} aria-pressed={compare.includes(suggestion.id)} onClick={() => setCompare(items => items.includes(suggestion.id) ? items.filter(id => id !== suggestion.id) : items.length < 3 ? [...items, suggestion.id] : items)}>比较</button><button className="primary compact" onClick={() => onAdopt(suggestion, view === 'favorites' ? saved?.versionId : current?.id)} disabled={busy}>采用</button></div>
+          <button className={`secondary compact ${compare.includes(suggestion.id) ? 'active' : ''}`} aria-pressed={compare.includes(suggestion.id)} onClick={() => setCompare(items => items.includes(suggestion.id) ? items.filter(id => id !== suggestion.id) : items.length < 3 ? [...items, suggestion.id] : items)}>比较</button><button className="primary compact" onClick={() => void adopt(suggestion, view === 'favorites' ? saved?.versionId : current?.id)} disabled={Boolean(adoptingId)}>{adoptingId === suggestion.id ? '正在采用…' : '采用'}</button></div>
       </article>;
     })}
       {!filtered.length && <div className="empty-state">{view === 'favorites' ? favorites.busy ? '正在读取收藏…' : !favorites.ready ? '收藏暂未读取成功，请点击刷新收藏重试。' : favorites.items.length ? '当前筛选下没有收藏选题，请调整筛选。' : '还没有收藏选题；请在推荐选题中点击“收藏”。' : current && !current.candidates.length ? '当前学生缺少具体兴趣、目标或项目线索；请补充档案后返回，系统会自动更新。' : '当前筛选下没有候选；可调整筛选或手动更新。'}{view === 'suggestions' && current && !current.candidates.length && <button className="secondary compact" onClick={onProfile}>查看编辑当前学生档案</button>}</div>}

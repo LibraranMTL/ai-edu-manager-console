@@ -35,6 +35,26 @@ test('student controlled digest refuses settlement when the frozen original chan
     receiptPath: path.join(root, 'receipt.json'), summaryPath: summary, output: { fullyCommitted: true } }), { code: 'SOURCE_CHANGED' });
 });
 
+test('student controlled settlement checks only the current batch instead of unrelated historical failures', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-student-current-batch-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const raw = path.join(root, 'raw'), summary = path.join(root, 'summary');
+  await fs.mkdir(raw); await fs.mkdir(path.join(root, '摘要库'));
+  await fs.writeFile(path.join(root, '摘要库', 'current.md'), '# current');
+  const source = path.join(raw, 'current.txt'); await fs.writeFile(source, 'current batch');
+  const sha1 = crypto.createHash('sha1').update(await fs.readFile(source)).digest('hex');
+  const batch = { batchId: 'current-batch', files: [{ materialId: 'student-current', path: source, relativePath: 'current.txt', sha1 }] };
+  const receipt = await finalizeStudentControlledDigest({ student: { id: 's', rootPath: root }, batch,
+    receiptPath: path.join(root, 'receipt.json'), summaryPath: summary, output: { fullyCommitted: false, remainingCount: 1 },
+    registered: [{ studentMaterialId: 'student-current', projectMaterialId: 'project-current' }],
+    registry: { materials: [
+      { materialId: 'project-current', processing: { state: 'completed' } },
+      { materialId: 'unrelated-old', processing: { state: 'failed_retryable' } },
+    ] } });
+  assert.equal(receipt.status, 'completed');
+  assert.equal(receipt.processed[0].status, 'completed');
+});
+
 test('student batch is registered once in the controlled material registry without moving its original', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-student-register-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

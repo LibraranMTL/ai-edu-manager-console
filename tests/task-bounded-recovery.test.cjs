@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const policy = require('../electron/task-recovery-policy.cjs');
 const recoveryExperience = require('../electron/task-recovery-experience.cjs');
+const taskIdentity = require('../electron/task-work-identity.cjs');
 const { createTaskRetryQueue } = require('../electron/task-retry-queue.cjs');
 const { taskTimeoutDecision, repairTaskRuntimeStore } = require('../electron/task-runtime-policy.cjs');
 const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
@@ -13,6 +14,9 @@ function load(name, context) {
   let start = source.indexOf(`function ${name}(`); assert(start >= 0);
   if (source.slice(start - 6, start) === 'async ') start -= 6;
   context.taskPowerRecovery ||= { canDispatch: () => true };
+  context.taskWorkIdentity ||= taskIdentity.taskWorkIdentity;
+  context.normalizePriorityClass ||= taskIdentity.normalizePriorityClass;
+  context.normalizeBusinessOutcome ||= taskIdentity.normalizeBusinessOutcome;
   vm.createContext(context);
   vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
   return context[name];
@@ -114,22 +118,29 @@ test('thousands of retry entries share one timer, cancellation is stale-safe', a
 
 test('dispatch persistence/read failures release capacity and never spawn an Agent', async () => {
   for (const failureAt of ['read', 'write', 'log']) {
-    let released = 0;
+    let released = 0,claimsReleased=0;
+    const currentTask = task();
     const context = { Date, crypto: require('node:crypto'), path, taskNow: () => 'now', activeAdapterTask: () => false,
       captureHeavyWorkGate: { tryAcquire: () => () => released++ }, captureTimelineResourceSnapshot: () => ({}),
       heavyTaskRetryQueue: { delete() {} }, taskExecutionDirPath: () => 'C:/synthetic',
-      readTaskStore: () => { if (failureAt === 'read') throw Error('disk failed'); return { tasks: [] }; },
+      externalTaskDispatchBarrier: () => ({claim:async()=>({ok:true,claimed:true,executionId:'synthetic-claim'})}),
+      releaseUnstartedTaskClaim:async()=>{claimsReleased++;},
+      readTaskStore: () => { if (failureAt === 'read') throw Error('disk failed'); return { tasks: [currentTask] }; },
       fs: { mkdirSync() {}, writeFileSync() { if (failureAt === 'log') throw Error('disk failed'); } },
-      transitionTaskInStore: () => ({ ok: true }), writeTaskStoreDurably: async () => { if (failureAt === 'write') throw Error('disk failed'); },
+      admitRunnableTaskToRunning: require('../electron/task-execution-admission.cjs').admitRunnableTaskToRunning,
+      transitionTaskInStore: (_store, _id, status, patch) => { Object.assign(currentTask, patch, { status }); return { ok: true, task: currentTask }; },
+      writeTaskStoreDurably: async () => { if (failureAt === 'write') throw Error('disk failed'); },
       spawnAdapterProcess() { assert.fail('must not spawn before persistence'); } };
     await assert.rejects(load('launchCommandAdapter', context)(task(), 'codex', 'fake.exe', [], 'C:/synthetic'), /disk failed/);
     assert.equal(released, 1);
+    assert.equal(claimsReleased,1);
   }
 });
 
 test('host normalization preserves recovery metadata across write and restart', () => {
   const t = task(); Object.assign(t, policy.taskRetryDecision(t, { code: '503' }, { now: 0, random: () => 0, stopConfirmed: true }));
-  const context = { TASK_PROTOCOL_VERSION: '1.2', taskNow: () => 'now', normalizeTaskStatus: x => x,
+  const context = { TASK_PROTOCOL_VERSION: '1.2', taskNow: () => '2026-10-25T00:00:00.000Z', normalizeTaskStatus: x => x,
+    TASK_TERMINAL_STATUSES: new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']),
     taskRiskForKind: () => 'low', taskStatusGroup: () => 'actionable',
     executionProvenance: recoveryExperience.executionProvenance, recoveryBudget: recoveryExperience.recoveryBudget,
     recoveryPlan: recoveryExperience.recoveryPlan };
@@ -137,6 +148,26 @@ test('host normalization preserves recovery metadata across write and restart', 
   const saved = normalize(t, t);
   assert.deepEqual(saved.retryRecovery, t.retryRecovery);
   assert.equal(policy.taskRetryEligible(JSON.parse(JSON.stringify(saved)), 60000), true);
+});
+
+test('empty candidate closure fields cannot erase an existing settlement or receipt plan', () => {
+  const current = { ...task(), status: 'waiting_result', settlementState: 'reconciling', businessOutcome: 'awaiting_receipt',
+    executor: 'qclaw', adapterId: 'qclaw', executionMode: 'inbox', recoveryState: 'unknown' };
+  current.recoveryBudget = recoveryExperience.recoveryBudget(current, '2026-10-25T00:00:00.000Z');
+  current.recoveryBudget.receiptQueries = 2;
+  current.recoveryPlan = recoveryExperience.recoveryPlan(current, '2026-10-25T00:00:00.000Z');
+  const context = { TASK_PROTOCOL_VERSION: '1.2', taskNow: () => '2026-10-25T00:00:00.000Z', normalizeTaskStatus: x => x,
+    TASK_TERMINAL_STATUSES: new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']),
+    taskRiskForKind: () => 'low', taskStatusGroup: () => 'running',
+    executionProvenance: recoveryExperience.executionProvenance, recoveryBudget: recoveryExperience.recoveryBudget,
+    recoveryPlan: recoveryExperience.recoveryPlan };
+  const normalize = load('normalizeTaskEnvelope', context);
+  const saved = normalize({ ...current, settlementState: '', businessOutcome: '', recoveryPlan: undefined,
+    recoveryBudget: undefined }, current);
+  assert.equal(saved.settlementState, 'reconciling');
+  assert.equal(saved.businessOutcome, 'awaiting_receipt');
+  assert.equal(saved.recoveryBudget.receiptQueries, 2);
+  assert.equal(saved.recoveryPlan.owner, 'system');
 });
 
 test('a fully validated same-execution result releases unknown scope, not unvalidated output', () => {
@@ -167,4 +198,18 @@ test('read model distinguishes a resumable wait from a historical unscheduled fa
   assert.equal(taskPresentation(t).phaseLabel, '稍后继续');
   assert.equal(taskPresentation(t).statusGroup, 'scheduled');
   assert.equal(taskPresentation({ ...t, retryRecovery: null }).phaseLabel, '需要处理');
+});
+
+test('read model keeps no-work in history and submitted batches in automatic reconciliation', () => {
+  const { taskPresentation, queryTaskSnapshot } = require('../electron/task-read-model.cjs');
+  const noWork = taskPresentation({ ...task(), status: 'succeeded', businessOutcome: 'no_work', settlementState: 'settled' });
+  assert.equal(noWork.userGroup, 'history'); assert.equal(noWork.phaseLabel, '无需处理');
+  const receipt = taskPresentation({ ...task(), status: 'waiting_result', executionMode: 'automatic',
+    automaticExecution: true, businessOutcome: 'awaiting_receipt', settlementState: 'reconciling' });
+  assert.equal(receipt.userGroup, 'automatic'); assert.equal(receipt.requiresUserAction, false);
+  assert.equal(receipt.phaseLabel, '正在核对已提交批次');
+  const hidden = queryTaskSnapshot({ protocolVersion: '1.2', updatedAt: '', history: [], tasks: [{
+    ...task(), status: 'archived', businessOutcome: 'automation_disabled', settlementState: 'settled',
+  }] });
+  assert.equal(hidden.summary.total, 0); assert.equal(hidden.tasks.length, 0);
 });

@@ -1,10 +1,10 @@
 <resources>
     <string name="app_name">AI教育管家</string>
-    <string name="section_home">首页</string>
+    <string name="section_home">学情工作台</string>
     <string name="section_archives">管理学生档案</string>
     <string name="section_materials">收集整理</string>
     <string name="section_learning">学习行动</string>
-    <string name="section_reports">学情报告</string>
+    <string name="section_reports">教育档案</string>
     <string name="section_projects">项目成果</string>
     <string name="section_settings">系统设置</string>
     <string name="section_picker_title">学习流程</string>

@@ -392,3 +392,37 @@ test('single source enrollment code binds a real student and cannot be reused', 
   assert.equal((await call('GET', '/v1/students', redeemed.body.deviceToken)).body.students[0].id, student.id);
   assert.equal((await call('POST', '/v1/source-enrollments/redeem', '', { enrollmentCode: issued.body.enrollmentCode })).status, 404);
 }));
+
+test('source upload authorization limits fields, purpose and expiry across legacy and v2 writes', async () => fixture(async ({ call, advance }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '授权范围学生' })).body;
+  const issued = await call('POST', '/v1/source-enrollments', ADMIN, { cloudStudentId: student.id });
+  const source = (await call('POST', '/v1/source-enrollments/redeem', '', {
+    enrollmentCode: issued.body.enrollmentCode, contractVersion: 2,
+    profileFields: ['displayName'], materialCategories: ['learning_report'],
+  })).body;
+  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
+  const expiresAt = Date.parse('2026-09-25T00:00:00Z') + 7 * 24 * 60 * 60 * 1000;
+  const scoped = await call('POST', '/v2/source-upload-scope', source.deviceToken, {
+    cloudStudentId: student.id, profileFields: ['displayName', 'grade'],
+    materialCategories: ['learning_report', 'topic_suggestion'],
+    authorizationPurpose: 'expert_interpretation', authorizationExpiresAt: expiresAt,
+  });
+  assert.equal(scoped.status, 200);
+  assert.deepEqual(scoped.body.profileFields, ['displayName', 'grade']);
+  assert.equal(scoped.body.authorizationPurpose, 'expert_interpretation');
+  assert.equal(scoped.body.authorizationExpiresAt, expiresAt);
+  const grants = (await call('GET', `/v2/students/${student.id}/grants`, ADMIN)).body.grants;
+  assert.ok(grants.filter(grant => grant.scope.endsWith('.write')).every(grant =>
+    grant.purpose === 'expert_interpretation' && grant.expiresAt === expiresAt));
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
+  advance(7 * 24 * 60 * 60 * 1000 + 1);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
+  const renewed = await call('POST', '/v2/source-upload-scope', source.deviceToken, {
+    cloudStudentId: student.id, profileFields: ['displayName'], materialCategories: ['learning_report'],
+    authorizationPurpose: 'document_sync', authorizationExpiresAt: expiresAt + 30 * 24 * 60 * 60 * 1000,
+  });
+  assert.equal(renewed.status, 200);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
+}));

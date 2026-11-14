@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -28,6 +29,16 @@ function withTempRoot(run) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-student-agent-lifecycle-'));
   return Promise.resolve(run(tempRoot)).finally(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 }
+
+test('native lifecycle hook compilation is byte-for-byte reproducible', { skip: process.platform !== 'win32' }, async () => withTempRoot(async (tempRoot) => {
+  const sourcePath = path.join(root, 'electron', 'agent-lifecycle-hook.cs');
+  const firstPath = path.join(tempRoot, 'first', 'agent-lifecycle-hook.exe');
+  const secondPath = path.join(tempRoot, 'second', 'agent-lifecycle-hook.exe');
+  compileLifecycleHook(sourcePath, firstPath);
+  compileLifecycleHook(sourcePath, secondPath);
+  const sha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  assert.equal(sha256(secondPath), sha256(firstPath));
+}));
 
 test('native Codex hook identity follows source instead of nondeterministic compiler bytes', async () => withTempRoot(async (tempRoot) => {
   const hookPath = path.join(tempRoot, 'agent-lifecycle-hook.ps1');
@@ -291,7 +302,7 @@ test('S1 host, terminal UI and package contract enforce personal Windows student
   assert.match(terminal, /terminal:get-agent-capture', \(\) => refreshPersonalAgentCapture\(\)/);
   assert.match(terminal, /return \{ \.\.\.publicAgentCaptureState\(\), message: remote\.message/);
   assert.match(preload, /setAgentCapture/);
-  assert.match(ui, /已打开的 Codex 会话在 Hook 已生效时，从下一条提问开始采集/);
+  assert.match(ui, /一次授权后，只采集本机受支持 Agent 的后续用户对话并归入当前绑定学生/);
   assert.match(ui, /共享终端不支持自动会话采集/);
   assert.match(ui, /已检测到.*个受支持 Agent.*授权后接入/);
   for (const file of ['student-agent-lifecycle.cjs', 'agent-adapter-registry.cjs', 'agent-lifecycle-hook.ps1', 'agent-lifecycle-hook.cs', 'agent-lifecycle-hook.exe']) {

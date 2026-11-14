@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { PROBE_SCHEMA, isPublicAddress, resolvePublicAddress, fetchPublicSource, workBuddyResearchEvidence, parseWorkBuddyResearchResult, runWorkBuddyResearch, createWorkBuddyResearchSearch } = require('../electron/workbuddy-research.cjs');
+const { withExclusiveWorkBuddyProfile } = require('../electron/workbuddy-profile-gate.cjs');
+const { runFixedWorkBuddy } = require('../electron/workbuddy-controlled.cjs');
 
 const url = 'https://www.iana.org/help/example-domains';
 const payload = { query: 'IANA example domains', sources: [{ url, title: 'Example Domains', publisher: 'IANA', official: true, region: 'global', publishedAt: '', summary: 'Reserved example domains.' }], findings: ['IANA maintains example domains.'], limitations: [] };
@@ -66,6 +68,38 @@ test('WorkBuddy research requires a matched WebSearch receipt and host-fetches e
   await assert.rejects(parseWorkBuddyResearchResult(JSON.stringify(events({ ...payload, sources: [{ ...payload.sources[0], url: 'https://example.com/' }] })), '', 0, PROBE_SCHEMA, { fetchSource: async () => url }), /未取得实际打开|缺少网页访问记录|部分来源/);
 });
 
+test('post-start WorkBuddy research authentication failure remains possibly sent', async () => {
+  await assert.rejects(
+    parseWorkBuddyResearchResult('{"type":"result","result":"{}"}', 'Authentication required. Please use /login', 0, PROBE_SCHEMA),
+    error => error.code === 'AUTHENTICATION_REQUIRED'
+      && error.stage === 'possibly_sent'
+      && error.diagnosticOrigin === 'stderr',
+  );
+});
+
+test('research authentication failure opens the shared pre-send profile circuit', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-research-auth-circuit-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const runtime = { available: true, mode: 'node', cliPath: path.join(root, 'cli.js'), nodePath: process.execPath, configDir: path.join(root, 'profile'), authVersion: 4 };
+  await fs.writeFile(runtime.cliPath, 'synthetic');
+  const authFailureSpawn = () => {
+    const child = new EventEmitter(); child.pid = 91;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => {
+      child.stderr.emit('data', Buffer.from('Authentication required. Please use /login'));
+      child.emit('close', 0);
+    });
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  };
+  await assert.rejects(runWorkBuddyResearch(runtime, { prompt: 'synthetic', schema: PROBE_SCHEMA, spawnProcess: authFailureSpawn }),
+    error => error.code === 'AUTHENTICATION_REQUIRED' && error.stage === 'possibly_sent');
+  let controlledLaunches = 0;
+  await assert.rejects(runFixedWorkBuddy(runtime, 'must not send', { spawnProcess: () => { controlledLaunches++; throw Error('must not launch'); } }),
+    error => error.code === 'AUTHENTICATION_REQUIRED' && error.stage === 'not_sent' && error.diagnosticOrigin === 'profile_circuit');
+  assert.equal(controlledLaunches, 0);
+});
+
 test('host source verifier rejects private DNS answers and pins a public address', async () => {
   assert.equal(isPublicAddress('93.184.216.34'), true);
   for (const address of ['127.0.0.1', '10.0.0.1', '169.254.169.254', '192.168.1.2', '::1', 'fc00::1']) assert.equal(isPublicAddress(address), false);
@@ -113,19 +147,47 @@ test('WorkBuddy research runner uses the restricted invocation and returns host-
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const runtime = { available: true, mode: 'node', cliPath: path.join(root, 'cli.js'), nodePath: process.execPath, configDir: path.join(root, 'profile') };
   await fs.writeFile(runtime.cliPath, 'synthetic');
-  let captured;
-  const result = await runWorkBuddyResearch(runtime, { prompt: 'synthetic', schema: PROBE_SCHEMA, fetchSource: fetched, spawnProcess: (_exe, args, options) => {
+  let captured;const order=[];
+  const result = await runWorkBuddyResearch(runtime, { prompt: 'synthetic', schema: PROBE_SCHEMA, fetchSource: fetched,beforeExecute:async()=>order.push('intent'),onStarted:async({processId})=>{assert.equal(processId,7);order.push('ack');}, spawnProcess: (_exe, args, options) => {
+    order.push('spawn');
     captured = { args, options }; const child = new EventEmitter(); child.pid = 7;
     child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
-    child.stdin.end = () => setImmediate(() => { child.stdout.emit('data', Buffer.from(JSON.stringify(events()))); child.emit('close', 0); });
+    child.stdin.end = () => {order.push('send');setImmediate(() => { child.stdout.emit('data', Buffer.from(JSON.stringify(events()))); child.emit('close', 0); });};
     child.kill = () => { child.emit('close', 1); return true; }; return child;
   } });
   assert.equal(result.sources.length, 1);
+  assert.deepEqual(order,['intent','spawn','ack','send']);
   assert.equal(captured.args[captured.args.indexOf('--tools') + 1], 'WebSearch');
   assert.equal(captured.args.includes('--allowedTools'), false);
   assert.equal(captured.args.includes('-y'), false);
   assert.equal(captured.options.env.CODEBUDDY_IS_SANDBOX, '0');
   assert.equal(captured.options.cwd.startsWith(os.tmpdir()), true);
+});
+
+test('research waits behind other work using the same WorkBuddy profile', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-research-profile-gate-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const runtime = { available: true, mode: 'node', cliPath: path.join(root, 'cli.js'), nodePath: process.execPath, configDir: path.join(root, 'profile') };
+  await fs.writeFile(runtime.cliPath, 'synthetic');
+  let release, launches = 0;
+  const blocker = withExclusiveWorkBuddyProfile(runtime, null, () => new Promise(resolve => { release = resolve; }));
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const pending = runWorkBuddyResearch(runtime, { prompt: 'synthetic', schema: PROBE_SCHEMA, fetchSource: fetched, spawnProcess: () => {
+    launches++;
+    const child = new EventEmitter(); child.pid = 71;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => {
+      child.stdout.emit('data', Buffer.from(JSON.stringify(events())));
+      child.emit('close', 0);
+    });
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(launches, 0);
+  release(); await blocker;
+  assert.equal((await pending).sources.length, 1);
+  assert.equal(launches, 1);
 });
 
 test('cancelling WorkBuddy research cannot be converted into a successful result by process close', async t => {

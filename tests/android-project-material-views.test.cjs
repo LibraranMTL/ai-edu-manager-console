@@ -13,14 +13,14 @@ const teacher = fs.readFileSync(path.join(root,
 const studentBuild = fs.readFileSync(path.join(root, 'android-tablet-terminal/build.ps1'), 'utf8');
 const teacherBuild = fs.readFileSync(path.join(root, 'android-teacher-terminal/build.ps1'), 'utf8');
 
-test('both Android terminals use one host-authorized four-view component', () => {
+test('student and teacher use scoped read-only project dialogs while the governed component remains available', () => {
   for (const source of [student, teacher]) {
-    assert.match(source, /ProjectMaterialsDialog\.open/);
-    assert.match(source, /materialCapabilities/);
-    assert.match(source, /supportsMaterialViews\(\)/);
-    assert.match(source, /项目资料与知识/);
+    assert.match(source, /openProjectMaterialsProject/);
+    assert.match(source, /openProjectKnowledgeDialog/);
+    assert.match(source, /showReadOnlyFilePicker/);
+    assert.match(source, /\/api\/projects\/" \+ safeEncode\(project\.id\) \+ "\/archive\/files/);
+    assert.match(source, /当前学生没有关联该项目/);
   }
-  assert.match(studentBuild, /android-shared\\src\\com\\qxmatrix\\projectmaterials\\ProjectMaterialsDialog\.java/);
   assert.match(teacherBuild, /android-shared\\src\\com\\qxmatrix\\projectmaterials\\ProjectMaterialsDialog\.java/);
   for (const view of ['materials', 'pending', 'knowledge', 'contributions']) assert.match(shared, new RegExp(`"${view}"`));
 });
@@ -76,9 +76,8 @@ test('Android terminals show host migration state and never migrate local storag
   for (const source of [student, teacher]) {
     assert.match(source, /materialMigrationState/);
     assert.match(source, /主机迁移中/);
-    assert.match(source, /Windows主机正在迁移历史资料/);
-    assert.match(source, /ProjectMaterialsDialog\.ProjectRef\(id, name, status, materialStorageMode,/);
   }
+  assert.match(teacher, /ProjectMaterialsDialog\.ProjectRef\(id, name, status, materialStorageMode,/);
   assert.match(shared, /project\.migrationState/);
   assert.match(shared, /本端保持只读/);
   assert.match(shared, /本端不会执行磁盘迁移/);

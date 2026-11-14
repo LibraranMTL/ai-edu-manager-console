@@ -32,4 +32,45 @@ function researchTaskDue(task, now = Date.now()) {
     && Boolean(task.nextRetryAt) && Date.parse(task.nextRetryAt) <= now;
 }
 
-module.exports = { RESEARCH_KINDS, SUCCESS_RECEIPTS, recoverableResearchBlock, researchResultValidation, researchRetryPatch, researchTaskDue };
+function researchCandidateDisposition(capability = {}) {
+  if (capability.available) return { status: 'pending', reason: 'ready', error: null };
+  return {
+    status: 'queued',
+    reason: capability.checking ? 'checking' : 'dispatch_check',
+    error: null,
+  };
+}
+
+function classifyResearchTimeout(evidence, retryBudget = {}) {
+  const now = Number.isFinite(Number(retryBudget.now)) ? Number(retryBudget.now) : Date.now();
+  if (evidence?.terminationCause === 'user_cancel') return {
+    disposition: 'terminal_failure', reasonCode: 'research_cancelled', nextRetryAt: '', nextProviderPolicy: 'none',
+    evidenceRef: evidence.executionId || '',
+  };
+  const unknown = !evidence || evidence.terminationState !== 'closed'
+    || !['timeout_kill', 'natural_exit'].includes(evidence.terminationCause)
+    || evidence.stdoutDrained !== true || evidence.stderrDrained !== true
+    || evidence.outputCheckedAfterClose !== true || !evidence.graceCompletedAt
+    || Number(evidence.completedWebEvents || 0) > 0 || Number(evidence.completedToolEvents || 0) > 0
+    || evidence.outputPresent === true || Number(evidence.outputSize || 0) > 0
+    || evidence.localReceiptPresent === true || evidence.businessWriteStarted !== false
+    || evidence.sideEffectClass !== 'read_only_research' || evidence.identityMatches !== true;
+  if (unknown) return {
+    disposition: 'execution_unknown', reasonCode: 'research_timeout_effects_unresolved',
+    nextRetryAt: new Date(now + 30 * 1000).toISOString(), nextProviderPolicy: 'reconcile_same_execution',
+    evidenceRef: evidence?.executionId || '',
+  };
+  if (Number(retryBudget.remainingRouteAttempts || 0) <= 0) return {
+    disposition: 'terminal_failure', reasonCode: 'research_route_budget_exhausted', nextRetryAt: '', nextProviderPolicy: 'none',
+    evidenceRef: evidence.executionId || '',
+  };
+  const nextProviderAvailable = retryBudget.nextProviderAvailable === true;
+  return {
+    disposition: 'safe_retry', reasonCode: 'research_timeout_closed_no_effect',
+    nextRetryAt: new Date(now + (nextProviderAvailable ? 15 * 1000 : 5 * 60 * 1000)).toISOString(),
+    nextProviderPolicy: nextProviderAvailable ? 'next_ready_provider' : 'same_provider_once',
+    evidenceRef: evidence.executionId || '',
+  };
+}
+
+module.exports = { RESEARCH_KINDS, SUCCESS_RECEIPTS, recoverableResearchBlock, researchResultValidation, researchRetryPatch, researchTaskDue, researchCandidateDisposition, classifyResearchTimeout };

@@ -13,8 +13,9 @@ test('historical deletion removes the visible task and its state history but kee
   assert.equal(result.removedHistoryCount, 1);
   assert.deepEqual(store.tasks, []);
   assert.deepEqual(store.history.map(item => item.id), ['h2']);
-  assert.equal(deletedTaskCandidateSuppressed(store, { id: 'task-a', idempotencyKey: 'cycle-1' }), true);
-  assert.equal(deletedTaskCandidateSuppressed(store, { id: 'task-a', idempotencyKey: 'cycle-2' }), false);
+  const rebuilt = { id: 'task-a', title: '历史任务', kind: 'weekly_action', sourceType: 'student', sourceId: 's1' };
+  assert.equal(deletedTaskCandidateSuppressed(store, { ...rebuilt, idempotencyKey: 'cycle-1' }), false);
+  assert.equal(deletedTaskCandidateSuppressed(store, { ...rebuilt, idempotencyKey: 'cycle-2' }), false);
 });
 
 test('active tasks cannot be deleted as history', () => {
@@ -43,8 +44,21 @@ test('every safe unstarted task is removable in one step and receives a tombston
     assert.equal(result.ok, true);
     assert.equal(store.tasks.length, 0);
     assert.equal(result.tombstone.previousStatus, status);
-    assert.equal(deletedTaskCandidateSuppressed(store, task), true);
+    assert.equal(deletedTaskCandidateSuppressed(store, task), false);
   }
+});
+
+test('explicit ignore of the current work key suppresses only that exact source version', () => {
+  const first = { id: 'task-ignore', kind: 'project_digest', sourceType: 'project', sourceId: 'p1',
+    status: 'cancelled', sourceVersion: 'v1', pipelineVersion: 'pipe-1' };
+  const store = { tasks: [first], history: [], deletedTasks: [] };
+  const removed = removeHistoricalTaskRecord(store, first.id, '2026-10-11T10:00:00.000Z', {
+    suppressCurrentWork: true,
+  });
+  assert.equal(removed.ok, true);
+  assert.equal(removed.tombstone.suppression, 'work_key');
+  assert.equal(deletedTaskCandidateSuppressed(store, first), true);
+  assert.equal(deletedTaskCandidateSuppressed(store, { ...first, sourceVersion: 'v2' }), false);
 });
 
 test('started, result-bearing and unknown pending tasks remain protected from deletion', () => {

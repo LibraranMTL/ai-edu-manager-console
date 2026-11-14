@@ -23,6 +23,7 @@ class ScopedContentRepository(private val context: Context,
         dao.list(studentId, kinds, limit.coerceIn(1, 100), offset.coerceAtLeast(0))
     }
     fun search(studentId: String, query: String, offset: Int = 0) = transaction(studentId) { dao.search(studentId, ScopedContentPolicy.query(query), 50, offset.coerceAtLeast(0)) }
+        .filter { row -> row.projectId.isBlank() || runCatching { ContentSourceResolver(context).locate(studentId, row) }.isSuccess }
     fun filtered(studentId: String, kind: String, query: String, offset: Int = 0) = transaction(studentId) {
         dao.filtered(studentId, kind, ScopedContentPolicy.query(query), offset.coerceAtLeast(0))
     }
@@ -132,6 +133,10 @@ class ScopedContentRepository(private val context: Context,
         event.put("contentFingerprint", ScopedContentPolicy.fingerprint(event))
         HighGrowthRoomStore(context).mirrorAsync(studentId, HighGrowthRoomStore.LEARNING_EVENT, listOf(event))
         StudioAutomation.enqueueCheck(context, studentId)
+        runCatching {
+            AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_CARD_ANSWERED, studentId,
+                ScopedContentPolicy.fingerprint(JSONObject(row.payload)), listOf(row.id))
+        }
         return row
     }
     fun draft(studentId: String, versionId: String, itemIndex: Int): ScopedContentEntity = transaction(studentId) {

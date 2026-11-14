@@ -34,7 +34,7 @@ test('Codex detection respects the shared heavy-work gate', async () => {
   const f = fixture({ busy: true });
   const result = await detectCodexAuthorization(f.options);
   assert.equal(result.ok, false);
-  assert.match(result.message, /后台正在处理资料/);
+  assert.match(result.message, /本地 Agent 正在执行另一个任务/);
   assert.equal(f.calls.acquired, 0);
   assert.equal(f.calls.probed, 0);
 });

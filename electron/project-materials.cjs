@@ -114,7 +114,14 @@ async function writeJsonAtomic(file, value) {
     await handle.sync();
     await handle.close();
     handle = null;
-    await fsp.rename(temporary, file);
+    for (let attempt = 0;; attempt++) {
+      try { await fsp.rename(temporary, file); break; }
+      catch (error) {
+        const transient = ['EPERM', 'EACCES', 'EBUSY'].includes(error?.code);
+        if (!transient || attempt >= 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+      }
+    }
   } finally {
     await handle?.close();
     await fsp.rm(temporary, { force: true });
@@ -172,6 +179,11 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
 
   async function read(options = {}) {
     return clone(await load(options));
+  }
+
+  async function readCategories(options = {}) {
+    const data = await load(options);
+    return clone(Array.isArray(data.categories) ? data.categories : []);
   }
 
   // Internal read-only inspection path for bounded host/worker pipelines.  The
@@ -518,7 +530,7 @@ function createProjectMaterialStore({ projectId, managerPath, roots, hooks = {} 
     }, expectedRevision);
   }
 
-  return { projectId, directory, indexPath, read, inspect, list, registerFiles, resolve, snapshot,
+  return { projectId, directory, indexPath, read, readCategories, inspect, list, registerFiles, resolve, snapshot,
     setCategories, updateClassification, decideAdoption, mutate, locationPath };
 }
 

@@ -9,9 +9,14 @@ test('idle digest and collaboration monitors use adaptive single-flight scheduli
   const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
   assert.match(main, /activeBeforeScan/);
   assert.match(main, /if \(!activeBeforeScan\.length\) return \{ ok: true, idle: true/);
-  assert.match(main, /scheduleDigestWorkflowMonitor\(digestWorkflowMonitorHasActiveWork\(\) \? 10_000 : 60_000\)/);
+  assert.match(main, /function digestReceiptMonitorTasks\(\)/);
+  assert.match(main, /receiptReconcileDelay\(recoveryBudget\(task\)\.receiptQueries\)/);
+  assert.match(main, /scheduleDigestWorkflowMonitor\(undefined, 'bounded_backoff'\)/);
+  assert.match(main, /scheduleDigestWorkflowMonitor\(2_500, 'startup_recovery'\)/);
   assert.doesNotMatch(main, /digestWorkflowTimer = setInterval\([^;]*5000/);
-  assert.match(main, /scheduleDirectDeliveryMonitor\(directDeliveryMonitorHasPendingWork\(\) \? 15_000 : 60_000\)/);
+  assert.match(main, /scheduleDirectDeliveryMonitor\(directDeliveryMonitorDelay\(\)\)/);
+  assert.match(main, /nextDeliveryWakeDelay\(readDirectDeliveryStore\(\), now/);
+  assert.doesNotMatch(main, /scheduleDirectDeliveryMonitor\(directDeliveryMonitorHasPendingWork\(\) \? 15_000 : 60_000\)/);
   assert.doesNotMatch(main, /collaborationDirectDeliveryTimer = setInterval/);
 });
 
@@ -24,4 +29,14 @@ test('renderer background refreshes are visibility-aware and avoid unrelated pag
   assert.match(renderer, /}, 60000\);/);
   assert.match(renderer, /}, 30000\);/);
   assert.doesNotMatch(renderer, /setInterval\(refreshVisible, 15000\)/);
+});
+
+test('startup Agent configuration and student archive reconciliation avoid a synchronized heavy burst', () => {
+  const main = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8');
+  const hostStart = main.slice(main.indexOf('function startHostService('), main.indexOf('function stopHostService('));
+  assert.doesNotMatch(hostStart, /prepareAllAgentKnowledgeAccess\(\)/);
+  assert.match(main, /function writeExternalConnectionRuntimeConfig[\s\S]*sourceBytes\.equals\(targetBytes\)/);
+  assert.match(main, /function scheduleStudentArchiveSync[\s\S]*resourceCoordinator\.run\(\['disk', 'cpu'\]/);
+  assert.match(main, /scheduleStudentArchiveSync\(student\.id, 5 \* 60_000 \+ index \* 2 \* 60_000\)/);
+  assert.doesNotMatch(main, /scheduleStudentArchiveSync\(student\.id, 15_000 \+ index \* 250\)/);
 });

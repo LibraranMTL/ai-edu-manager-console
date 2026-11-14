@@ -59,7 +59,7 @@ test('managed conversation sources separate automatic sessions from suggestion-o
   await engine.syncConversationRouting({ enabled: true, authorizedAt: boundary }, [{ id: 'student-a', name: 'Student A' }]);
   const managed = (await engine.sources()).sources.filter(source => ['session', 'history'].includes(source.type));
   assert.equal(managed.find(source => source.type === 'session').automatic, true);
-  assert.equal(managed.find(source => source.type === 'session').confidenceThreshold, .95);
+  assert.equal(managed.find(source => source.type === 'session').confidenceThreshold, .85);
   assert.equal(managed.find(source => source.type === 'history').automatic, false);
   await engine.requestScan(managed.find(source => source.type === 'session').id);
   await engine.requestScan(managed.find(source => source.type === 'history').id);

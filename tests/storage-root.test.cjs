@@ -70,6 +70,20 @@ test('legacy D drive default remains compatible when D drive exists', () => {
   assert.equal(result, 'D:\\学生资料');
 });
 
+test('QA isolated profile never reuses configured or legacy production student roots', () => {
+  const userDataDir = 'C:\\Users\\teacher\\AppData\\Local\\Temp\\edu-p0-isolated';
+  const result = resolveStudentBaseDir({
+    configured: 'D:\\学生资料',
+    platform: 'win32',
+    documentsDir: 'C:\\Users\\teacher\\Documents',
+    homeDir: 'C:\\Users\\teacher',
+    existsSync: () => true,
+    qaIsolated: true,
+    userDataDir,
+  });
+  assert.equal(result, path.join(userDataDir, 'student-data'));
+});
+
 test('configured C drive takeover directory is preserved', () => {
   const configured = 'C:\\Users\\teacher\\Documents\\New project';
   const result = resolveStudentBaseDir({

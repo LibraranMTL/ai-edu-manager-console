@@ -331,7 +331,9 @@ test('R21: real host material/task/report writers commit once in an isolated wor
   const f = await fixture(t), rawPath = path.join(f.root, 'raw'), source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
   let uploads = [], taskStore = { tasks: [] }, conversations = [];
   const ctx = vm.createContext({ fs, path, crypto: require('node:crypto'), Buffer,
-    findStudent: id => ({ id, name: '合成甲', rawPath }), readProjects: () => f.projects, normalizeProject: p => p,
+    findStudent: id => ({ id, name: '合成甲', rawPath }), readProjects: () => f.projects,
+    readProjectMetadata: () => f.projects, getProjectMetadata: id => f.projects.find(project => String(project.id) === String(id)) || null,
+    normalizeProject: p => p, normalizeProjectMetadata: p => p,
     assertUploadFileAllowed: (filename, size) => { assert.ok(size < 3e6); assert.ok(!filename.includes('/')); },
     readUploadRecords: () => uploads, addUploadRecords: rows => { uploads.push(...rows); }, sha1File: file => require('node:crypto').createHash('sha1').update(fs.readFileSync(file)).digest('hex'),
     readTaskStore: () => structuredClone(taskStore), normalizeTaskEnvelope: v => v, writeTaskStore: v => { taskStore = v; }, appendTaskEvent() {},

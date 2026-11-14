@@ -29,7 +29,9 @@ object ModelRuntime {
             request.cancellation.check()
             val category = if (request.webResearch) "research" else if (request.messages.toString().contains("\"image_url\"")) "vision" else "text"
             val provider = CompatibleModelProvider(config.endpoint, config.apiKey, receipts = RoomModelReceiptSink(context))
-            ModelBudget(context).reserve(request.studentId, category, UUID.randomUUID().toString())
+            val synthetic = BuildConfig.FAULT_HARNESS && context.packageName.endsWith(".faulttest") &&
+                request.model == "synthetic-fault-model" && java.net.URI(config.endpoint).host in setOf("127.0.0.1", "localhost")
+            if (!synthetic) ModelBudget(context).reserve(request.studentId, category, UUID.randomUUID().toString())
             return provider.generate(request)
         }
     }

@@ -13,13 +13,17 @@ function p95(values) {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil(sorted.length * .95) - 1)];
 }
-function measured(samples, operation) {
-  operation();
+function measured(samples, operation, warmups = 5) {
+  // Release gates measure steady-state interaction latency.  A separate
+  // coldSummary measurement above keeps cold-open cost visible, while these
+  // warmups prevent SQLite page hydration / antivirus first-touch noise from
+  // being mistaken for a repeatable row-update regression.
+  for (let index = 0; index < warmups; index += 1) operation();
   const values = [];
   for (let index = 0; index < samples; index += 1) {
     const started = performance.now(); operation(); values.push(performance.now() - started);
   }
-  return { p95Ms: Number(p95(values).toFixed(3)), samples: values.map(value => Number(value.toFixed(3))) };
+  return { warmups, p95Ms: Number(p95(values).toFixed(3)), samples: values.map(value => Number(value.toFixed(3))) };
 }
 
 function benchmark(count) {

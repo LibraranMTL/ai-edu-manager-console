@@ -25,5 +25,10 @@ if (base) {
   const previous = JSON.parse(cp.execFileSync('git', ['show', `${base}:release/android-student-release.json`], {encoding:'utf8'}));
   if (release.versionCode < previous.versionCode) fail('Android student release version rollback');
   if (release.versionCode === previous.versionCode && JSON.stringify(release) !== JSON.stringify(previous)) fail('Android student release was changed without a version increment');
+  const previousManifest = JSON.parse(cp.execFileSync('git', ['show', `${base}:release/edu-manager-version.json`], {encoding:'utf8'}));
+  const manifest = JSON.parse(read('release/edu-manager-version.json'));
+  for (const key of ['windowsVersionCode', 'windowsTerminalVersionCode', 'tabletTerminalVersionCode', 'teacherTerminalVersionCode', 'standaloneVersionCode']) {
+    if (!Number.isInteger(manifest[key]) || manifest[key] < previousManifest[key]) fail(`${key} release version rollback`);
+  }
 }
 console.log(`Android student release ${release.versionName} (${release.versionCode}) is consistent`);

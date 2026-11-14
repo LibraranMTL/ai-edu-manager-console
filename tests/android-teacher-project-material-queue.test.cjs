@@ -14,8 +14,11 @@ const buildSource = fs.readFileSync(path.join(teacherRoot, 'build.ps1'), 'utf8')
 const manifestSource = fs.readFileSync(path.join(teacherRoot, 'AndroidManifest.xml'), 'utf8');
 
 function javaTool(name) {
-  const bundled = path.join(root, '.android-tools', 'jdk', 'jdk-21.0.11+10', 'bin', `${name}.exe`);
-  return fs.existsSync(bundled) ? bundled : name;
+  const candidates = [
+    path.join(root, '.android-tools', 'jdk', 'jdk-21.0.11+10', 'bin', `${name}.exe`),
+    path.resolve(root, '..', '..', '平板部署', 'edu-launcher-app', '.android-tools', 'jdk', 'jdk-21.0.11+10', 'bin', `${name}.exe`),
+  ];
+  return candidates.find(fs.existsSync) || name;
 }
 
 test('teacher project material queue fixes request scope and owns stable private payloads', () => {

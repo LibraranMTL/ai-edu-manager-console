@@ -15,41 +15,47 @@ import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 data class AutoDigestSettings(
-    val enabled: Boolean = false,
+    val enabled: Boolean = true,
     val hour: Int = 21,
     val minute: Int = 30,
     val wifiOnly: Boolean = true,
     val chargingOnly: Boolean = false,
     val maximumPerStudent: Int = 20,
+    val automationMode: String = AutomationMode.FULL.wireValue,
 )
 
 class AutoDigestSettingsStore(private val context: Context) {
     private val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun load() = AutoDigestSettings(
-        enabled = preferences.getBoolean("enabled", false),
+        enabled = preferences.getBoolean("enabled", true),
         hour = preferences.getInt("hour", 21).coerceIn(0, 23),
         minute = preferences.getInt("minute", 30).coerceIn(0, 59),
         wifiOnly = preferences.getBoolean("wifi_only", true),
         chargingOnly = preferences.getBoolean("charging_only", false),
         maximumPerStudent = preferences.getInt("maximum", 20).coerceIn(1, 100),
+        automationMode = AutomationMode.from(preferences.getString("automation_mode", AutomationMode.FULL.wireValue).orEmpty()).wireValue,
     )
 
     fun save(value: AutoDigestSettings) {
         preferences.edit().putBoolean("enabled", value.enabled).putInt("hour", value.hour)
             .putInt("minute", value.minute).putBoolean("wifi_only", value.wifiOnly)
-            .putBoolean("charging_only", value.chargingOnly).putInt("maximum", value.maximumPerStudent).apply()
+            .putBoolean("charging_only", value.chargingOnly).putInt("maximum", value.maximumPerStudent)
+            .putString("automation_mode", AutomationMode.from(value.automationMode).wireValue).apply()
         schedule(context, value)
     }
 
     fun summary(): String {
         val value = load(); val last = preferences.getString("last_summary", "").orEmpty()
-        return if (!value.enabled) "已关闭" else "%02d:%02d · %s · %s · 每名学生最多 %d 份%s".format(
+        val mode = AutomationMode.from(value.automationMode)
+        return if (!value.enabled && mode == AutomationMode.OFF) "已关闭" else "%02d:%02d · %s · %s · 每名学生最多 %d 份 · %s%s".format(
             value.hour, value.minute, if (value.wifiOnly) "仅 Wi-Fi" else "任意网络",
-            if (value.chargingOnly) "仅充电时" else "无需充电", value.maximumPerStudent,
+            if (value.chargingOnly) "仅充电时" else "无需充电", value.maximumPerStudent, mode.label,
             if (last.isBlank()) "" else "\n最近：$last",
         )
     }
+
+    fun ensureScheduled() = schedule(context, load())
 
     internal fun record(summary: String) {
         preferences.edit().putString("last_summary", "${Timestamp.now()} · ${summary.take(500)}").apply()

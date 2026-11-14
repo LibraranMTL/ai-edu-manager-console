@@ -6,6 +6,8 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.View
 import android.view.ViewGroup
@@ -16,7 +18,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
 
-/** Local four-view project material center. No Windows host or network API is involved. */
+/** Local project material, report and outcome center. No Windows host API is involved. */
 class ProjectMaterialsActivity : Activity() {
     private lateinit var project: ProjectRecord
     private lateinit var service: LocalProjectMaterialService
@@ -28,17 +30,31 @@ class ProjectMaterialsActivity : Activity() {
     private var pendingRelinkMaterialId: String? = null
     private var actualCategories: Map<String, String> = emptyMap()
     private var searchText = ""
+    private var initialStudentId = ""
+    private var initiallyStudentScoped = false
+    private val scopeHandler = Handler(Looper.getMainLooper())
+    private val scopeMonitor = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            if (!projectScopeStillValid()) { finish(); return }
+            scopeHandler.postDelayed(this, 1_000L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val preferences = UiPreferences(this); preferences.applyOrientation(this); palette = preferences.palette()
+        initialStudentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
         project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))
+        initiallyStudentScoped = initialStudentId in project.studentIds
+        view = intent.getStringExtra(EXTRA_INITIAL_TAB)?.takeIf { it in setOf("dashboard", "materials", "knowledge", "outcomes", "pending", "contributions") } ?: "dashboard"
         service = LocalProjectMaterialService(this)
         window.statusBarColor = palette.page; window.navigationBarColor = palette.page
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(12)); setBackgroundColor(palette.page) }
-        root.addView(TextView(this).apply { text = "${project.name} · 项目资料中心"; textSize = 23f; setTextColor(palette.heading) }, matchWrap())
-        root.addView(TextView(this).apply { text = "同一份原件可按项目分类、知识来源和贡献证据查看；本机是该单机项目的权威节点。"; textSize = 13f; setTextColor(palette.muted); setPadding(0, dp(4), 0, dp(8)) }, matchWrap())
+        root.addView(TextView(this).apply { text = "${project.name} · 项目工作台"; textSize = 23f; setTextColor(palette.heading) }, matchWrap())
+        root.addView(TextView(this).apply { text = "统一管理项目资料、知识、进展报告、导师建议和成果；本机是该单机项目的权威节点。"; textSize = 13f; setTextColor(palette.muted); setPadding(0, dp(4), 0, dp(8)) }, matchWrap())
         status = TextView(this).apply { textSize = 13f; setTextColor(palette.text); setPadding(dp(10), dp(8), dp(10), dp(8)) }
         root.addView(status, matchWrap())
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -58,6 +74,19 @@ class ProjectMaterialsActivity : Activity() {
         } }, weighted())
         second.addView(button("历史迁移") { migrationMenu() }, weighted())
         root.addView(second, matchWrap())
+        root.addView(button("自动核对未知任务") { background("正在核对固定来源和本机结果检查点") {
+            val queue = ProjectDigestQueue(this); val result = queue.reconcileUnknowns(project.id)
+            runCatching { queue.enqueueAutomatic(project.id) }
+            "已从本机检查点恢复 ${result.optInt("recovered")} 项；仍无法确定 ${result.optInt("retainedUnknown")} 项。没有重复调用模型。"
+        } }, matchWrap())
+        root.addView(button("授权固定资料单次重试") {
+            AlertDialog.Builder(this).setTitle("授权单次重试")
+                .setMessage("上次模型请求的结果未知，可能已经产生费用。确认后仅对该任务的固定资料版本重试一次，保留原未知记录；如果再次中断或结果未知，不会自动重复调用。")
+                .setNegativeButton("取消", null).setPositiveButton("授权一次") { _, _ -> background("正在核对原任务和固定来源") {
+                    val queue = ProjectDigestQueue(this); val old = requireNotNull(queue.latest(project.id))
+                    queue.authorizeUnknownRetry(project.id, old.getString("jobId")); "已授权原固定资料单次重试，等待系统执行。"
+                } }.show()
+        }, matchWrap())
         root.addView(button("核对并结束结果未知的消化任务") {
             AlertDialog.Builder(this).setTitle("人工核对未知结果")
                 .setMessage("请先检查项目知识目录和模型计费。本操作仅结束未知任务，不删除原文件或生成结果，也不自动再次调用模型。")
@@ -72,7 +101,8 @@ class ProjectMaterialsActivity : Activity() {
         third.addView(button("导出显式项目包") { confirmProjectExport() }, weighted())
         root.addView(third, matchWrap())
         tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(6)) }
-        listOf("dashboard" to "项目仪表盘", "materials" to "项目资料", "pending" to "待整理", "knowledge" to "项目知识", "contributions" to "贡献证据").forEach { (id, label) ->
+        listOf("dashboard" to "项目仪表盘", "materials" to "项目资料", "pending" to "待整理", "knowledge" to "项目知识",
+            "outcomes" to "报告成果", "contributions" to "贡献证据").forEach { (id, label) ->
             tabs.addView(button(label) { view = id; refresh() }.apply { tag = id }, weighted())
         }
         root.addView(tabs, matchWrap())
@@ -82,12 +112,40 @@ class ProjectMaterialsActivity : Activity() {
         searchRow.addView(button("查找") { searchText = search.text.toString(); refresh() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(searchRow, matchWrap())
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(ScrollView(this).apply { isFillViewport = true; addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // The action panel can be taller than a phone viewport at large font scales.
+        // Scroll the entire page so the tabs and selected content remain reachable.
+        root.addView(list, matchWrap())
         root.addView(button("返回学习项目") { finish() }, matchWrap())
-        setContentView(root); refresh()
+        val page = ScrollView(this).apply { isFillViewport = true; addView(root) }
+        setContentView(page); refresh()
+        runCatching { ProjectDigestQueue(this).scheduleLegacyRecovery(project.id) }
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_MENTOR, false)) root.post {
+            if (!isFinishing && !isDestroyed) mentorDialog()
+        }
     }
 
-    override fun onResume() { super.onResume(); if (::list.isInitialized) refresh() }
+    override fun onResume() {
+        super.onResume()
+        if (!projectScopeStillValid()) { finish(); return }
+        scopeHandler.removeCallbacks(scopeMonitor)
+        scopeHandler.postDelayed(scopeMonitor, 1_000L)
+        if (::list.isInitialized) refresh()
+    }
+
+    override fun onPause() {
+        scopeHandler.removeCallbacks(scopeMonitor)
+        super.onPause()
+    }
+
+    private fun projectScopeStillValid(): Boolean {
+        val currentStudentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        if (currentStudentId != initialStudentId) return false
+        if (initiallyStudentScoped && runCatching {
+                currentStudentId in ProjectRepository(this).requireExact(project.id).studentIds
+            }.getOrDefault(false).not()) return false
+        return true
+    }
 
     @Deprecated("Classic picker result is retained for minSdk 23 compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -157,6 +215,7 @@ class ProjectMaterialsActivity : Activity() {
             "materials", "pending" -> runCatching { service.list(project.id, view, searchText) }
                 .onSuccess(::renderMaterials).onFailure { empty("资料读取失败：${it.message}；原件未修改。") }
             "knowledge" -> renderKnowledge()
+            "outcomes" -> renderOutcomes()
             else -> renderContributions()
         }
     }
@@ -290,6 +349,42 @@ class ProjectMaterialsActivity : Activity() {
         }
     }
 
+    private fun renderOutcomes() {
+        val outcomes = ProjectOutcomeService(this)
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(button("生成/更新综合报告") { background("正在根据固定项目证据生成项目综合报告") {
+            val result = outcomes.generateProgressReport(project.id)
+            if (result.optBoolean("reused")) "当前证据未变化，已核对并沿用已发布综合报告" else "新的项目综合报告已校验并发布"
+        } }, weighted())
+        actions.addView(button("项目导师") { mentorDialog() }, weighted())
+        actions.addView(button("查看报告原文") { openProjectKnowledge() }, weighted())
+        list.addView(actions, matchWrap())
+        list.addView(TextView(this).apply {
+            text = "项目报告只汇总本机固定证据；成果文件存在不代表成果质量或个人贡献已确认。项目导师提供任务提示词；复制不会自动读取、发送或修改项目资料。"
+            textSize = 14f; setTextColor(palette.muted); setPadding(dp(10), dp(10), dp(10), dp(12))
+        }, matchWrap())
+        val entries = runCatching { outcomes.listOutcomes(project.id) }.getOrElse { empty("成果库读取失败：${it.message}"); return }
+        if (entries.isEmpty()) { empty("当前没有项目报告或成果文件。资料完成消化后，完整自动模式会生成并发布项目进展报告。") ; return }
+        entries.forEach { entry ->
+            val kind = when (entry.optString("kind")) { "progress_report" -> "项目综合报告"; "mentor_advice" -> "导师建议"; else -> "成果文件" }
+            val card = button("${entry.optString("title")}\n$kind · ${entry.optString("status")}\n${entry.optString("path")}") {
+                if (entry.optString("kind") == "output_file") openProjectOutput(entry.optString("path")) else openProjectKnowledge()
+            }
+            card.textAlignment = View.TEXT_ALIGNMENT_VIEW_START; list.addView(card, matchWrap())
+        }
+    }
+
+    private fun mentorDialog() {
+        val studentId = getSharedPreferences(MainActivity.UI_CONTEXT_PREFS, MODE_PRIVATE)
+            .getString(MainActivity.KEY_CURRENT_STUDENT_ID, "").orEmpty()
+        val student = runCatching { StudentIndexRepository(this).requireExact(studentId) }.getOrNull()
+        if (student == null) {
+            android.widget.Toast.makeText(this, "请先选择当前学生", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        MentorDialogs.project(this, student, project)
+    }
+
     private fun organizationMenu() {
         val enabled = runCatching { service.status(project.id).optBoolean("organizationEnabled") }.getOrDefault(false)
         val choices = if (enabled) arrayOf("立即整理一次", "关闭自动整理授权", "核对中断整理", "撤销最近整理批次")
@@ -399,6 +494,19 @@ class ProjectMaterialsActivity : Activity() {
         }.onFailure { message("原件不可用", it.message ?: "请重新授权项目目录") }
     }
 
+    private fun openProjectOutput(path: String) {
+        runCatching {
+            require(path == project.paths.outputPath || path.startsWith("${project.paths.outputPath.trimEnd('/')}/")) { "成果路径超出当前项目" }
+            val document = requireNotNull(SafWorkspaceStore(this, Uri.parse(project.projectRootUri)).document(path)) { "成果文件不存在" }
+            require(document.isFile) { "成果记录不是文件" }
+            document.uri to document.type.orEmpty().ifBlank { "application/octet-stream" }
+        }.onSuccess { (uri, mime) ->
+            try { startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "打开项目成果")) }
+            catch (_: ActivityNotFoundException) { message("没有查看应用", "设备上没有能够打开此成果类型的应用。") }
+        }.onFailure { message("成果不可用", it.message ?: "请重新授权项目目录") }
+    }
+
     private fun openProjectKnowledge() { startActivity(Intent(this, MarkdownBrowserActivity::class.java)
         .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_PROJECT)
         .putExtra(MarkdownBrowserActivity.EXTRA_PROJECT_ID, project.id).putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${project.name} · 项目知识")) }
@@ -428,6 +536,8 @@ class ProjectMaterialsActivity : Activity() {
 
     companion object {
         const val EXTRA_PROJECT_ID = "projectId"
+        const val EXTRA_INITIAL_TAB = "initialTab"
+        const val EXTRA_OPEN_MENTOR = "openMentor"
         private const val REQUEST_IMPORT = 3401
         private const val REQUEST_EXPORT_PACKAGE = 3402
         private const val REQUEST_REBIND_CONTROL = 3403

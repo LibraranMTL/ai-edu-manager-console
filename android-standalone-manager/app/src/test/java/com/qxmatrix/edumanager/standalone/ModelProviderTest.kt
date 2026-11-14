@@ -10,6 +10,15 @@ import java.util.concurrent.CancellationException
 class ModelProviderTest {
     private val endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     private val messages = JSONArray().put(JSONObject().put("role", "user").put("content", "synthetic sample"))
+    @Test fun prohibitedOpenAiEndpointsNeverReachTransport() {
+        for (url in listOf("https://api.openai.com/v1", "https://openai.com/v1", "https://example.openai.azure.com/v1", "https://openai.azure.com/v1")) {
+            var sent = false
+            val provider = CompatibleModelProvider(url, "x", ModelTransport { _, _, _, _ -> sent = true; error("unexpected send") })
+            assertThrows(IllegalArgumentException::class.java) { provider.generate(ModelRequest("test", messages)) }
+            assertFalse(sent)
+        }
+        assertFalse(ModelEndpointPolicy.isOpenAiService(endpoint))
+    }
     private val schema = JSONObject("""{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}""")
     private fun reply(text: String = "OK", finish: String = "stop", sources: Boolean = false): String = JSONObject()
         .put("choices", JSONArray().put(JSONObject().put("finish_reason", finish)
@@ -20,6 +29,43 @@ class ModelProviderTest {
     private class Sink : ModelReceiptSink {
         val values = mutableListOf<ModelCallReceipt>()
         override fun record(receipt: ModelCallReceipt) { values += receipt }
+    }
+    @Test fun validatedResponseIsCommittedBeforeSuccessfulReceipt() {
+        val events = mutableListOf<String>()
+        val sink = object : ModelReceiptSink { override fun record(receipt: ModelCallReceipt) { events += receipt.state } }
+        val provider = CompatibleModelProvider(endpoint, "x", ModelTransport { _, _, _, _ ->
+            events += "sent"; ModelHttpResponse(200, reply("{\"ok\":true}"), "r")
+        }, sink)
+        provider.generate(ModelRequest("qwen3.6-flash", messages, jsonSchema = schema,
+            commitValidatedResponse = { events += "checkpoint" }))
+        assertEquals(listOf("running", "sent", "checkpoint", "succeeded"), events)
+    }
+    @Test fun checkpointFailureDoesNotCreateSuccessfulReceiptOrResend() {
+        var sends = 0; val sink = Sink()
+        val provider = CompatibleModelProvider(endpoint, "x", ModelTransport { _, _, _, _ ->
+            sends++; ModelHttpResponse(200, reply(), "r")
+        }, sink)
+        assertThrows(IllegalStateException::class.java) {
+            provider.generate(ModelRequest("qwen3.6-flash", messages, commitValidatedResponse = { error("disk full") }))
+        }
+        assertEquals(1, sends); assertEquals("failed", sink.values.last().state)
+    }
+    @Test fun committedCheckpointSurvivesReceiptWriteFailureWithoutResending() {
+        var sends = 0; var committed = ""; val states = mutableListOf<String>()
+        val sink = object : ModelReceiptSink {
+            override fun record(receipt: ModelCallReceipt) {
+                states += receipt.state
+                if (receipt.state == "succeeded") throw IllegalStateException("simulated process boundary")
+            }
+        }
+        val provider = CompatibleModelProvider(endpoint, "x", ModelTransport { _, _, _, _ ->
+            sends++; ModelHttpResponse(200, reply("saved"), "r")
+        }, sink)
+        assertThrows(IllegalStateException::class.java) {
+            provider.generate(ModelRequest("qwen3.6-flash", messages, commitValidatedResponse = { committed = it }))
+        }
+        assertEquals("saved", committed); assertEquals(1, sends)
+        assertEquals(listOf("running", "succeeded", "failed"), states)
     }
     @Test fun actualUsageAndRoutingMetadataAreRecordedWithoutPromptOrKey() {
         val sink = Sink()

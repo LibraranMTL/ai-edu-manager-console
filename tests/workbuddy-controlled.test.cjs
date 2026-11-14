@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises'), path = require('node:path'), os = require('node:os');
 const { EventEmitter } = require('node:events');
 const { parseFixedResult, runFixedWorkBuddy, createWorkBuddyQualification, createWorkBuddyStructuredAdapter, executeMaterialWorkBuddy } = require('../electron/workbuddy-controlled.cjs');
+const { probeWorkBuddyAuthorization } = require('../electron/workbuddy-runtime.cjs');
 const { RESULT_SCHEMA } = require('../electron/project-material-digest.cjs');
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'edu-wb-controlled-test-'));
@@ -17,9 +18,88 @@ function resultFor(prompt) {
 }
 test('final JSON is required; authentication, tool activity and successful error exits fail closed',()=>{
   assert.deepEqual(parseFixedResult('{"result":"{\\"ready\\":true}"}','',0),{ready:true});
+  assert.deepEqual(parseFixedResult(JSON.stringify({ result: JSON.stringify({ reason: '用户原话：请登录后查看资料' }) }), '', 0), { reason: '用户原话：请登录后查看资料' });
+  assert.throws(() => parseFixedResult('输出在上一条消息被截断','',0), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
+  assert.throws(() => parseFixedResult('{"result":"输出在上一条消息被截断"}','',0), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
   for(const stdout of ['READY','{"result":"{}","is_error":true}','{"result":"{}","permission_denials":[{}]}','{"type":"tool_use","result":"{}"}']) assert.throws(()=>parseFixedResult(stdout,'',0));
   assert.throws(()=>parseFixedResult('{"result":"{}"}','authentication required',0),{code:'AUTHENTICATION_REQUIRED'});
+  assert.throws(()=>parseFixedResult('{"result":"{}"}','authentication required',0),{diagnosticOrigin:'stderr'});
+  assert.throws(()=>parseFixedResult('authentication required','',1),{diagnosticOrigin:'failed_stdout'});
   assert.throws(()=>parseFixedResult('','429 too many requests',1),{code:'429'});
+});
+
+test('material execution asks WorkBuddy to repair one malformed completed result before failing the task', async t => {
+  const f = await fixture(t);
+  const sourcePath = path.join(f.root, 'source.md');
+  const outputRoot = path.join(f.root, 'output');
+  await fs.writeFile(sourcePath, 'fixed source');
+  await fs.mkdir(outputRoot);
+  const source = { materialId: 'material-1', version: 1,
+    sha256: (await require('../electron/project-materials.cjs').hashStableFile(sourcePath)).sha256 };
+  const batch = { projectId: 'project-1', batchId: 'batch-1', outputRoot,
+    inputFiles: [{ ...source, path: sourcePath }], sources: [source],
+    baselines: [{ relativePath: 'knowledge.md', materialIds: [source.materialId] }] };
+  const qualification = { ready: true,
+    cliHash: (await require('../electron/project-materials.cjs').hashStableFile(f.runtime.cliPath)).sha256 };
+  let calls = 0;
+  const result = await executeMaterialWorkBuddy({ runtime: f.runtime, qualification, batch,
+    extractSource: async () => 'fixed source', run: async (_runtime, prompt) => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error('malformed'), { code: 'AGENT_RESULT_INVALID', stage: 'completed' });
+      assert.match(prompt, /上一次返回未满足结构化合同/);
+      return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: batch.batchId,
+        status: 'completed', message: 'repaired', artifacts: [{ relativePath: 'knowledge.md',
+          content: '# Knowledge', sources: [source] }] };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(result.artifacts[0].relativePath, 'knowledge.md');
+  assert.equal(await fs.readFile(path.join(outputRoot, 'knowledge.md'), 'utf8'), '# Knowledge');
+});
+test('material execution repairs one completed response whose batch identity is wrong', async t => {
+  const f = await fixture(t);
+  const sourcePath = path.join(f.root, 'source.md'), outputRoot = path.join(f.root, 'output');
+  await fs.writeFile(sourcePath, 'fixed source'); await fs.mkdir(outputRoot);
+  const source = { materialId: 'material-1', version: 1,
+    sha256: (await require('../electron/project-materials.cjs').hashStableFile(sourcePath)).sha256 };
+  const batch = { projectId: 'project-1', batchId: 'batch-1', outputRoot,
+    inputFiles: [{ ...source, path: sourcePath }], sources: [source],
+    baselines: [{ relativePath: 'knowledge.md', materialIds: [source.materialId] }] };
+  const qualification = { ready: true,
+    cliHash: (await require('../electron/project-materials.cjs').hashStableFile(f.runtime.cliPath)).sha256 };
+  let calls = 0;
+  const receipt = await executeMaterialWorkBuddy({ runtime: f.runtime, qualification, batch,
+    extractSource: async () => 'fixed source', run: async (_runtime, prompt) => {
+      calls++;
+      if (calls === 2) assert.match(prompt, /上一次返回的项目或批次身份不匹配/);
+      return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: calls === 1 ? 'wrong-batch' : batch.batchId,
+        status: 'completed', message: calls === 1 ? 'wrong identity' : 'repaired',
+        artifacts: [{ relativePath: 'knowledge.md', content: '# Knowledge', sources: [source] }] };
+    } });
+  assert.equal(calls, 2);
+  assert.equal(receipt.batchId, batch.batchId);
+  assert.equal(await fs.readFile(path.join(outputRoot, 'knowledge.md'), 'utf8'), '# Knowledge');
+});
+test('material execution stops after one batch-identity repair attempt', async t => {
+  const f = await fixture(t);
+  const sourcePath = path.join(f.root, 'source.md'), outputRoot = path.join(f.root, 'output');
+  await fs.writeFile(sourcePath, 'fixed source'); await fs.mkdir(outputRoot);
+  const source = { materialId: 'material-1', version: 1,
+    sha256: (await require('../electron/project-materials.cjs').hashStableFile(sourcePath)).sha256 };
+  const batch = { projectId: 'project-1', batchId: 'batch-1', outputRoot,
+    inputFiles: [{ ...source, path: sourcePath }], sources: [source],
+    baselines: [{ relativePath: 'knowledge.md', materialIds: [source.materialId] }] };
+  const qualification = { ready: true,
+    cliHash: (await require('../electron/project-materials.cjs').hashStableFile(f.runtime.cliPath)).sha256 };
+  let calls = 0;
+  await assert.rejects(executeMaterialWorkBuddy({ runtime: f.runtime, qualification, batch,
+    extractSource: async () => 'fixed source', run: async () => {
+      calls++;
+      return { schema: RESULT_SCHEMA, projectId: batch.projectId, batchId: 'still-wrong',
+        status: 'completed', message: 'wrong identity',
+        artifacts: [{ relativePath: 'knowledge.md', content: '# Knowledge', sources: [source] }] };
+    } }), error => error?.code === 'receipt_scope_mismatch');
+  assert.equal(calls, 2);
+  await assert.rejects(fs.stat(path.join(outputRoot, 'knowledge.md')), error => error?.code === 'ENOENT');
 });
 test('vendor sensitive approval denial/expiry/protection failures remain blocked and cannot be retried as network errors', () => {
   const { taskRetryDecision } = require('../electron/task-recovery-policy.cjs');
@@ -100,6 +180,116 @@ test('actual runner exposes no tools/MCP/plugins; uses empty cwd and only provid
   assert.equal(captured.options.windowsHide,true);assert.equal(captured.options.shell,false);
   assert.notEqual(captured.options.cwd,f.root);assert.equal(captured.options.env.CODEBUDDY_CONFIG_DIR,f.runtime.configDir);
 });
+test('controlled runs sharing one authentication profile are serialized', async t => {
+  const f = await fixture(t); let active = 0, maxActive = 0, launches = 0;
+  const releases = [];
+  const spawnProcess = () => {
+    launches++; active++; maxActive = Math.max(maxActive, active);
+    const child = new EventEmitter(); child.pid = 100 + launches;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => {};
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    releases.push(() => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"{\\"ready\\":true}"}'));
+      active--; child.emit('close', 0);
+    });
+    return child;
+  };
+  const first = runFixedWorkBuddy(f.runtime, 'first synthetic task', { spawnProcess });
+  while (launches < 1) await new Promise(resolve => setImmediate(resolve));
+  const second = runFixedWorkBuddy(f.runtime, 'second synthetic task', { spawnProcess });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(launches, 1, 'second process must wait for the shared profile');
+  releases.shift()();
+  assert.deepEqual(await first, { ready: true });
+  while (launches < 2) await new Promise(resolve => setImmediate(resolve));
+  releases.shift()();
+  assert.deepEqual(await second, { ready: true });
+  assert.equal(maxActive, 1);
+});
+test('authorization probes share the same profile queue as controlled work', async t => {
+  const f = await fixture(t); let controlledLaunches = 0, probeLaunches = 0, releaseControlled;
+  const controlled = runFixedWorkBuddy(f.runtime, 'controlled synthetic task', { spawnProcess: () => {
+    controlledLaunches++;
+    const child = new EventEmitter(); child.pid = 180;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => {};
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    releaseControlled = () => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"{\\"ready\\":true}"}'));
+      child.emit('close', 0);
+    };
+    return child;
+  } });
+  while (controlledLaunches < 1) await new Promise(resolve => setImmediate(resolve));
+  const probe = probeWorkBuddyAuthorization(f.runtime, { spawnProcess: () => {
+    probeLaunches++;
+    const child = new EventEmitter(); child.pid = 181;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"READY"}'));
+      child.emit('close', 0);
+    });
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(probeLaunches, 0, 'probe must wait for controlled work using the same profile');
+  releaseControlled();
+  assert.deepEqual(await controlled, { ready: true });
+  const probeResult = await probe;
+  assert.equal(probeLaunches, 1);
+  assert.equal(probeResult.authorized, true);
+});
+test('a cancelled queued WorkBuddy run never starts after the profile becomes available', async t => {
+  const f = await fixture(t); let launches = 0, releaseFirst;
+  const spawnProcess = () => {
+    launches++;
+    const child = new EventEmitter(); child.pid = 200 + launches;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => {};
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    releaseFirst = () => {
+      child.stdout.emit('data', Buffer.from('{"type":"result","result":"{\\"ready\\":true}"}'));
+      child.emit('close', 0);
+    };
+    return child;
+  };
+  const first = runFixedWorkBuddy(f.runtime, 'first synthetic task', { spawnProcess });
+  while (launches < 1) await new Promise(resolve => setImmediate(resolve));
+  const controller = new AbortController();
+  const second = runFixedWorkBuddy(f.runtime, 'cancelled queued task', { spawnProcess, signal: controller.signal });
+  controller.abort(); releaseFirst();
+  assert.deepEqual(await first, { ready: true });
+  await assert.rejects(second, { code: 'cancelled', stage: 'not_sent', stopConfirmed: true });
+  assert.equal(launches, 1);
+});
+test('one confirmed profile authentication failure opens a pre-send circuit for queued work', async t => {
+  const f = await fixture(t); let launches = 0;
+  const spawnProcess = () => {
+    launches++;
+    const child = new EventEmitter(); child.pid = 300 + launches;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => {
+      child.stderr.emit('data', Buffer.from('Authentication required. Please use /login command'));
+      child.emit('close', 0);
+    });
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  };
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'first synthetic task', { spawnProcess }), error => {
+    assert.equal(error.code, 'AUTHENTICATION_REQUIRED');
+    assert.equal(error.stopConfirmed, true);
+    return true;
+  });
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'second synthetic task', { spawnProcess }), error => {
+    assert.equal(error.code, 'AUTHENTICATION_REQUIRED');
+    assert.equal(error.stage, 'not_sent');
+    assert.equal(error.diagnosticOrigin, 'profile_circuit');
+    return true;
+  });
+  assert.equal(launches, 1, 'the known-bad profile must not receive another prompt');
+});
 test('qualification traverses host schema/staging, caches, coalesces and expires',async t=>{
   const f=await fixture(t);let calls=0,now=0;
   const qualification=createWorkBuddyQualification({now:()=>now,run:async(_runtime,prompt)=>{calls++;return resultFor(prompt);}});
@@ -158,4 +348,36 @@ test('cancel waits for real process close, does not mistake kill request for exi
   while(!child) await new Promise(r=>setImmediate(r));
   controller.abort();await new Promise(r=>setImmediate(r));assert.equal(killed,true);assert.equal(settled,false);
   child.emit('close',1);await rejected;
+});
+
+test('streaming past output budget reports contract_output_excessive without changing connection health', async t => {
+  const f = await fixture(t);
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'synthetic', { maxOutputBytes: 32, spawnProcess: () => {
+    const child = new EventEmitter(); child.pid = 7;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => setImmediate(() => child.stdout.emit('data', Buffer.from('x'.repeat(64))));
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } }), error => {
+    assert.equal(error.code, 'contract_output_excessive');
+    assert.equal(error.stage, 'possibly_sent');
+    assert.equal(error.stopConfirmed, true);
+    return true;
+  });
+});
+
+test('qualification timeout after first token reports contract_timeout', async t => {
+  const f = await fixture(t);
+  await assert.rejects(runFixedWorkBuddy(f.runtime, 'synthetic', { timeoutMs: 20, spawnProcess: () => {
+    const child = new EventEmitter(); child.pid = 8;
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.end = () => child.stdout.emit('data', Buffer.from('{'));
+    child.kill = () => { setImmediate(() => child.emit('close', 1)); return true; };
+    return child;
+  } }), error => {
+    assert.equal(error.code, 'contract_timeout');
+    assert.equal(error.stage, 'possibly_sent');
+    assert.equal(error.stopConfirmed, true);
+    return true;
+  });
 });

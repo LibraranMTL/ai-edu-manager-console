@@ -52,3 +52,14 @@ test('knowledge and growth views can navigate back to exact timeline evidence', 
   assert.match(ui, /学习时间线来源/);
   assert.match(ui, /时间线来源/);
 });
+
+test('activity duration closure keeps complete samples, frame coverage and student-safe SVG reports', () => {
+  assert.match(terminal, /capture-samples\.index\.json/);
+  assert.match(terminal, /writeCaptureSampleIndex\(activeCapture\)/);
+  assert.match(terminal, /contentHash,\s*path: target/);
+  assert.match(terminal, /decision: 'capture_error'/);
+  assert.match(host, /rebuildSessionTimeline\(captureCenterRootPath\(\), completed\)/);
+  assert.match(ui, /<svg className="capture-activity-track"/);
+  assert.match(ui, /captureTimelineRequestRef/);
+  assert.match(ui, /requestStudentId === selectedStudentIdRef\.current/);
+});

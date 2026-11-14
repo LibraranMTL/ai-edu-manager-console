@@ -133,5 +133,24 @@ test('completed batch supplement is reachable from the licensed Windows console 
   assert.match(card, /status\.userStatus === 'completed' && onSupplementLearningEvents/);
   assert.match(main, /function reconcileCompletedStudentDigestLearningReceipts\(student, options = \{\}\)/);
   assert.match(main, /learningEventReceiptFingerprints/);
-  assert.match(main, /try \{ reconcileCompletedStudentDigestLearningReceipts\(student\); \}/);
+  // Late learning receipts remain automatic, but are source-triggered and
+  // prepared in the Worker instead of hashing every completed batch on a tick.
+  assert.match(main,/function queueCompletedLearningReceiptCheck\(student\)/);
+  assert.match(main,/request\('completed_learning_receipt_prepare',paths\)/);
+  assert.match(main,/reconcileCompletedStudentDigestLearningReceipts\(student,\{force:true,prepared\}\)/);
+  assert.match(main,/if\(entry.sourceType==='student'\)queueCompletedLearningReceiptCheck\(normalized\)/);
+  const monitor=main.slice(main.indexOf('async function reconcileDigestWorkflows('),main.indexOf('const digestOrchestrator ='));
+  assert.doesNotMatch(monitor,/reconcileCompletedStudentDigestLearningReceipts/);
+});
+
+test('late learning receipt preparation is read-only, bounded and rejects a changed source before commit',async()=>{
+ const input=fixture(),managerDir=path.join(input.root,'manager'),archiveDir=path.join(managerDir,'batches');fs.mkdirSync(archiveDir,{recursive:true});
+ const currentFile=path.join(managerDir,'batch.json'),receiptFile=path.join(managerDir,'digest-receipt.json'),materialsPath=path.join(managerDir,'materials.json');
+ fs.writeFileSync(currentFile,JSON.stringify(input.batch));fs.writeFileSync(receiptFile,JSON.stringify(input.receipt));fs.writeFileSync(materialsPath,JSON.stringify({materials:input.materials}));
+ const client=require('../electron/project-material-read-client.cjs').createProjectMaterialReadClient();
+ try{const prepared=await client.request('completed_learning_receipt_prepare',{managerDir,archiveDir,currentFile,receiptFile,materialsPath,rawRoot:input.rawRoot});
+  assert.equal(prepared.entries.length,1);assert.equal(prepared.materials.length,2);assert.equal(fs.existsSync(eventsPath(input.root)),false);
+  const {verifyPrepared}=require('../electron/completed-learning-receipt-preparation.cjs');assert.equal(verifyPrepared(prepared),true);
+  fs.appendFileSync(path.join(input.rawRoot,'one.jpg'),'changed');assert.equal(verifyPrepared(prepared),false);
+ }finally{await client.close();fs.rmSync(input.root,{recursive:true,force:true});}
 });

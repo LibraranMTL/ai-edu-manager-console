@@ -18,10 +18,11 @@ const TASK_STATUS_TRANSITIONS = Object.freeze({
   archived: ['cancelled'],
 });
 
-function validateTaskTransition(currentStatus, nextStatus) {
+function validateTaskTransition(currentStatus, nextStatus, context={}) {
   const current = String(currentStatus || '');
   const next = String(nextStatus || '');
   if (current === next) return { ok: true };
+  if(current==='running'&&next==='queued'&&context.executionPhase==='not_sent'&&['practice_capability_wait','practice_next_provider'].includes(context.reason))return {ok:true};
   if (!(TASK_STATUS_TRANSITIONS[current] || []).includes(next)) {
     return { ok: false, message: `不允许从 ${current} 直接流转到 ${next}。` };
   }

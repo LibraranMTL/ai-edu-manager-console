@@ -15,7 +15,7 @@ const { inspectWorkspacePath, isPathInside: canonicalIsPathInside } = require('.
 const { createProjectMaterialHost, isWorkspaceMaterialProject,
   readProjectMaterialIndexSync, projectMaterialDigestProjection } = require('../electron/project-material-host.cjs');
 const { projectStagingProjection } = require('../electron/project-staging-projection.cjs');
-const { isSystemGeneratedMaterialPath } = require('../electron/project-material-automation.cjs');
+const { isSystemGeneratedMaterialPath, normalizeMaterialAutomation } = require('../electron/project-material-automation.cjs');
 const { createProjectMaterialAssetCompatibility } = require('../electron/project-material-asset-compat.cjs');
 
 const main = fsSync.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
@@ -197,8 +197,11 @@ test('actual Windows workspace scan returns registry candidates and keeps the or
     createProjectMaterialHost, registerProjectWorkspaceScan, registerLegacyStagingFiles,
     legacyStagingLocation, auditProjectMaterialContent, scanRootIdentity, relativePrefix,
     applyMaterialScanPage, markMaterialRootUnavailable, inspectWorkspacePath, canonicalIsPathInside,
-    isSystemGeneratedMaterialPath, crypto,
-    readProjects: () => projects,
+    isSystemGeneratedMaterialPath, normalizeMaterialAutomation, crypto,
+    readProjects: () => projects,readProjectMetadata:()=>projects,markTaskSourceDirty(){},
+    isDeepStrictEqual:require('node:util').isDeepStrictEqual,
+    projectStateStore:()=>({getMetadata:()=>projects[0],invalidateCaches(){}}),
+    projectStateIoClient:()=>({request:async(op,input)=>{if(op==='patch_metadata')projects=projects.map(p=>({...p,...input.patch}));return {affected:input.entries?.length||0};}}),
     updateProjectRecord: (_id, change) => {
       projects = projects.map((item) => change(item));
       return { project: projects[0], projects };
@@ -240,9 +243,9 @@ test('actual Windows workspace scan returns registry candidates and keeps the or
   assert.equal(result.ok, true, result.message);
   assert.equal(result.added, 1);
   assert.equal(result.legacyStaging.added, 1);
-  assert.equal(result.project.stagingItems[0].status, 'collected');
-  assert.equal(result.project.digestState.pendingCount, 0);
-  assert.equal(result.project.stagingItems.length, 2);
+  assert.equal(projectStagingProjection(project,readProjectMaterialIndexSync(project),[])[0].status,'collected');
+  assert.equal(projectMaterialDigestProjection(project,readProjectMaterialIndexSync(project)).pendingCount,0);
+  assert.equal(projectStagingProjection(project,readProjectMaterialIndexSync(project),[]).length,2);
   assert.equal(readProjectMaterialIndexSync(project).materials.find((item) => item.location.rootId === 'legacy-staging').adoption.state, 'candidate');
   assert.equal(result.project.workspaceScanCoverage, 'partial');
   assert.equal(result.project.workspaceScanCursor, file.relativePath);

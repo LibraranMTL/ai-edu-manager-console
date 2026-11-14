@@ -54,6 +54,7 @@ class FileAssetService(private val context: Context) {
             val existing = StudentMaterialRepository(context, student).list().singleOrNull { it.getString("id") == materialId } ?: error("导入已提交但登记缺失，请核对，不重复创建")
             val asset = assets.forStudent(studentId).singleOrNull { it.optString("sha1") == existing.getString("sha1") } ?: error("导入资产登记缺失，请核对")
             IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, existing.getString("uploadedAt"))
+            runCatching { AutomationEventEmitter.imported(context, studentId, existing) }
             return@synchronized JSONObject().put("ok", true).put("reused", true).put("material", existing).put("asset", asset)
         }
         val sha1 = digest("SHA-1", bytes)
@@ -99,6 +100,8 @@ class FileAssetService(private val context: Context) {
         val indexed = assets.upsertBySha1(asset)
         IntakeRegistry(context).register(studentId, sourceName, "$sourceRef:${sourceEventId.ifBlank { hash }}", hash, logicalPath, student.storageRootUri, now)
         require(db.ledger().compareAndSetIntent(operationId, studentId, "prepared", "committed", System.currentTimeMillis()) == 1) { "导入登记状态已变化，原件保留" }
+        FaultInjection.hit(context, "import_committed")
+        runCatching { AutomationEventEmitter.imported(context, studentId, material) }
         JSONObject().put("ok", true).put("material", material).put("asset", indexed)
     }
 
@@ -136,6 +139,11 @@ class FileAssetService(private val context: Context) {
                 if (ledger.compareAndSetIntent(operationId, student.id, "committed", "rolled_back", System.currentTimeMillis()) == 0) {
                     ledger.compareAndSetIntent(operationId, student.id, "prepared", "rolled_back", System.currentTimeMillis())
                 }
+            }
+            runCatching {
+                AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, student.id,
+                    ScopedContentPolicy.fingerprint(JSONObject().put("removedMaterialId", material.getString("id"))
+                        .put("sourceSha256", material.optString("sourceSha256")).put("deletedAt", now)))
             }
         }
         JSONObject().put("ok", true).put("studentId", student.id).put("logicalPath", normalized)
@@ -232,7 +240,9 @@ class FileAssetService(private val context: Context) {
             .put("sourceType", if (courseCapture) "course_screen_capture" else "android_screenshot").put("captureSessionId", captureSessionId).put("captureItemId", captureItemId)
             .put("courseId", courseId).put("courseProvider", courseProvider).put("courseUrl", courseUrl).put("courseStartedAt", "").put("courseCompletedAt", "")
             .put("uploadedAt", now).put("updatedAt", now).put("status", "active")
-        return JSONObject().put("ok", true).put("material", material).put("asset", assets.upsertBySha1(asset))
+        val indexed = assets.upsertBySha1(asset)
+        runCatching { AutomationEventEmitter.imported(context, studentId, prior ?: material) }
+        return JSONObject().put("ok", true).put("material", prior ?: material).put("asset", indexed)
     }
 
     fun readMaterialBytes(studentId: String, materialId: String, maximum: Int = MAX_FILE_BYTES.toInt()): ByteArray {
@@ -242,6 +252,31 @@ class FileAssetService(private val context: Context) {
         val logicalPath = material.optString("absolutePath")
         require(logicalPath == student.paths.rawPath || logicalPath.startsWith("${student.paths.rawPath}/")) { "资料路径超出学生原始资料库" }
         return SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(logicalPath).use { it.readBytesBounded(maximum) }
+    }
+
+    /** Stream both hashes so source validation does not load a large original into memory. */
+    fun materialHashes(studentId: String, materialId: String): Pair<String, String> {
+        val student = students.requireExact(studentId)
+        val row = StudentMaterialRepository(context, student).list().singleOrNull { it.optString("id") == materialId }
+            ?: throw NoSuchElementException("未找到指定资料")
+        val path = row.optString("absolutePath")
+        require(path.startsWith("${student.paths.rawPath.trimEnd('/')}/")) { "资料路径超出学生原始资料库" }
+        val sha256 = java.security.MessageDigest.getInstance("SHA-256")
+        val sha1 = java.security.MessageDigest.getInstance("SHA-1")
+        var total = 0L
+        SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(path).use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                total += count
+                require(total <= MAX_FILE_BYTES) { "原件超过可核验大小" }
+                sha256.update(buffer, 0, count); sha1.update(buffer, 0, count)
+            }
+        }
+        fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+        return hex(sha256.digest()) to hex(sha1.digest())
     }
 
     fun transitionMaterial(studentId: String, materialId: String, next: MaterialStatus): JSONObject {

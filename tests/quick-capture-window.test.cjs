@@ -77,7 +77,8 @@ test('agent companion toolbar uses approved single-row micro sizes', () => {
   const host = read('electron', 'main.cjs');
   assert.match(host, /QUICK_CAPTURE_COLLAPSED_HEIGHT = 29/);
   assert.match(host, /QUICK_CAPTURE_EXPANDED_HEIGHT = 29/);
-  assert.match(host, /QUICK_CAPTURE_PREFERRED_WIDTH = 252/);
+  assert.match(host, /QUICK_CAPTURE_MIN_WIDTH = 252/);
+  assert.match(host, /QUICK_CAPTURE_PREFERRED_WIDTH = 288/);
   assert.match(host, /frame: false, useContentSize: true/);
   assert.match(host, /quickCaptureExpanded \? QUICK_CAPTURE_EXPANDED_HEIGHT : QUICK_CAPTURE_COLLAPSED_HEIGHT/);
   assert.match(host, /function resizeQuickCaptureWindow\(width, height\)/);

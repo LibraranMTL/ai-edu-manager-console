@@ -4,21 +4,31 @@ const { app } = require('electron');
 const fs = require('node:fs/promises'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict'), crypto = require('node:crypto');
 const resources = path.resolve(process.argv[2]), reportPath = path.resolve(process.argv[3]);
 const runtime = path.join(resources, 'app.asar', 'electron');
+const stagedRuntime = process.argv[4] ? path.resolve(process.argv[4]) : path.resolve(resources, '..', '..', '..', 'electron');
 const root = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'edu-smart-package-'));
+async function bounded(promise, label, timeoutMs = 5000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 app.setPath('userData', root); app.disableHardwareAcceleration();
 app.whenReady().then(async () => {
-  const checks = [], hashes = {}; let error, service, taskHost;
+  const checks = [], hashes = {}, cleanupWarnings = []; let error, service, taskHost;
   try {
     Object.defineProperty(process, 'resourcesPath', { value: resources });
-    for (const name of ['smart-inbox.cjs', 'smart-inbox-policy.cjs', 'smart-inbox-agent.cjs', 'smart-inbox-host.cjs', 'smart-inbox-associations.cjs', 'agent-invocation-service.cjs', 'agent-authorization-detection.cjs', 'task-circuit-probe.cjs', 'task-executor-circuit.cjs', 'project-material-extract.cjs', 'workbuddy-runtime.cjs', 'workbuddy-controlled.cjs', 'workbuddy-cli-manager.cjs', 'classification-auth.cjs', 'student-controlled-material.cjs', 'project-material-host.cjs', 'project-materials.cjs', 'main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'download-inbox.cjs', 'project-material-classification.cjs', 'task-protocol.cjs', 'task-store-service.cjs', 'task-progress-buffer.cjs', 'task-io-client.cjs', 'task-io-worker.cjs', 'task-store-writer.cjs', 'task-read-model.cjs']) {
+    for (const name of ['smart-inbox.cjs', 'smart-inbox-policy.cjs', 'smart-inbox-agent.cjs', 'smart-inbox-host.cjs', 'smart-inbox-associations.cjs', 'agent-invocation-service.cjs', 'agent-authorization-detection.cjs', 'task-circuit-probe.cjs', 'task-executor-circuit.cjs', 'project-material-extract.cjs', 'workbuddy-runtime.cjs', 'workbuddy-controlled.cjs', 'workbuddy-profile-gate.cjs', 'workbuddy-cli-manager.cjs', 'classification-auth.cjs', 'student-controlled-material.cjs', 'project-material-host.cjs', 'project-materials.cjs', 'main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'download-inbox.cjs', 'project-material-classification.cjs', 'task-protocol.cjs', 'task-store-service.cjs', 'task-progress-buffer.cjs', 'task-io-client.cjs', 'task-io-worker.cjs', 'task-store-writer.cjs', 'task-read-model.cjs']) {
       const packaged = await fs.readFile(path.join(runtime, name));
-      assert.deepEqual(packaged, await fs.readFile(path.join(__dirname, '..', 'electron', name)));
+      const staged = await fs.readFile(path.join(stagedRuntime, name));
+      assert.equal(Buffer.compare(packaged, staged), 0, `${name} differs from audited staged runtime (${packaged.length} != ${staged.length})`);
       hashes[name] = crypto.createHash('sha256').update(packaged).digest('hex');
     }
     const legacyModule = await fs.readFile(path.join(runtime, 'smart-inbox-legacy.cjs'));
-    assert.deepEqual(legacyModule, await fs.readFile(path.join(__dirname, '..', 'electron', 'smart-inbox-legacy.cjs')));
+    assert.equal(Buffer.compare(legacyModule, await fs.readFile(path.join(stagedRuntime, 'smart-inbox-legacy.cjs'))), 0);
     hashes['smart-inbox-legacy.cjs'] = crypto.createHash('sha256').update(legacyModule).digest('hex');
-    checks.push('packaged intake modules including unified legacy bridge and IPC/import dependencies exactly match current source');
+    checks.push('packaged intake modules including the shared WorkBuddy profile gate, unified legacy bridge and IPC/import dependencies exactly match the audited staged runtime');
     const invocation = require(path.join(runtime, 'agent-invocation-service.cjs'));
     const packagedStatus = invocation.agentProfileStatus({ providerId: 'codex', profile: invocation.CLASSIFICATION_PROFILE,
       capability: { available: true, authorized: true, exePath: 'synthetic-codex', label: 'Codex' }, circuit: { phase: 'authorization' } });
@@ -141,8 +151,14 @@ app.whenReady().then(async () => {
     }
     checks.push('ASAR actual registry: unreferenced association withdrawn, referenced adoption retained, original/version snapshots preserved, replay idempotent');
   } catch (e) { error = e.stack; }
-  finally { await service?.engine.close(); await taskHost?.close(); await fs.rm(root, { recursive: true, force: true }); }
-  const report = { at: new Date().toISOString(), ok: !error, kind: 'isolated-packaged-runtime-not-real-agent-acceptance', resources, checks, hashes, error };
+  finally {
+    for (const [label, close] of [['smart inbox engine close', () => service?.engine.close()], ['task host close', () => taskHost?.close()]]) {
+      try { await bounded(Promise.resolve(close()), label); } catch (e) { cleanupWarnings.push(e.stack); }
+    }
+    try { await bounded(fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }), 'temporary directory cleanup'); }
+    catch (e) { cleanupWarnings.push(e.stack); }
+  }
+  const report = { at: new Date().toISOString(), ok: !error && cleanupWarnings.length === 0, kind: 'isolated-packaged-runtime-not-real-agent-acceptance', resources, checks, hashes, error, cleanupWarnings };
   await fs.mkdir(path.dirname(reportPath), { recursive: true }); await fs.writeFile(reportPath, JSON.stringify(report, null, 2));
-  console.log(JSON.stringify(report, null, 2)); app.exit(error ? 1 : 0);
+  console.log(JSON.stringify(report, null, 2)); app.exit(report.ok ? 0 : 1);
 }).catch(error => { console.error(error); app.exit(1); });

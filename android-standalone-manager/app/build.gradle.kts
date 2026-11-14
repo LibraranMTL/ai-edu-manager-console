@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,6 +11,18 @@ val releaseStorePassword = providers.environmentVariable("EDU_ANDROID_KEYSTORE_P
 val releaseKeyAlias = providers.environmentVariable("EDU_ANDROID_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("EDU_ANDROID_KEY_PASSWORD").orNull
 val releaseSigningReady = listOf(releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword).all { !it.isNullOrBlank() }
+val faultHarness = providers.gradleProperty("eduFaultHarness").map { it == "true" }.orElse(false).get()
+val faultApplicationSuffix = providers.gradleProperty("eduFaultApplicationSuffix").orElse(".faulttest").get()
+require(faultApplicationSuffix.matches(Regex("^(?:\\.[a-z][a-z0-9]*)*\\.faulttest$"))) { "Invalid isolated fault-test application suffix" }
+val publicContentBaseUrl = providers.gradleProperty("eduPublicContentBaseUrl")
+    .orElse(providers.environmentVariable("EDU_PUBLIC_CONTENT_BASE_URL"))
+    .orElse("https://www.greatbg.com/edu-cloud")
+    .get()
+    .trimEnd('/')
+val publicContentUri = URI(publicContentBaseUrl)
+require(publicContentUri.scheme == "https" && publicContentUri.userInfo == null && publicContentUri.host != null && publicContentUri.query == null && publicContentUri.fragment == null) {
+    "eduPublicContentBaseUrl must be an HTTPS base URL without credentials, query, or fragment"
+}
 
 kapt {
     arguments {
@@ -20,12 +34,22 @@ android {
     namespace = "com.qxmatrix.edumanager.standalone"
     compileSdk = 34
 
+    buildFeatures {
+        // PublicCourseSyncService reports the installed client version in privacy-bounded sync receipts.
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.qxmatrix.edumanager.standalone"
         minSdk = 23
         targetSdk = 34
-        versionCode = 38
-        versionName = "1.3.4"
+        versionCode = 41
+        versionName = "1.3.7"
+
+        // Candidate/device builds must bind to their explicit public-content environment.
+        // Production remains the default; secrets and runtime student data are never embedded here.
+        buildConfigField("String", "PUBLIC_CONTENT_BASE_URL", "\"$publicContentBaseUrl\"")
+        buildConfigField("boolean", "FAULT_HARNESS", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -52,9 +76,20 @@ android {
                 "proguard-rules.pro",
             )
         }
+        if (faultHarness) {
+            create("faultTest") {
+                initWith(getByName("release"))
+                applicationIdSuffix = faultApplicationSuffix
+                isDebuggable = true
+                isMinifyEnabled = false
+                buildConfigField("boolean", "FAULT_HARNESS", "true")
+                matchingFallbacks += listOf("release", "debug")
+            }
+        }
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -62,10 +97,12 @@ android {
         jvmTarget = "17"
     }
     testOptions { unitTests.isIncludeAndroidResources = true }
+    if (faultHarness) testBuildType = "faultTest"
     sourceSets.getByName("test").resources.srcDir("schemas")
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     implementation("androidx.activity:activity-ktx:1.9.0")
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")

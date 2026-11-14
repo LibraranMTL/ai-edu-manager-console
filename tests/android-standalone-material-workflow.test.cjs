@@ -91,7 +91,7 @@ test('unknown digest batches stay technical and do not request billing reconcili
   assert.match(recovery, /timeout_unknown.*模型响应超时/s)
   assert.doesNotMatch(taskCenter, /整批一次授权恢复/)
   assert.doesNotMatch(taskCenter, /填写已核对的账单/)
-  assert.match(taskCenter, /只有学生或项目归属冲突需要用户确认/)
+  assert.match(taskCenter, /只有归属不明、不可消解冲突、未知结果或永久失败才需要处理/)
 })
 
 test('file and camera intake leave the UI thread before touching the Room-backed ledger', () => {

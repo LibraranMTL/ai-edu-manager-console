@@ -3,7 +3,13 @@ const crypto = require('node:crypto');
 const MATERIAL_SCHEMA = 'edu-manager.project-materials.v1';
 const MATERIAL_PROTOCOL = 'edu-manager.project-material-api.v1';
 const ADOPTION_STATES = Object.freeze(['candidate', 'accepted', 'excluded']);
-const PROCESSING_STATES = Object.freeze(['pending', 'running', 'completed', 'failed', 'unsupported']);
+const PROCESSING_STATES = Object.freeze([
+  'pending', 'running', 'completed',
+  'skipped_unsupported', 'failed_retryable', 'failed_terminal',
+  'execution_unknown', 'needs_user_action',
+  // One-cycle compatibility for registries written by older candidates.
+  'failed', 'unsupported',
+]);
 const MATERIAL_LOCATIONS = Object.freeze(['workspace', 'legacy_raw', 'external']);
 const MATERIAL_CAPABILITIES = Object.freeze([
   'upload', 'read', 'export', 'suggestClassification', 'classify', 'adopt',

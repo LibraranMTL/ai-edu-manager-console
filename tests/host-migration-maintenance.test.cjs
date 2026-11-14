@@ -41,6 +41,7 @@ function hostScope(runtime) {
     assetStore: () => ({ backupTo: async (file) => fs.writeFileSync(file, 'synthetic sqlite snapshot'),
       importSnapshot: () => ({ assetCount: 0 }), replaceAll: () => {} }),
     projectStateStore: () => ({ backupTo: async (file) => fs.writeFileSync(file, 'synthetic project sqlite snapshot'), replaceAll: () => {} }),
+    restoreProjectReportMigrationSnapshot: () => ({ restored: false, versionCount: 0, completionCount: 0, historyUnavailable: true }),
     publicLicenseStatus: () => ({ maxActiveStudents: 1 }), courseCatalogStoreInstance: {}, platformCourseDraftStoreInstance: {}, licenseTrustStoreInstance: {},
     invalidateArchiveAccessCache: () => { assert.equal(runtime.status().phase, 'maintenance'); events.push('invalidate'); },
     recoverInterruptedMigrationStateInstalls: () => ({ ready: true, recovered: [], issues: [] }),

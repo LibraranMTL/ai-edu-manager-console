@@ -1,0 +1,11 @@
+{
+  "schema": "edu.agent0228.process-evidence.v1",
+  "processes": [
+    {
+      "pid": 17580,
+      "ppid": 13452,
+      "providerId": "codex",
+      "executablePath": "C:\\Users\\bxw00\\AppData\\Local\\OpenAI\\Codex\\bin\\22cfb1d302613eae\\codex.exe"
+    }
+  ]
+}

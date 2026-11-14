@@ -171,6 +171,8 @@ function normalizeAgentConversationSubmission(input = {}) {
     studentHint: text(input.studentHint, 240),
     targetProject: text(input.targetProject || input.target?.project, 240),
     projectLineageId: text(input.projectLineageId, 240),
+    workspacePath: text(input.workspacePath, 2000),
+    repositoryPath: text(input.repositoryPath, 2000),
     messages,
     attachments,
     candidates,

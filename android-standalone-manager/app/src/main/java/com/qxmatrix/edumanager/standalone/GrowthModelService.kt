@@ -9,6 +9,31 @@ import java.util.UUID
 
 data class LearningReportDefinition(val id: String, val title: String, val fileName: String, val type: String, val target: String, val summaryHeading: String, val sections: List<String>)
 
+object ObservationDraftPolicy {
+    fun verifiedExcerpt(studentId: String, evidence: JSONObject, row: JSONObject, rawHash: String, sourceText: String): String? {
+        if (studentId.isBlank() || evidence.optString("studentId") != studentId || evidence.optString("status") != "watching" ||
+            row.optString("studentId") != studentId || MaterialProcessingPolicy.attributionConflict(row)) return null
+        val prefix = "edu://student/$studentId/raw/"; val uri = evidence.optString("sourceUri")
+        if (!uri.startsWith(prefix)) return null
+        val id = uri.removePrefix(prefix)
+        if (id.isBlank() || '/' in id || row.optString("id") != id || rawHash.isBlank() || rawHash != row.optString("sourceSha256")) return null
+        val excerpt = evidence.optString("content").substringAfter("原文摘录：", "").trim()
+        return excerpt.takeIf { it.isNotBlank() && DigestEvidencePolicy.matchesExcerpt(sourceText, it) }?.take(500)
+    }
+
+    fun sections(reportId: String, evidenceLines: String, sourceCount: Int): String {
+        val safeCount = sourceCount.coerceAtLeast(0)
+        val introduction = when (reportId) {
+            "profile" -> "## 当前资料概览\n\n已核对 $safeCount 条可追溯摘录；它们仅反映资料记录，不代表稳定能力或整体水平。"
+            "changes" -> "## 历史变化\n\n现有摘录尚不足以证明能力、习惯或表现的变化，需继续积累不同时间的可比记录。"
+            "daily" -> "## 可执行的下一步\n\n- 选择下方一条资料，复述记录中的具体问题或方法。\n- 完成一次独立练习并保存过程，再用原始资料核对。\n- 下次记录日期、遇到的问题和自己的解释，便于后续比较。"
+            "stage" -> "## 阶段资料整理\n\n当前汇总 $safeCount 条可核验摘录。请结合更多独立活动记录，再形成阶段性结论。"
+            else -> error("未知观察报告")
+        }
+        return "$introduction\n\n## 可核验的资料摘录\n\n$evidenceLines\n\n## 观察边界\n\n资料仅反映所记录的具体活动；证据不足以判断掌握程度、长期变化或作出诊断。\n"
+    }
+}
+
 private data class GeneratedReportSections(
     val definition: LearningReportDefinition,
     val sections: JSONObject,
@@ -42,7 +67,7 @@ class GrowthModelService(private val context: Context) {
         return JSONObject().put("ok", true).put("growthDir", growth).put("reportDir", report)
     }
 
-    fun addCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = ""): JSONObject {
+    fun addCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = ""): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId); require(title.isNotBlank()) { "成长证据标题不能为空" }; require(content.isNotBlank()) { "成长证据观察内容不能为空" }; require(sourceUri.isNotBlank()) { "成长证据必须关联原始资料" }
         if (projectId.isNotBlank()) require(projects.requireExact(projectId).studentIds.contains(studentId)) { "项目未绑定当前学生" }
         ensure(studentId); val review = readReview(student); val now = Timestamp.now()
@@ -53,10 +78,10 @@ class GrowthModelService(private val context: Context) {
             .put("projectId", projectId).put("projectName", if (projectId.isBlank()) "" else projects.requireExact(projectId).name)
             .put("confidence", confidence).put("createdAt", now).put("updatedAt", now).put("review", JSONObject().put("status", "pending"))
         review.getJSONArray("candidates").put(candidate); writeReview(student, review); appendDraftCandidate(student, candidate); rebuildIndex(studentId)
-        return candidate
+        candidate
     }
 
-    fun addAutomaticCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = "", generatedBy: String): JSONObject {
+    fun addAutomaticCandidate(studentId: String, title: String, ability: String, sourceUri: String, content: String, confidence: String = "unknown", projectId: String = "", generatedBy: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId)
         require(title.isNotBlank() && content.isNotBlank()) { "自动成长证据必须包含标题和观察内容" }
         require(sourceUri.isNotBlank()) { "自动成长证据必须绑定原始资料来源" }
@@ -64,7 +89,9 @@ class GrowthModelService(private val context: Context) {
         ensure(studentId)
         val review = readReview(student)
         val evidenceId = GrowthEvidencePolicy.automaticId(studentId, sourceUri, title, content)
-        review.getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }?.let { return it }
+        review.getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }?.let {
+            appendDraftCandidate(student, it); rebuildIndex(studentId); return@synchronized it
+        }
         val now = Timestamp.now()
         val candidate = JSONObject().put("schema", "edu-manager.growth-evidence.v1").put("protocolVersion", ProtocolBaseline.EDUCATION_DOMAIN_PROTOCOL_VERSION)
             .put("id", evidenceId).put("studentId", student.id).put("studentName", student.name)
@@ -77,10 +104,10 @@ class GrowthModelService(private val context: Context) {
         review.getJSONArray("candidates").put(candidate)
         val decided = applyAutomaticDecision(student, candidate)
         writeReview(student, review); appendDraftCandidate(student, decided); rebuildIndex(studentId)
-        return decided
+        decided
     }
 
-    fun attachCandidateSource(studentId: String, evidenceId: String, materialId: String, sourceName: String): JSONObject {
+    fun attachCandidateSource(studentId: String, evidenceId: String, materialId: String, sourceName: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId); ensure(studentId)
         val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects()
         val item = candidates.singleOrNull { it.optString("id") == evidenceId } ?: error("未找到成长证据候选")
@@ -109,10 +136,10 @@ class GrowthModelService(private val context: Context) {
         if (item.optString("status") == "needs_attention") applyAutomaticDecision(student, item)
         writeReview(student, JSONObject().put("version", 1).put("updatedAt", now).put("candidates", JSONArray(candidates)))
         rebuildIndex(studentId)
-        return item
+        item
     }
 
-    fun candidates(studentId: String): List<JSONObject> {
+    fun candidates(studentId: String): List<JSONObject> = synchronized(StudentWorkLocks.forStudent(studentId)) {
         val student = students.requireExact(studentId); ensure(studentId)
         val review = readReview(student); var changed = false
         review.getJSONArray("candidates").toObjects().filter {
@@ -122,16 +149,47 @@ class GrowthModelService(private val context: Context) {
             applyAutomaticDecision(student, it); changed = true
         }
         if (changed) writeReview(student, review)
-        return review.getJSONArray("candidates").toObjects()
+        checkedSources(studentId, review.getJSONArray("candidates").toObjects())
+    }
+
+    /** Reads the last committed growth projection without creating directories, applying decisions or rebuilding data. */
+    fun readPublishedIndex(studentId: String): JSONObject? {
+        val student = students.requireExact(studentId)
+        val workspace = store(student)
+        val path = "${growthRoot(student)}/growth-index.json"
+        if (!workspace.exists(path)) return null
+        return JSONObject(workspace.readBytes(path).toString(Charsets.UTF_8)).also {
+            require(it.optString("schema") == "edu-manager.growth-model.v2" && it.optString("studentId") == student.id) { "成长模型投影学生范围不匹配" }
+            it.put("evidence", JSONArray(checkedSources(studentId, it.optJSONArray("evidence")?.toObjects().orEmpty())))
+        }
     }
 
     fun attentionCandidates(studentId: String): List<JSONObject> = candidates(studentId)
         .filter { it.optString("status") == "needs_attention" || it.optJSONObject("risk")?.optString("level") == "high" }
 
+    /** Called only after an explicit user review; revalidates the exact student, source and excerpt. */
+    fun confirmObservation(studentId: String, evidenceId: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val evidence = readReview(student).getJSONArray("candidates").toObjects().singleOrNull { it.optString("id") == evidenceId }
+            ?: error("未找到当前学生的观察证据")
+        val prefix = "edu://student/$studentId/raw/"; val uri = evidence.optString("sourceUri")
+        require(uri.startsWith(prefix)) { "证据来源不属于当前学生的原始资料" }
+        val id = uri.removePrefix(prefix); val files = FileAssetService(context)
+        val row = files.materials(studentId).singleOrNull { it.optString("id") == id } ?: error("原始资料不存在")
+        val hash = ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id))
+        requireNotNull(ObservationDraftPolicy.verifiedExcerpt(studentId, evidence, row, hash,
+            MaterialDigestSourceResolver(context, files).resolve(studentId, row))) { "资料来源或摘录已变化，请重新核对" }
+        val reviewed = reviewCandidate(studentId, evidenceId, "confirmed", "用户核对原始资料与观察后确认采用")
+        runCatching { AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, studentId,
+            ScopedContentPolicy.fingerprint(JSONObject().put("reviewedEvidenceId", evidenceId).put("sourceSha256", hash)
+                .put("reviewedAt", reviewed.optString("updatedAt")))) }
+        reviewed
+    }
+
     fun excludeCandidate(studentId: String, evidenceId: String, note: String = "自动成长模型异常清单中排除"): JSONObject =
         reviewCandidate(studentId, evidenceId, "rejected", note)
 
-    fun reviewCandidate(studentId: String, evidenceId: String, status: String, note: String): JSONObject {
+    fun reviewCandidate(studentId: String, evidenceId: String, status: String, note: String): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
         require(status in EVIDENCE_STATUSES) { "不支持的成长证据状态" }
         val student = students.requireExact(studentId); val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects(); val item = candidates.singleOrNull { it.optString("id") == evidenceId } ?: error("未找到成长证据候选")
         if (status == "confirmed") require(!GrowthEvidencePolicy.requiresPrimarySource(item)) { "该候选缺少可核验的原始资料来源，请先补充来源后再确认采用" }
@@ -142,11 +200,15 @@ class GrowthModelService(private val context: Context) {
             .put("reviewerRole", "administrator").put("reviewerId", "local-user").put("reviewedAt", now)); item.put("reviewHistory", history)
         writeReview(student, JSONObject().put("version", 1).put("updatedAt", now).put("candidates", JSONArray(candidates)))
         if (status == "confirmed") appendConfirmedEvidence(student, item)
-        rebuildIndex(studentId); return item
+        if (previous == "confirmed" && status != "confirmed") runCatching {
+            AutomationOrchestrator(context).emit(AutomationEventType.LEARNING_SNAPSHOT_CHANGED, studentId,
+                ScopedContentPolicy.fingerprint(JSONObject().put("withdrawnEvidenceId", evidenceId).put("status", status).put("reviewedAt", now)))
+        }
+        rebuildIndex(studentId); item
     }
 
     fun rebuildIndex(studentId: String): JSONObject {
-        val student = students.requireExact(studentId); ensure(studentId); val evidence = readReview(student).getJSONArray("candidates").toObjects()
+        val student = students.requireExact(studentId); ensure(studentId); val evidence = checkedSources(studentId, readReview(student).getJSONArray("candidates").toObjects())
         val relatedProjects = projects.list().filter { studentId in it.studentIds }
         val abilities = evidence.groupBy { it.optString("ability", "待标注") }.map { (name, items) ->
             val confirmed = items.count(::publicationEligible); val watching = items.count { it.optString("status") == "watching" }
@@ -176,44 +238,132 @@ class GrowthModelService(private val context: Context) {
         return index
     }
 
-    fun generateAndPublishReports(studentId: String): JSONObject {
+    fun generateAndPublishReportsIfChanged(studentId: String): JSONObject {
+        val index = rebuildIndex(studentId)
+        val evidence = index.getJSONArray("evidence").toObjects().filter(::publicationEligible)
+        if (evidence.isEmpty()) return generateObservationDraftIfNeeded(studentId)
+        val fingerprint = LearningReportPublicationPolicy.evidenceFingerprint(evidence)
+        val student = students.requireExact(studentId)
+        val activeFingerprint = runCatching {
+            if (activeReportPublicationId(studentId) == null) null
+            else JSONObject(store(student).readBytes(activeReportSetPath(student)).toString(Charsets.UTF_8)).getString("evidenceFingerprint")
+        }.getOrNull()
+        if (activeFingerprint == fingerprint) {
+            val repaired = reconcileActivePublication(student)
+            return JSONObject().put("ok", true).put("status", if (repaired) "reconciled" else "unchanged")
+                .put("evidenceFingerprint", fingerprint)
+                .put("message", if (repaired) "已补齐当前报告组发布回执" else "学情证据未变化，沿用当前报告版本")
+        }
+        return generateAndPublishReports(studentId, fingerprint)
+    }
+
+    /** Reconstruct a missed report trigger without calling a model or modifying report files. */
+    fun pendingReportEvidenceFingerprint(studentId: String): String? = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val evidence = checkedSources(studentId, readReview(student).getJSONArray("candidates").toObjects()).filter(::publicationEligible)
+        val activeFingerprint = runCatching {
+            if (activeReportPublicationId(studentId) == null) null
+            else JSONObject(store(student).readBytes(activeReportSetPath(student)).toString(Charsets.UTF_8)).getString("evidenceFingerprint")
+        }.getOrNull()
+        LearningReportPublicationPolicy.pendingEvidenceFingerprint(evidence, activeFingerprint)
+    }
+
+    /** Observation drafts quote verified source text only and never activate or upload a formal report. */
+    fun generateObservationDraftIfNeeded(studentId: String): JSONObject {
+        val student = students.requireExact(studentId)
+        val workspace = store(student)
+        ensure(studentId)
+        if (workspace.exists(activeReportSetPath(student))) return JSONObject().put("ok", true).put("status", "formal_report_preserved")
+        val files = FileAssetService(context)
+        val rows = files.materials(studentId).associateBy { it.optString("id") }
+        val resolver = MaterialDigestSourceResolver(context, files)
+        val prefix = "edu://student/$studentId/raw/"
+        val excerpts = readReview(student).getJSONArray("candidates").toObjects().mapNotNull { evidence ->
+            runCatching {
+                val uri = evidence.optString("sourceUri"); require(uri.startsWith(prefix))
+                val id = uri.removePrefix(prefix); require(id.isNotBlank() && '/' !in id)
+                val row = requireNotNull(rows[id])
+                val expected = row.optString("sourceSha256"); require(expected.isNotBlank())
+                val excerpt = requireNotNull(ObservationDraftPolicy.verifiedExcerpt(studentId, evidence, row,
+                    ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id)), resolver.resolve(studentId, row)))
+                JSONObject().put("id", evidence.getString("id")).put("sourceId", id).put("sourceSha256", expected)
+                    .put("excerpt", excerpt)
+            }.getOrNull()
+        }.distinctBy { it.optString("id") }.take(30)
+        if (excerpts.isEmpty()) return JSONObject().put("ok", true).put("status", "deferred_insufficient_evidence")
+            .put("message", "尚无可核验的观察资料，保留现有报告")
+        val fingerprint = ScopedContentPolicy.fingerprint(JSONObject().put("schema", "observation-draft-v2")
+            .put("studentId", studentId).put("date", Timestamp.now().take(10)).put("excerpts", JSONArray(excerpts)))
+        val root = "${reportRoot(student)}/观察草稿/$fingerprint"
+        val entries = JSONObject()
+        REPORTS.forEach { definition ->
+            val lines = excerpts.joinToString("\n") { item ->
+                val quote = inlineText(item.getString("excerpt")).replace("<", "＜").replace(">", "＞")
+                "- 原文：$quote\n  - 来源资料：${item.getString("sourceId")}；SHA-256：${item.getString("sourceSha256")}"
+            }
+            val body = reportHeader(student, definition, "draft", excerpts.map { it.getString("id") }) +
+                "> 观察草稿：以下是已核对原件的资料摘录，相关观察仍待持续验证，不代表能力结论或正式报告。\n\n" +
+                ObservationDraftPolicy.sections(definition.id, lines, excerpts.size)
+            val path = "$root/${definition.fileName}"; val bytes = body.toByteArray()
+            if (workspace.exists(path)) require(workspace.readBytes(path).contentEquals(bytes)) { "观察草稿已有不同内容，保留原版本" }
+            else workspace.writeBytesSafely(path, bytes, "text/markdown")
+            require(workspace.readBytes(path).contentEquals(bytes))
+            entries.put(definition.id, JSONObject().put("path", path).put("sha256", ScopedContentPolicy.hash(bytes)))
+        }
+        writeJson(workspace, "${reportRoot(student)}/observation-draft.json", JSONObject().put("schema", "observation-draft-v1")
+            .put("studentId", studentId).put("fingerprint", fingerprint).put("sources", JSONArray(excerpts)).put("reports", entries))
+        return JSONObject().put("ok", true).put("status", "observation_draft").put("message", "已根据可核验原文生成观察草稿；正式报告尚未发布")
+    }
+
+    fun generateAndPublishReports(studentId: String, requestedEvidenceFingerprint: String = ""): JSONObject {
         val student = students.requireExact(studentId)
         val result = generateReportSet(student)
         require(result.evidence.isNotEmpty()) { "当前没有已确认的成长证据。请先消化资料并在成长模型中确认至少一条证据，再生成正式学情报告。" }
+        val evidenceFingerprint = LearningReportPublicationPolicy.evidenceFingerprint(result.evidence)
+        if (requestedEvidenceFingerprint.isNotBlank() && requestedEvidenceFingerprint != evidenceFingerprint)
+            throw AutomationExecutionException("evidence_snapshot_changed", AutomationFailureClass.TRANSIENT,
+                message = "生成期间成长证据已变化，保留现有报告并等待自动重新生成")
         val prepared = result.reports.map { report -> report.definition to reportPublished(student, report.definition, report.sections, result.evidence) }
         val published = JSONArray()
-        CloudReportSync.withPublicationLock {
+        synchronized(StudentWorkLocks.forStudent(studentId)) { CloudReportSync.withPublicationLock {
+            val currentEvidence = checkedSources(studentId, readReview(student).getJSONArray("candidates").toObjects()).filter(::publicationEligible)
+            if (LearningReportPublicationPolicy.evidenceFingerprint(currentEvidence) != evidenceFingerprint)
+                throw AutomationExecutionException("evidence_snapshot_changed", AutomationFailureClass.TRANSIENT,
+                    message = "报告生成期间成长证据已变化，保留现有报告并等待自动重新生成")
             val sync = CloudReportSync(context)
             val existing = runCatching { REPORTS.map { definition ->
                 val text = readPublishedReport(student.id, definition.id)
                 EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, text)
                 definition to text
             } }.getOrNull()
+            val publicationId = sync.beginPublication(student.id)
+            val versionRoot = "${reportRoot(student)}/$REPORT_SET_DIRECTORY/$publicationId"
+            val paths = prepared.associate { (definition, _) -> definition.id to "$versionRoot/${definition.fileName}" }
+            prepared.forEach { (definition, content) -> store(student).writeBytesSafely(paths.getValue(definition.id), content.toByteArray(), "text/markdown") }
+            val readBack = prepared.map { (definition, content) ->
+                val actual = store(student).readBytes(paths.getValue(definition.id)).toString(Charsets.UTF_8)
+                check(actual == content) { "${definition.title}候选写入后校验失败，活动版本未切换" }
+                EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, actual)
+                actual
+            }
+            val pointer = LearningReportPublicationPolicy.pointer(student.id, publicationId, evidenceFingerprint,
+                paths, prepared.associate { it.first.id to it.second }, Timestamp.now())
             if (existing != null) {
                 val previousHash = ScopedContentPolicy.hash(existing.joinToString("|") { it.second }.toByteArray()).take(24)
                 LearningInsightsStore(context).archiveReportSet(student.id, "before-$previousHash", existing)
             }
-            val publicationId = runCatching { sync.beginPublication(student.id) }.getOrElse { error ->
-                sync.pauseAfterSnapshotFailure(student.id, error)
-                null
-            }
-            prepared.forEach { (definition, content) ->
-                val target = "${reportRoot(student)}/${definition.fileName}"
-                store(student).writeBytesSafely(target, content.toByteArray(), "text/markdown")
-                published.put(target)
-            }
-            if (publicationId != null) {
-                val readBack = prepared.map { (definition, content) ->
-                    val actual = store(student).readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
-                    check(actual == content) { "${definition.title}写入后校验失败，整组报告未提交云端同步" }
-                    actual
-                }
-                LearningInsightsStore(context).archiveReportSet(student.id, publicationId,
-                    prepared.mapIndexed { index, (definition, _) -> definition to readBack[index] })
-                runCatching { sync.commitPublication(student.id, publicationId, readBack) }
-                    .onFailure { sync.pauseAfterSnapshotFailure(student.id, it) }
-            }
-        }
+            LearningInsightsStore(context).archiveReportSet(student.id, publicationId,
+                prepared.mapIndexed { index, (definition, _) -> definition to readBack[index] }, evidenceFingerprint)
+            FaultInjection.hit(context, "report_before_activation")
+            store(student).writeBytesSafely(activeReportSetPath(student), (pointer.toString(2) + "\n").toByteArray(), "application/json")
+            prepared.forEach { (definition, _) -> published.put(paths.getValue(definition.id)) }
+            runCatching { sync.commitPublication(student.id, publicationId, readBack) }
+                .onFailure { sync.pauseAfterSnapshotFailure(student.id, it) }
+            // Compatibility mirrors are not authoritative; readers use the single active pointer above.
+            prepared.forEachIndexed { index, (definition, _) -> runCatching {
+                store(student).writeBytesSafely("${reportRoot(student)}/${definition.fileName}", readBack[index].toByteArray(), "text/markdown")
+            } }
+        } }
         runCatching { CloudReportSync.enqueueAfterCompletePublication(context, student.id) }
         runCatching { StudioAutomation.enqueueCheck(context, student.id) } // Worker sends nothing without prior per-student consent.
         val message = if (result.warnings.isEmpty()) {
@@ -221,7 +371,8 @@ class GrowthModelService(private val context: Context) {
         } else {
             "四份正式学情报告已生成并发布；${result.warnings.size} 项模型漏项或无依据内容已自动使用保守表述。"
         }
-        return JSONObject().put("ok", true).put("published", published).put("modelUsed", result.modelReportCount > 0)
+        return JSONObject().put("ok", true).put("status", "published").put("published", published)
+            .put("evidenceFingerprint", evidenceFingerprint).put("modelUsed", result.modelReportCount > 0)
             .put("modelReportCount", result.modelReportCount).put("fallbackSectionCount", result.fallbackSectionCount)
             .put("warnings", JSONArray(result.warnings)).put("message", message)
     }
@@ -254,16 +405,46 @@ class GrowthModelService(private val context: Context) {
         return GeneratedReportSet(confirmed, reports, modelReports, fallbackSections, warnings)
     }
 
+    /** Resolve the active report-set identity only after validating all four files. */
+    fun activeReportPublicationId(studentId: String): String? = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        val student = students.requireExact(studentId)
+        val workspace = store(student)
+        val path = activeReportSetPath(student)
+        if (!workspace.exists(path)) return@synchronized null
+        val pointer = JSONObject(workspace.readBytes(path).toString(Charsets.UTF_8))
+        val eligibleIds = checkedSources(studentId, readReview(student).getJSONArray("candidates").toObjects()).filter(::publicationEligible)
+            .map { it.getString("id") }.toSet()
+        REPORTS.forEach { definition ->
+            val entry = LearningReportPublicationPolicy.requireEntry(pointer, student.id, definition.id)
+            val content = workspace.readBytes(entry.getString("path"))
+            require(ScopedContentPolicy.hash(content) == entry.getString("sha256")) { "学情报告活动版本哈希不一致" }
+            LearningReportPublicationPolicy.requireEvidenceStillEligible(content.toString(Charsets.UTF_8), eligibleIds)
+        }
+        pointer.getString("publicationId").also { require(it.isNotBlank()) { "学情报告版本标识为空" } }
+    }
+
     fun readPublishedReport(studentId: String, reportId: String): String {
         val student = students.requireExact(studentId)
         val definition = REPORTS.singleOrNull { it.id == reportId } ?: error("未知学情报告")
         val workspace = store(student)
+        if (workspace.exists(activeReportSetPath(student))) {
+            val pointer = JSONObject(workspace.readBytes(activeReportSetPath(student)).toString(Charsets.UTF_8))
+            val entry = LearningReportPublicationPolicy.requireEntry(pointer, student.id, reportId)
+            val text = workspace.readBytes(entry.getString("path")).toString(Charsets.UTF_8)
+            require(EducationPublicationPolicy.sha256(text) == entry.getString("sha256")) { "学情报告活动版本哈希不一致" }
+            val eligibleIds = checkedSources(studentId, readReview(student).getJSONArray("candidates").toObjects()).filter(::publicationEligible)
+                .map { it.getString("id") }.toSet()
+            LearningReportPublicationPolicy.requireEvidenceStillEligible(text, eligibleIds)
+            EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, text)
+            return text
+        }
         val direct = StudentArchiveCompatibility.reportDocumentPaths(student, definition.fileName).asSequence()
             .mapNotNull { path -> runCatching { path to workspace.readBytes(path).toString(Charsets.UTF_8) }.getOrNull() }
             .firstOrNull { (_, text) -> EducationPublicationPolicy.hasMeaningfulBody(text) }
         direct?.let { return it.second }
         val exactArchived = StudentArchiveCompatibility.reportSearchRoots(student).asSequence().map { root ->
             workspace.listMarkdownFiles(listOf(root), maximum = 500, maximumDepth = 6)
+                .filterNot { it.relativePath.contains("/观察草稿/") }
         }.firstOrNull { it.isNotEmpty() }.orEmpty()
         val discoveredArchived = if (exactArchived.isNotEmpty()) emptyList() else workspace.findArchiveMarkdownFiles(
             relativeRoots = StudentArchiveCompatibility.fallbackSearchRoots(student),
@@ -272,15 +453,53 @@ class GrowthModelService(private val context: Context) {
             preferredTerms = StudentArchiveCompatibility.archivePreferredTerms(student, "学情报告"),
             allowRoot = student.knowledgeBaseMode == "adopted",
         )
-        val archived = (exactArchived + discoveredArchived).distinctBy { it.relativePath }.mapNotNull { file ->
+        val archived = (exactArchived + discoveredArchived).filterNot { it.relativePath.contains("/观察草稿/") }.distinctBy { it.relativePath }.mapNotNull { file ->
             val text = runCatching { workspace.readBytes(file.relativePath).toString(Charsets.UTF_8) }.getOrNull()
                 ?.takeIf(EducationPublicationPolicy::hasMeaningfulBody) ?: return@mapNotNull null
             migratedReportRank(definition, file, text)?.let { rank -> Triple(rank, file.relativePath, text) }
         }.sortedWith(compareBy<Triple<Int, String, String>> { it.first }.thenByDescending { it.second })
             .firstOrNull()?.third
         if (archived != null) return archived
+        val draftPointer = "${reportRoot(student)}/observation-draft.json"
+        if (workspace.exists(draftPointer)) {
+            val pointer = JSONObject(workspace.readBytes(draftPointer).toString(Charsets.UTF_8))
+            require(pointer.optString("schema") == "observation-draft-v1" && pointer.optString("studentId") == studentId)
+            val files = FileAssetService(context); val rows = files.materials(studentId).associateBy { it.optString("id") }
+            val currentEvidence = readReview(student).getJSONArray("candidates").toObjects().associateBy { it.optString("id") }
+            val resolver = MaterialDigestSourceResolver(context, files); val sources = pointer.getJSONArray("sources")
+            require(sources.length() > 0)
+            for (i in 0 until sources.length()) {
+                val source = sources.getJSONObject(i); val id = source.getString("sourceId")
+                val row = requireNotNull(rows[id]); val evidence = requireNotNull(currentEvidence[source.getString("id")])
+                val actualHash = ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id))
+                require(actualHash == source.getString("sourceSha256") &&
+                    ObservationDraftPolicy.verifiedExcerpt(studentId, evidence, row, actualHash, resolver.resolve(studentId, row)) == source.getString("excerpt")) {
+                    "观察草稿的来源或证据已变化，请重新检查资料"
+                }
+            }
+            val entry = pointer.getJSONObject("reports").getJSONObject(reportId)
+            val path = entry.getString("path")
+            require(path.startsWith("${reportRoot(student)}/观察草稿/${pointer.getString("fingerprint")}/"))
+            val bytes = workspace.readBytes(path)
+            require(ScopedContentPolicy.hash(bytes) == entry.getString("sha256")) { "观察草稿哈希不一致" }
+            return bytes.toString(Charsets.UTF_8)
+        }
         ensure(studentId)
         return workspace.readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
+    }
+
+    private fun reconcileActivePublication(student: StudentRecord): Boolean {
+        val workspace = store(student)
+        if (!workspace.exists(activeReportSetPath(student))) return false
+        val pointer = JSONObject(workspace.readBytes(activeReportSetPath(student)).toString(Charsets.UTF_8))
+        val contents = REPORTS.map { definition ->
+            val entry = LearningReportPublicationPolicy.requireEntry(pointer, student.id, definition.id)
+            val text = workspace.readBytes(entry.getString("path")).toString(Charsets.UTF_8)
+            require(EducationPublicationPolicy.sha256(text) == entry.getString("sha256")) { "学情报告活动版本哈希不一致" }
+            EducationPublicationPolicy.validatePublishedReport(student.id, definition.title, text)
+            text
+        }
+        return CloudReportSync(context).reconcilePublication(student.id, pointer.getString("publicationId"), contents)
     }
 
     private fun migratedReportRank(definition: LearningReportDefinition, file: SafWorkspaceStore.MarkdownFile, text: String): Int? {
@@ -329,6 +548,31 @@ class GrowthModelService(private val context: Context) {
         if (assessment.level == GrowthRiskLevel.LOW) appendConfirmedEvidence(student, item)
         return item
     }
+    /** Runtime projection only: retain the original evidence and allow recovery if the original is restored. */
+    private fun checkedSources(studentId: String, evidence: List<JSONObject>): List<JSONObject> {
+        val files = FileAssetService(context)
+        val rows = runCatching { files.materials(studentId).associateBy { it.optString("id") } }.getOrDefault(emptyMap())
+        val checked = mutableMapOf<String, String?>()
+        val prefix = "edu://student/$studentId/raw/"
+        return evidence.map { original ->
+            val uri = original.optString("sourceUri")
+            if (!uri.startsWith("edu://student/")) return@map original
+            val id = uri.removePrefix(prefix)
+            val reason = if (!uri.startsWith(prefix) || id.isBlank() || '/' in id) "source_scope_conflict" else {
+                if (!checked.containsKey(id)) {
+                    val row = rows[id]
+                    val hashes = if (row == null || MaterialStatus.normalize(row.optString("status")) == MaterialStatus.REMOVED) null
+                        else runCatching { files.materialHashes(studentId, id) }.getOrNull()
+                    checked[id] = SourceIntegrityPolicy.failure(row, hashes?.first, hashes?.second)
+                }
+                checked[id]
+            }
+            if (reason == null) original else JSONObject(original.toString())
+                .put("originalEvidenceStatus", original.optString("status"))
+                .put("status", "needs_attention").put("sourceIntegrityReason", reason)
+        }
+    }
+
     private fun publicationEligible(item: JSONObject): Boolean {
         if (item.optString("status") != "confirmed") return false
         val automatic = item.optJSONObject("automationDecision")
@@ -337,7 +581,7 @@ class GrowthModelService(private val context: Context) {
         return review.optString("status") == "approved" && review.optString("reviewerRole") in setOf("student", "parent", "teacher", "administrator")
             && review.optString("reviewerId").isNotBlank() && review.optString("reviewedAt").isNotBlank()
     }
-    private fun appendDraftCandidate(student: StudentRecord, item: JSONObject) { val s = store(student); val p = "${growthRoot(student)}/成长证据草稿.md"; s.writeBytesSafely(p, (s.readBytes(p).toString(Charsets.UTF_8).trimEnd() + "\n\n- [${item.getString("id")}] ${item.getString("title")}（${item.getString("sourceUri")}）\n").toByteArray(), "text/markdown") }
+    private fun appendDraftCandidate(student: StudentRecord, item: JSONObject) { val s = store(student); val p = "${growthRoot(student)}/成长证据草稿.md"; val old = s.readBytes(p).toString(Charsets.UTF_8); val marker = "[${item.getString("id")}]"; if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n\n- $marker ${item.getString("title")}（${item.getString("sourceUri")}）\n").toByteArray(), "text/markdown") }
     private fun appendConfirmedEvidence(student: StudentRecord, item: JSONObject) { val sourceUri = item.optString("sourceUri").trim(); require(sourceUri.isNotBlank()) { "成长证据缺少来源，不能写入正式成长模型" }; val s = store(student); val p = "${growthRoot(student)}/成长证据.md"; val marker = "<!-- evidence:${item.getString("id")} -->"; val old = s.readBytes(p).toString(Charsets.UTF_8); if (!old.contains(marker)) s.writeBytesSafely(p, (old.trimEnd() + "\n$marker\n| ${Timestamp.now().take(10)} | ${markdownCell(item.getString("title"))} | ${markdownCell(sourceUri)} | ${markdownCell(item.optString("ability", "待标注"))} | ${markdownCell(item.optString("confidence", "人工确认"))} |\n").toByteArray(), "text/markdown") }
     private fun reportTemplate(student: StudentRecord, d: LearningReportDefinition) = reportHeader(student, d, "draft") + d.sections.joinToString("\n\n") { "## $it\n\n${if (it == d.summaryHeading) "待生成。" else "- 待补充。"}" } + "\n"
     private fun reportPublished(student: StudentRecord, d: LearningReportDefinition, sections: JSONObject, evidence: List<JSONObject>): String {
@@ -352,11 +596,13 @@ class GrowthModelService(private val context: Context) {
     private fun writeIfMissing(store: SafWorkspaceStore, path: String, content: String) { if (!store.exists(path)) store.writeBytesSafely(path, content.toByteArray(), if (path.endsWith(".json")) "application/json" else "text/markdown") }
     private fun store(student: StudentRecord) = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
     private fun growthRoot(s: StudentRecord) = "${s.paths.summaryPath}/成长模型"; private fun reportRoot(s: StudentRecord) = "${s.paths.summaryPath}/学情报告"
+    private fun activeReportSetPath(s: StudentRecord) = "${reportRoot(s)}/active-report-set.json"
     private fun stableId(prefix: String, value: String) = "$prefix-${MessageDigest.getInstance("SHA-1").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }.take(14)}"
     private fun inlineText(value: String) = value.trim().replace(Regex("\\s+"), " ")
     private fun markdownCell(value: String) = inlineText(value).replace("|", "｜")
 
     companion object {
+        const val REPORT_SET_DIRECTORY = "发布版本"
         val EVIDENCE_STATUSES = setOf("pending", "confirmed", "watching", "needs_attention", "rejected")
         val REPORTS = listOf(
             LearningReportDefinition("profile", "整体画像", "整体画像.md", "learning_profile", "家长 / 教师 / 学生", "一句话画像", listOf("一句话画像", "学习优势", "当前短板", "兴趣与动力", "学习习惯与执行力", "适合的学习方式", "家长沟通注意点", "依据来源")),

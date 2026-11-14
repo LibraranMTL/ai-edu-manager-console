@@ -7,7 +7,7 @@ const student = { id: 's1', agentTool: 'workbuddy', classificationFallback: { en
 const policy = { primary: 'workbuddy', fallbacks: ['codex'], enabled: true, desktopHandoff: true, version: 0, confirmed: true };
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-control-'));
-  t.after(() => fs.rm(root, { force: true, recursive: true }));
+  t.after(async () => { await t.closeTaskHost?.(); await fs.rm(root, { force:true,recursive:true }); });
   return { root, store: control.createAgentControlStore(path.join(root, 'policies.json')) };
 }
 test('legacy classification grant does not authorize digest fallback or desktop handoff', async t => {
@@ -71,6 +71,27 @@ test('two Agent pre-send failures fall through to the authorized LLM API before 
   ]);
   assert.equal(records.at(-1).stage, 'accepted');
 });
+test('provider-local deferral falls through while global resource deferral preserves the selected route', async () => {
+  const providerCalls = [];
+  const providerResult = await control.dispatchAgent({ policy, profile: digest, current: () => true,
+    attempt: async providerId => { providerCalls.push(providerId); return providerId === 'workbuddy'
+      ? { ok: false, deferred: true, deferScope: 'provider', code: 'PROVIDER_DEFERRED' }
+      : { ok: true, executionId: 'codex-run' }; },
+    record: async () => {}, handoff: async () => assert.fail('automatic fallback succeeded'),
+  });
+  assert.equal(providerResult.ok, true);
+  assert.deepEqual(providerCalls, ['workbuddy', 'codex']);
+
+  const globalCalls = [];
+  const globalResult = await control.dispatchAgent({ policy, profile: digest, current: () => true,
+    attempt: async providerId => { globalCalls.push(providerId); return { ok: false, deferred: true,
+      deferScope: 'global', code: 'RESOURCE_DEFERRED' }; },
+    record: async () => {}, handoff: async () => assert.fail('global pressure must not change providers'),
+  });
+  assert.equal(globalResult.deferred, true);
+  assert.equal(globalResult.deferScope, 'global');
+  assert.deepEqual(globalCalls, ['workbuddy']);
+});
 for (const failure of [{ code: 'AUTHENTICATION_REQUIRED', stage: 'possibly_sent' }, { code: 'AUTHENTICATION_REQUIRED', executionId: 'run' }, { code: 'EXECUTION_UNRESOLVED' }, { code: 'SENSITIVE_REVIEW_REQUIRED' }, { code: 'ETIMEDOUT' }]) {
   test(`never fail over after uncertain/sensitive outcome ${JSON.stringify(failure)}`, async () => {
     let attempts = 0;
@@ -115,13 +136,14 @@ test('actual global IPC works without students and snapshot never probes or star
 });
 test('production digest dispatcher uses real Worker storage and marks auth block instead of running', async t => {
   const { root } = await fixture(t);
-  const host = await require('./helpers/smart-inbox-task-host.cjs').createTaskHost(root); t.after(() => host.close());
+  const host = await require('./helpers/smart-inbox-task-host.cjs').createTaskHost(root); t.closeTaskHost=()=>host.close();
   const source = await fs.readFile(path.join(__dirname, '../electron/main.cjs'), 'utf8');
   const task = { id: 'digest1', kind: 'student_digest', status: 'approved', sourceId: 's1', sourceType: 'student', title: 'Synthetic digest', attempt: 0 };
   const store = host.context.readTaskStore(); store.tasks.push(task); await host.context.writeTaskStoreDurably(store);
   let digestState, count = 0;
   Object.assign(host.context, { require: name => require(path.join(__dirname, '../electron', name)), DIGEST_PROFILE: digest,
     findStudentByKey: () => student, agentControlPolicy: () => ({ ...policy, desktopHandoff: false }),
+    ensureTaskDispatchReadiness: async (_task,providers) => ({decision:'dispatch',providerId:providers[0],reasons:providers.map(providerId=>({providerId,state:'available'}))}),
     submitProjectMaterialAttempt: async () => { count++; return { ok: false, code: 'AUTHENTICATION_REQUIRED' }; },
     writeStudentDigestState: (_, value) => { digestState = value; }, notify() {} });
   const start = source.indexOf('async function submitProjectMaterialTask(');

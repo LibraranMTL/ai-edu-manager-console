@@ -35,6 +35,8 @@ interface BusinessLedgerDao {
     fun hasUnresolvedCall(studentId: String, taskIds: List<String>): Boolean
     @Query("SELECT EXISTS(SELECT 1 FROM model_calls WHERE studentId = :studentId AND taskId = :taskId AND state IN ('running','unknown','succeeded'))")
     fun hasPossibleResult(studentId: String, taskId: String): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM model_calls WHERE studentId = :studentId AND taskId = :taskId)")
+    fun hasAnyCall(studentId: String, taskId: String): Boolean
     @Insert(onConflict = OnConflictStrategy.ABORT) fun prepareIntent(intent: FileOperationIntentEntity)
     @Query("UPDATE file_operation_intents SET state = :next, updatedAt = :now WHERE operationId = :id AND studentId = :studentId AND state = :expected")
     fun compareAndSetIntent(id: String, studentId: String, expected: String, next: String, now: Long): Int
@@ -57,6 +59,8 @@ data class BusinessMetadataEntity(@PrimaryKey val name: String, val payload: Str
 @Dao
 interface BusinessTaskDao {
     @Query("SELECT * FROM business_tasks ORDER BY updatedAt DESC, id") fun all(): List<BusinessTaskEntity>
+    @Query("SELECT * FROM business_tasks WHERE id > :afterId ORDER BY id LIMIT :limit")
+    fun pageAfter(afterId: String, limit: Int): List<BusinessTaskEntity>
     @Query("SELECT * FROM business_tasks WHERE processSession != :session AND status IN ('running', 'waiting_result', 'reviewing')")
     fun interrupted(session: String): List<BusinessTaskEntity>
     @Query("SELECT * FROM business_tasks WHERE studentId = :studentId OR (studentId = '' AND projectId IN (:projectIds)) ORDER BY updatedAt DESC, id LIMIT :limit")
@@ -73,6 +77,8 @@ interface BusinessTaskDao {
     @Query("SELECT payload FROM business_metadata WHERE name = :name") fun metadata(name: String): String?
     @Query("SELECT * FROM business_metadata WHERE name >= :prefix AND name < :end ORDER BY name LIMIT 100")
     fun metadataPrefix(prefix: String, end: String): List<BusinessMetadataEntity>
+    @Query("SELECT * FROM business_metadata WHERE substr(name, 1, length(:prefix)) = :prefix AND name > :after ORDER BY name LIMIT :limit")
+    fun metadataPage(prefix: String, after: String, limit: Int): List<BusinessMetadataEntity>
     @Insert(onConflict = OnConflictStrategy.REPLACE) fun metadata(value: BusinessMetadataEntity)
 }
 

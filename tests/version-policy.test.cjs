@@ -13,32 +13,48 @@ test('Windows versions advance from patch 1 through 10, with the requested 0.17.
   assert.equal(nextWindowsVersion('0.9.10'), '0.10.1');
   assert.equal(nextWindowsVersion('0.17.10'), '0.17.11');
   assert.equal(nextWindowsVersion('0.17.11'), '0.18.1');
+  assert.equal(nextWindowsVersion('0.23.0'), '0.23.1');
+  assert.equal(nextWindowsVersion('0.23.1'), '0.23.2');
+  assert.equal(nextWindowsVersion('0.23.2'), '0.23.3');
 });
 
 test('Windows release policy rejects zero and patch numbers above 10', () => {
   assert.throws(() => validateWindowsVersion('0.8.0'), /1-10/);
   assert.throws(() => validateWindowsVersion('0.8.11'), /1-10/);
   assert.deepEqual(validateWindowsVersion('0.17.11'), { major: 0, minor: 17, patch: 11 });
+  assert.deepEqual(validateWindowsVersion('0.23.0'), { major: 0, minor: 23, patch: 0 });
   assert.throws(() => validateWindowsVersion('0.17.12'), /1-10/);
   assert.throws(() => validateWindowsVersion('0.8'), /无效版本号/);
 });
 
-test('0.21.6 formal release keeps package, manifests and download page aligned', () => {
+test('candidate builds preserve the stable manifest, while a formal build aligns it with package.json', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const releaseManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8'));
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.21.6');
-  assert.equal(releaseManifest.windowsVersionName, '0.21.6');
-  assert.equal(releaseManifest.windowsVersionCode, 266);
+  assert.equal(packageJson.version, '0.23.7');
+  assert.equal(packageJson.version, releaseManifest.windowsVersionName,
+    'restored Windows source must identify the current published host line');
+  assert.ok(releaseManifest.windowsVersionName, 'published host version must be recorded independently of source version');
+  assert.ok(Number.isInteger(releaseManifest.windowsVersionCode));
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');
   assert.equal(windowsManifest.windowsVersionName, releaseManifest.windowsVersionName);
   assert.equal(releaseManifest.windowsTerminalVersionName, windowsManifest.windowsTerminalVersionName);
-  assert.equal(releaseManifest.windowsTerminalVersionName, terminalVersion.versionName);
-  assert.equal(releaseManifest.windowsTerminalVersionCode, terminalVersion.versionCode);
-  assert.equal(releaseManifest.windowsTerminalReleaseStatus, terminalVersion.releaseStatus);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, terminalVersion.versionName);
+  if (terminalVersion.releaseStatus === 'stable') {
+    assert.equal(terminalVersion.versionName, releaseManifest.windowsTerminalVersionName);
+    assert.equal(terminalVersion.versionCode, releaseManifest.windowsTerminalVersionCode);
+  } else {
+    assert.equal(terminalVersion.releaseStatus, 'candidate');
+    assert.ok(terminalVersion.versionCode > releaseManifest.windowsTerminalVersionCode);
+  }
+  assert.equal(releaseManifest.windowsTerminalReleaseStatus, 'stable');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8')).windowsTerminalVersionName, releaseManifest.windowsTerminalVersionName);
+  const publicWebsiteManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', '网站文件', 'edu-manager-version.json'), 'utf8'));
+  assert.match(downloadPage, new RegExp(`Android v${releaseManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}`));
+  assert.match(downloadPage, new RegExp(new URL(releaseManifest.tabletTerminalApkUrl).pathname.split('/').pop().replaceAll('.', '\\.')));
+  assert.match(downloadPage, new RegExp(`v${publicWebsiteManifest.teacherTerminalVersionName.replaceAll('.', '\\.')}`));
+  assert.match(downloadPage, new RegExp(new URL(publicWebsiteManifest.teacherTerminalUrl).pathname.split('/').pop().replaceAll('.', '\\.')));
   const isCandidate = releaseManifest.windowsReleaseStatus === 'candidate';
   const terminalIsCandidate = releaseManifest.windowsTerminalReleaseStatus === 'candidate';
   assert.equal(windowsManifest.windowsReleaseStatus, releaseManifest.windowsReleaseStatus);

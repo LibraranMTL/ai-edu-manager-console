@@ -6,6 +6,7 @@ const { spawnSync } = require('node:child_process');
 const { validateWindowsVersion } = require('./version-policy.cjs');
 const { compileLifecycleHook } = require('./compile-lifecycle-hook.cjs');
 const { resolvePnpmVirtualStore } = require('./pnpm-virtual-store.cjs');
+const { createSourceControlAudit } = require('./source-control-audit.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const terminalVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'windows-terminal-version.json'), 'utf8'));
@@ -17,10 +18,16 @@ const artifactName = `${artifactBase}.exe`;
 const stageBase = path.resolve(process.env.LOCALAPPDATA || os.tmpdir(), 'AI-Education-Manager', 'terminal-release-stage');
 const stageRoot = path.resolve(stageBase, candidateTag ? `${version}-${candidateTag}` : version);
 const stageOutput = path.join(stageRoot, 'out');
-const releaseDir = candidateTag
+const candidateOutputDirectory = String(process.env.EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR || '').trim();
+const defaultReleaseDir = candidateTag
   ? path.join(repoRoot, 'release', 'windows-terminal', 'candidates', candidateTag)
   : path.join(repoRoot, 'release', 'windows-terminal');
+const releaseDir = candidateOutputDirectory ? path.resolve(candidateOutputDirectory) : defaultReleaseDir;
 const electronLanguages = ['zh-CN', 'en-US'];
+// Keep the student terminal bounded and dependency-free. The original 5 MiB
+// ceiling was reached by the published-course reader baseline (83 bytes left);
+// this fixed 64 KiB allowance covers the rendered learning workbench only.
+const terminalAsarBudgetBytes = 5 * 1024 * 1024 + 64 * 1024;
 
 function assertInside(target, parent) {
   const resolvedTarget = path.resolve(target);
@@ -61,6 +68,19 @@ function copyFile(relativePath) {
   fs.copyFileSync(source, destination);
 }
 
+function minifyStagedMainProcess() {
+  const esbuild = require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild');
+  const target = path.join(stageRoot, 'electron', 'terminal-main.cjs');
+  const source = fs.readFileSync(target, 'utf8');
+  const transformed = esbuild.transformSync(source, {
+    loader: 'js',
+    minify: true,
+    target: 'node20',
+    legalComments: 'none',
+  });
+  fs.writeFileSync(target, transformed.code, 'utf8');
+}
+
 function locateAsarModule() {
   const pnpmRoot = resolvePnpmVirtualStore(repoRoot);
   const packageDir = fs.readdirSync(pnpmRoot).find((name) => name.startsWith('@electron+asar@'));
@@ -72,16 +92,32 @@ function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex').toUpperCase();
 }
 
+const publishCleanupWait = new Int32Array(new SharedArrayBuffer(4));
+
+function removeTemporaryPublishFile(temporary) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+      if (!fs.existsSync(temporary)) return;
+    } catch (error) {
+      lastError = error;
+    }
+    Atomics.wait(publishCleanupWait, 0, 0, 200);
+  }
+  throw new Error(`Unable to remove temporary terminal release artifact: ${temporary}${lastError ? ` (${lastError.message})` : ''}`);
+}
+
 function publishFile(source, destination) {
   const temporary = `${destination}.new`;
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  removeTemporaryPublishFile(temporary);
   try {
     fs.copyFileSync(source, temporary);
     if (sha256(source) !== sha256(temporary)) throw new Error('Terminal artifact copy verification failed.');
     fs.copyFileSync(temporary, destination);
   } finally {
-    fs.rmSync(temporary, { force: true });
+    removeTemporaryPublishFile(temporary);
   }
 }
 
@@ -90,6 +126,10 @@ function writeRuntimePackage() {
   const runtimePackage = {
     name: 'edu-manager-student-terminal',
     version,
+    // Present only in non-production candidates.  The main process consumes
+    // this before acquiring Electron's single-instance lock, isolating each
+    // candidate from installed and earlier candidate user-data directories.
+    ...(candidateTag ? { eduCandidateTag: candidateTag } : {}),
     private: true,
     description: 'AI Education Manager Windows student terminal',
     author: 'Robogala',
@@ -101,7 +141,7 @@ function writeRuntimePackage() {
       compression: 'normal',
       electronLanguages,
       directories: { output: 'out' },
-      files: ['dist-terminal/**/*', 'electron/**/*', 'package.json'],
+      files: ['dist-terminal/**/*', 'electron/**/*', 'public/course-catalog/trusted-course-issuers.json', 'package.json'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
@@ -113,7 +153,14 @@ function writeRuntimePackage() {
 }
 
 function build() {
+  const sourceControl = createSourceControlAudit(repoRoot);
+  if (sourceControl.dirty) {
+    throw new Error(`Windows student candidate requires a clean source commit; found ${sourceControl.changedPathCount} changed paths.`);
+  }
   assertInside(stageRoot, stageBase);
+  if (candidateOutputDirectory && !candidateTag) throw new Error('EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR requires EDU_WINDOWS_CANDIDATE_TAG.');
+  const releaseArtifactPath = path.join(releaseDir, artifactName);
+  if (releaseArtifactPath.length > 240) throw new Error(`Windows student candidate output path is too long (${releaseArtifactPath.length}); set EDU_WINDOWS_TERMINAL_CANDIDATE_OUTPUT_DIR to a short absolute directory.`);
   fs.mkdirSync(stageBase, { recursive: true });
   fs.rmSync(stageRoot, { recursive: true, force: true });
   fs.mkdirSync(stageRoot, { recursive: true });
@@ -125,6 +172,15 @@ function build() {
   for (const relative of [
     'electron/terminal-main.cjs',
     'electron/terminal-preload.cjs',
+    'electron/terminal-companion.html',
+    'electron/terminal-companion-preload.cjs',
+    'electron/terminal-companion-renderer.js',
+    'electron/companion-popover.html',
+    'electron/companion-popover-preload.cjs',
+    'electron/companion-popover-renderer.js',
+    'electron/companion-toolbar.cjs',
+    'electron/terminal-agent-bridge.cjs',
+    'electron/terminal-agent-mcp.cjs',
     'electron/terminal-practice-drafts.cjs',
     'electron/practice-card-export.cjs',
     'electron/practice-language-labels.json',
@@ -145,8 +201,12 @@ function build() {
     'electron/windows-tailscale.cjs',
     'electron/course-browser.cjs',
     'electron/course-catalog.cjs',
+    'electron/course-trust-policy.cjs',
+    'electron/student-course-trust.cjs',
+    'public/course-catalog/trusted-course-issuers.json',
     'public/brand/robogala.ico',
   ]) copyFile(relative);
+  minifyStagedMainProcess();
   compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
   require('./build-practice-runtime.cjs').bundlePracticeRuntime(stageRoot, require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild'), {minify:true});
   writeRuntimePackage();
@@ -177,6 +237,15 @@ function build() {
   for (const expected of [
     '\\electron\\terminal-main.cjs',
     '\\electron\\terminal-preload.cjs',
+    '\\electron\\terminal-companion.html',
+    '\\electron\\terminal-companion-preload.cjs',
+    '\\electron\\terminal-companion-renderer.js',
+    '\\electron\\companion-popover.html',
+    '\\electron\\companion-popover-preload.cjs',
+    '\\electron\\companion-popover-renderer.js',
+    '\\electron\\companion-toolbar.cjs',
+    '\\electron\\terminal-agent-bridge.cjs',
+    '\\electron\\terminal-agent-mcp.cjs',
     '\\electron\\terminal-practice-drafts.cjs',
     '\\electron\\practice-card-export.cjs',
     '\\electron\\practice-print-window.cjs',
@@ -197,14 +266,17 @@ function build() {
     '\\electron\\windows-tailscale.cjs',
     '\\electron\\course-browser.cjs',
     '\\electron\\course-catalog.cjs',
+    '\\electron\\course-trust-policy.cjs',
+    '\\electron\\student-course-trust.cjs',
+    '\\public\\course-catalog\\trusted-course-issuers.json',
     '\\dist-terminal\\terminal.html',
   ]) {
     if (!asarFiles.includes(expected)) throw new Error(`Terminal package is missing ${expected}.`);
   }
   const asarBytes = fs.statSync(asarPath).size;
   // Publication reader adds lazy PDF.js (~1.7 MiB) and bundled offline math fonts.
-  // Keep a bounded 5 MiB budget and the independent no-node_modules check above.
-  if (asarBytes > 5 * 1024 * 1024) throw new Error(`Terminal app.asar exceeds 5 MiB: ${asarBytes}`);
+  // The independently enforced no-node_modules check above remains the dependency boundary.
+  if (asarBytes > terminalAsarBudgetBytes) throw new Error(`Terminal app.asar exceeds ${(terminalAsarBudgetBytes / 1024 / 1024).toFixed(4)} MiB: ${asarBytes}`);
   for (const pattern of [/StudentPublishedCards-.*\.js$/, /pdf\.worker.*\.mjs$/, /KaTeX_Main-Regular.*\.woff2$/]) {
     if (!asarFiles.some(name=>pattern.test(name))) throw new Error(`Terminal publication reader asset missing: ${pattern}`);
   }
@@ -217,6 +289,18 @@ function build() {
     version,
     candidateTag,
     builtAt: new Date().toISOString(),
+    sourceControl,
+    baseline: {
+      version: '0.18.8',
+      versionCode: 238,
+      candidateTag: 'windows-student-learning-cockpit-r4-20261105',
+      exeSha256: 'D9947CB3067C1259A967B7E2DBCE7825D22D89498D8630076C5B315061B549AC',
+    },
+    publicCourseContract: {
+      manifest: 'edu-manager.public-course-manifest.v1',
+      projection: 'student-course-projection.v2',
+      trustPolicyRevision: 'course-trust-transition-2026-11-06-v1',
+    },
     stagingRoot: stageRoot,
     electronLanguages,
     package: { asarBytes, asarFiles: asarFiles.length, nodeModuleFiles: nodeModuleFiles.length },
@@ -224,6 +308,9 @@ function build() {
     zip: { path: zipArtifact, bytes: fs.statSync(zipArtifact).size, sha256: sha256(zipArtifact) },
   };
   fs.writeFileSync(path.join(releaseDir, `${artifactName.replace(/\.exe$/, '')}-build-audit.json`), `${JSON.stringify(audit, null, 2)}\n`, 'utf8');
+  for (const artifact of [releaseArtifact, zipArtifact]) {
+    removeTemporaryPublishFile(`${artifact}.new`);
+  }
   process.stdout.write(`[windows-terminal-release] complete\n${JSON.stringify(audit, null, 2)}\n`);
 }
 

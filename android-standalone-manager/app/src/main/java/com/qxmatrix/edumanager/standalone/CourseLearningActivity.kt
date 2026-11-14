@@ -33,6 +33,14 @@ class CourseLearningActivity : Activity() {
     private lateinit var course: PlatformCourse
     private var selectedCaptureMode = "smart"
     private val refreshHandler = Handler(Looper.getMainLooper())
+    private val courseValidationHandler = Handler(Looper.getMainLooper())
+    @Volatile private var courseValidationRunning = false
+    private val validateCourse = object : Runnable {
+        override fun run() {
+            revalidateCourseAccess()
+            courseValidationHandler.postDelayed(this, 60_000L)
+        }
+    }
     private val refreshCapture = object : Runnable {
         override fun run() {
             if (::captureButton.isInitialized) refreshCaptureState()
@@ -48,7 +56,9 @@ class CourseLearningActivity : Activity() {
         window.statusBarColor = palette.page
         window.navigationBarColor = palette.page
         student = StudentIndexRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)))
-        course = PlatformCourse.fromJson(org.json.JSONObject(requireNotNull(intent.getStringExtra(EXTRA_COURSE_JSON))))
+        val requestedCourse = PlatformCourse.fromJson(org.json.JSONObject(requireNotNull(intent.getStringExtra(EXTRA_COURSE_JSON))))
+        course = runCatching { CourseCatalogService(this).effectiveCourses(student.id).firstOrNull { it.courseId == requestedCourse.courseId } }.getOrNull()
+            ?: run { setContentView(TextView(this).apply { text = "课程已撤回、未分配或离线租约已经到期。请返回课程中心联网刷新。"; setPadding(32, 32, 32, 32) }); return }
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(palette.page); setPadding(dp(14), dp(12), dp(14), dp(12)) }
         val toolbar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         toolbar.addView(Button(this).apply { text = "返回课程中心"; YouthUi.applyButton(this, palette, YouthButtonRole.COMPACT); setOnClickListener { finish() } }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -57,7 +67,7 @@ class CourseLearningActivity : Activity() {
         status = TextView(this).apply { text = "${course.name} · ${course.provider}\n采集仅在你点击并通过 Android 系统授权后开始。"; setTextColor(palette.text); setPadding(8, 12, 8, 12) }
         layout.addView(status)
         webView = WebView(this); configureCourseWebView(); layout.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        setContentView(layout); webView.loadUrl(course.url); refreshCaptureState(); refreshHandler.post(refreshCapture)
+        setContentView(layout); webView.loadUrl(course.url); refreshCaptureState(); refreshHandler.post(refreshCapture); courseValidationHandler.post(validateCourse)
         val autoStartCapture = intent.getBooleanExtra(EXTRA_AUTO_START_CAPTURE, false)
         intent.removeExtra(EXTRA_AUTO_START_CAPTURE)
         if (autoStartCapture && savedInstanceState == null) {
@@ -166,6 +176,23 @@ class CourseLearningActivity : Activity() {
         if (active && activeStudentId == student.id) status.text = "${course.name} · 正在采集 · 已保存 $saved 张\n可从持续通知暂停或结束。"
     }
 
+    private fun revalidateCourseAccess() {
+        if (courseValidationRunning || !::course.isInitialized) return
+        courseValidationRunning = true
+        Thread {
+            runCatching { PublicCourseSyncService(this).sync() }
+            val current = runCatching { CourseCatalogService(this).effectiveCourses(student.id).firstOrNull { it.courseId == course.courseId } }.getOrNull()
+            runOnUiThread {
+                courseValidationRunning = false
+                if (isFinishing || isDestroyed || !::webView.isInitialized) return@runOnUiThread
+                if (current == null || current.url != course.url) {
+                    webView.stopLoading(); webView.loadUrl("about:blank")
+                    status.text = "课程已撤回、授权已变化或离线租约到期，已停止访问。请返回课程中心刷新。"
+                }
+            }
+        }.start()
+    }
+
     private fun captureModeLabel(mode: String): String = when (mode) {
         "change" -> "画面变化时采集"
         "interval" -> "固定间隔（每 30 秒）"
@@ -173,7 +200,7 @@ class CourseLearningActivity : Activity() {
     }
 
     override fun onResume() { super.onResume(); if (::captureButton.isInitialized) refreshCaptureState() }
-    override fun onDestroy() { refreshHandler.removeCallbacks(refreshCapture); if (::webView.isInitialized) { webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy() }; super.onDestroy() }
+    override fun onDestroy() { refreshHandler.removeCallbacks(refreshCapture); courseValidationHandler.removeCallbacks(validateCourse); if (::webView.isInitialized) { webView.stopLoading(); webView.loadUrl("about:blank"); webView.clearHistory(); webView.destroy() }; super.onDestroy() }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     companion object {

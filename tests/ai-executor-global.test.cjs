@@ -164,7 +164,7 @@ test('production task page uses live registry without connection probes and drop
   const ctx = vm.createContext({ aiExecutorRegistry: () => registry.executorRegistry(tools),
     agentControlStore: () => ({ read: () => ({ global: { enabled: true, disabledProviders: [] } }) }),
     adapterCapabilityCache: { value: { [customId]: { id: customId }, codex: { available: true, authorized: true, automatic: true } } },
-    taskIoClient: { request: async () => ({ ok: true, ready: true, tasks: [] }) }, taskStorePath: () => '',
+    taskIoClient: { request: async () => ({ ok: true, ready: true, tasks: [] }) }, taskStorePath: () => '', taskSessionRunId:'synthetic-session',
     taskAutomationEnabled: () => true, taskStoreGuard: { status: () => ({}) },
     refreshAdapterCapabilities: () => assert.fail('listing must not probe') });
   for (const name of ['function registeredAdapterCapabilities(', 'async function getTaskPage(']) {
@@ -174,4 +174,27 @@ test('production task page uses live registry without connection probes and drop
   assert.equal(Object.keys(page.capabilities).length, 16);
   tools = []; page = JSON.parse(await ctx.getTaskPage()); assert.equal(page.capabilities[customId], undefined);
   assert.equal(Object.keys(page.capabilities).length, 15);
+});
+
+test('a partial startup capability snapshot cannot hide the internal executor or force a manual packet', async () => {
+  const source = await fs.readFile(path.join(__dirname, '../electron/main.cjs'), 'utf8');
+  const context = vm.createContext({
+    adapterCapabilityCache: { value: {
+      workbuddy: { id: 'workbuddy', label: 'WorkBuddy', available: true, authorized: true, automatic: true },
+    } },
+    aiExecutorRegistry: () => [],
+    agentControlStore: () => ({ read: () => ({ global: { enabled: true, disabledProviders: [] } }) }),
+    readTaskStore: () => ({ runtime: { circuits: {} }, history: [] }),
+    circuitDecision: () => ({ allowed: true }),
+    taskNow: () => '2026-10-30T00:00:00.000Z',
+  });
+  for (const name of ['function registeredAdapterCapabilities(', 'function adapterCapabilities(', 'function routeTask(']) {
+    const start = source.indexOf(name);
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+  }
+  const capabilities = context.adapterCapabilities();
+  assert.equal(capabilities.internal.available, true);
+  assert.equal(capabilities.internal.authorized, true);
+  const decision = context.routeTask({ kind: 'topic_suggestion_refresh', executionMode: 'internal', requestedExecutor: 'internal' }, 'internal', [], { preferRequested: true });
+  assert.equal(decision.selectedAdapter, 'internal');
 });

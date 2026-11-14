@@ -66,7 +66,7 @@ test('scope revoked after Agent output prevents official knowledge writes and le
   const f = await fixture(t);
   const runtime = createProjectMaterialTask({ ...f.options, execute: async (options) => { const result = await f.execute(options); f.revoke(); return result; } });
   await assert.rejects(runtime.run(), { code: 'project_scope_changed' });
-  assert.equal((await f.store.read()).materials[0].processing.state, 'failed');
+  assert.equal((await f.store.read()).materials[0].processing.state, 'failed_terminal');
   assert.equal((await fs.readdir(f.project.knowledgeRootPath)).length, 0);
 });
 
@@ -156,19 +156,35 @@ test('more than one bounded batch continues in the same task until all pending v
   assert.equal((await f.store.read()).materials.filter((item) => item.processing.state === 'completed').length, 21);
 });
 
-test('unsupported source does not block valid sources or falsely complete the whole project', windowsOnly, async (t) => {
+test('unsupported source is terminally skipped and never blocks or repeats valid work', windowsOnly, async (t) => {
   const f = await fixture(t);
   await fs.writeFile(path.join(f.project.workspacePath, 'old.doc'), Buffer.from([0, 1, 2]));
   const bad = (await f.store.registerFiles([{ location: { rootId: 'workspace', kind: 'workspace', relativePath: 'old.doc' } }])).result[0];
   const result = await createProjectMaterialTask(f.options).run();
-  assert.equal(result.fullyCommitted, false); assert.equal(result.remainingCount, 1); assert.equal(f.calls, 1);
+  assert.equal(result.fullyCommitted, true); assert.equal(result.remainingCount, 0); assert.equal(f.calls, 1);
   assert.equal(result.failures[0].materialId, bad.materialId); assert.equal(result.failures[0].code, 'unsupported');
   const index = await f.store.read();
   assert.equal(index.materials.find((item) => item.materialId === f.item.materialId).processing.state, 'completed');
-  assert.equal(index.materials.find((item) => item.materialId === bad.materialId).processing.state, 'unsupported');
-  assert.equal(f.checkpoint.phase, 'partial');
-  const retry = await createProjectMaterialTask({ ...f.options, checkpoint: f.checkpoint, executionId: 'e2' }).run();
-  assert.equal(retry.fullyCommitted, false); assert.equal(f.calls, 1); // No repeated AI for successful source.
+  assert.equal(index.materials.find((item) => item.materialId === bad.materialId).processing.state, 'skipped_unsupported');
+  assert.equal(f.checkpoint.phase, 'committed');
+  const noWork = await createProjectMaterialTask({ ...f.options, executionId: 'e2' }).run();
+  assert.equal(noWork.fullyCommitted, true); assert.equal(noWork.businessOutcome, 'no_work');
+  assert.equal(f.calls, 1);
+});
+
+test('configured local transcription turns WebM into a normal digest source', windowsOnly, async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.project.workspacePath, 'lesson.webm'), Buffer.from('synthetic audio bytes'));
+  const audio = (await f.store.registerFiles([{ location: { rootId: 'workspace', kind: 'workspace', relativePath: 'lesson.webm' } }])).result[0];
+  let transcriptions = 0;
+  const result = await createProjectMaterialTask({ ...f.options, transcribeSource: async (input) => {
+    transcriptions++;
+    assert.equal(input.materialId, audio.materialId);
+    return 'synthetic transcript for project learning';
+  } }).run();
+  assert.equal(result.fullyCommitted, true);
+  assert.equal(transcriptions, 1);
+  assert.equal((await f.store.read()).materials.find((item) => item.materialId === audio.materialId).processing.state, 'completed');
 });
 
 test('a stable source edit refreshes its registered version and continues without manual repair', windowsOnly, async (t) => {
@@ -244,14 +260,26 @@ for (const fallback of [false, true]) test(`host task adapter persists checkpoin
   const runs = new Map();
   const context = vm.createContext({ crypto: require('node:crypto'), fs: require('node:fs'), AbortController, setInterval, clearInterval,
     require: name => name === './smart-inbox-agent.cjs' ? { routingRuntimeHash: async () => 'synthetic-runtime' } : require(path.join(__dirname, '../electron', name)),
-    findStudentByKey: () => ({ id: 's1', agentTool: 'codex' }), readProjects: () => [f.project], normalizeProject: p => p,
+    findStudentByKey: () => ({ id: 's1', agentTool: 'codex' }), readProjects: () => [f.project],
+    readProjectMetadata: () => [f.project], getProjectMetadata: id => String(id) === String(f.project.id) ? f.project : null,
+    normalizeProject: p => p, normalizeProjectMetadata: p => p,
     agentControlPolicy: () => ({ primary: fallback ? 'workbuddy' : 'codex', fallbacks: fallback ? ['codex'] : [], enabled: true, desktopHandoff: false, version: 0 }),
+    ensureTaskDispatchReadiness:async(task,providers)=>({decision:'dispatch',providerId:providers[0],reasons:providers.map(providerId=>({providerId,state:'available'}))}),
+    externalTaskDispatchBarrier:()=>({claim:async()=>{store.tasks[0].executionId='synthetic-claim';store.tasks[0].executionPhase='claimed';return {ok:true,executionId:'synthetic-claim'};},sendIntent:async()=>({ok:true}),started:async()=>({ok:true})}),
+    releaseUnstartedTaskClaim: async () => {},
+    admitRunnableTaskToRunning: require('../electron/task-execution-admission.cjs').admitRunnableTaskToRunning,
+    settlePersistentTaskAttempt:async()=>{},
     classificationAdapter: async id => id === 'workbuddy' ? { id, runtime: { cliPath: f.project.agentPath, configDir: f.root } } : { id: 'codex', executable: 'C:\\synthetic.exe', authScope: 'synthetic', authVersion: 1 },
     workBuddyQualification: { peek: () => ({ ready: false, code: 'AUTHENTICATION_REQUIRED', message: 'Authentication required' }) },
     adapterCapabilities: () => ({ codex: { available: true, authorized: true, exePath: 'C:\\synthetic.exe' } }),
     mutableProject: () => ({ project: f.project }), captureHeavyWorkGate: { tryAcquire: () => () => { released++; } }, captureTimelineResourceSnapshot: () => ({}),
     licenseRequiredJson: () => null, validateTaskPermissionDeclaration: () => ({ ok: true }), taskPathAllowed: () => true,
     readTaskStore: () => structuredClone(store), writeTaskStoreDurably: async (value) => { store = structuredClone(value); },
+    taskStorePath:()=>'',taskStoreGuard: {read:()=>({value:structuredClone(store)}),recordExecutionBudget: async ({ budgetKey, maxAttempts = 2 }) => ({
+      ok: true,
+      budget: { budget_key: budgetKey, attempt_count: 1, max_attempts: maxAttempts, terminal_state: '' },
+    }) },
+    executionBudgetKey: require('../electron/task-work-identity.cjs').executionBudgetKey,
     circuitDecision: require('../electron/task-executor-circuit.cjs').circuitDecision,
     recordCircuitOutcome: require('../electron/task-executor-circuit.cjs').recordCircuitOutcome,
     providerSupportsProfile: require('../electron/agent-invocation-service.cjs').providerSupportsProfile,
@@ -261,14 +289,14 @@ for (const fallback of [false, true]) test(`host task adapter persists checkpoin
     transitionTaskInStore: (value, id, status, patch) => { const task = value.tasks.find((item) => item.id === id); Object.assign(task, patch, { status }); return { ok: true, task }; },
     createProjectMaterialTask: (options) => createProjectMaterialTask({ ...options, verifySandbox: f.options.verifySandbox, execute: f.execute }),
     normalizeTaskResult: (task, output) => output,
-    commitValidatedTaskResult: (value, task, output, validation) => { settled++; task.status = validation.valid ? 'succeeded' : 'failed'; task.result = output; },
+    commitValidatedTaskResult: (value, task, output, validation) => { settled++; task.status = validation.valid ? 'succeeded' : 'failed'; task.result = output; return { ok: true, task }; },
   });
   store.runtime = { agentQualifications: { codex: { 'digest_host_mediated.v1': { ready: true, runtimeHash: 'synthetic-runtime', authScope: JSON.stringify(['synthetic', 1]), expiresAt: new Date(Date.now() + 60000).toISOString() } } } };
   vm.runInContext(main.slice(start, end), context);
   const dispatched = await context.submitProjectMaterialTask(store.tasks[0], f.project, 'auto');
   assert.equal(dispatched.ok, true); assert.equal(store.tasks[0].status, 'running');
   await runs.get('task-p1').completion;
-  assert.equal(settled, 1); assert.equal(store.tasks[0].status, 'succeeded');
+  assert.equal(settled, 1,JSON.stringify(store.tasks[0].error)); assert.equal(store.tasks[0].status, 'succeeded', JSON.stringify(store.tasks[0]));
   assert.equal(store.tasks[0].input.materialExecution.phase, 'committed');
   assert.equal(released, 1); assert.equal(runs.size, 0);
   assert.deepEqual(Array.from(store.tasks[0].routeDecision.attempts, a => a.providerId), fallback ? ['workbuddy', 'codex'] : ['codex']);

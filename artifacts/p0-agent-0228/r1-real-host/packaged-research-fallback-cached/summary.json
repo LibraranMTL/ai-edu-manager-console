@@ -1,0 +1,38 @@
+{
+  "schema": "edu.packaged-research-fallback-summary.v1",
+  "total": 3,
+  "passedCount": 3,
+  "requiredPasses": 2,
+  "passed": true,
+  "runs": [
+    {
+      "index": 1,
+      "passed": true,
+      "startedAt": "2026-11-01T08:52:01.689Z",
+      "finishedAt": "2026-11-01T08:52:38.949Z",
+      "resolution": "fallback_succeeded",
+      "workBuddyDurationMs": 26627
+    },
+    {
+      "index": 2,
+      "passed": true,
+      "startedAt": "2026-11-01T08:53:17.547Z",
+      "finishedAt": "2026-11-01T08:53:51.573Z",
+      "resolution": "fallback_succeeded",
+      "workBuddyDurationMs": 23646
+    },
+    {
+      "index": 3,
+      "passed": true,
+      "startedAt": "2026-11-01T08:54:28.990Z",
+      "finishedAt": "2026-11-01T08:55:11.570Z",
+      "resolution": "fallback_succeeded",
+      "workBuddyDurationMs": 32130
+    }
+  ],
+  "evidenceFiles": [
+    "minimal-run1.json",
+    "minimal-run2.json",
+    "minimal-run3.json"
+  ]
+}

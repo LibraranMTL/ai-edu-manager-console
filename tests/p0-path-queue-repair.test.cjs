@@ -160,7 +160,8 @@ test('actual v2 host migration upgrades v1, backs up, is idempotent and never di
   const code = source.slice(source.indexOf('async function migrateTaskQueueGovernance()'), source.indexOf('\nasync function acceptImportedTaskResult'));
   let writes = 0;
   const context = { fs, path, app: { getPath: () => dir }, readTaskStore: () => store,
-    readProjects: () => evidence().projects, normalizeProject: x => x, readProjectDigestState: p => p.digestState,
+    readProjects: () => evidence().projects, readProjectMetadata: () => evidence().projects,
+    normalizeProject: x => x, normalizeProjectMetadata: x => x, readProjectDigestState: p => p.digestState,
     taskNow: () => '2026-10-17T10:00:00Z', timestampForFilename: () => 'fixture', taskCenterDirPath: () => dir,
     taskExecutionDirPath: () => path.join(dir, 'executions'), taskStorePath: () => path.join(dir, 'tasks.json'), taskEventLogPath: () => path.join(dir, 'events.jsonl'),
     queueGovernanceCandidates: governance.queueGovernanceCandidates, archiveTaskRecord: governance.archiveTaskRecord,

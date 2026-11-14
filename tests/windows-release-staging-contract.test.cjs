@@ -6,12 +6,14 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const releaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
+const installerScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-installer.cjs'), 'utf8');
 const terminalReleaseScript = fs.readFileSync(path.join(root, 'scripts', 'build-windows-terminal-release.cjs'), 'utf8');
 const pdfRuntimeScript = fs.readFileSync(path.join(root, 'scripts', 'build-project-material-pdf.cjs'), 'utf8');
 const pdfWorker = fs.readFileSync(path.join(root, 'electron', 'project-material-pdf-worker.cjs'), 'utf8');
 
 test('Windows release builds through an isolated local staging directory', () => {
-  assert.equal(packageJson.scripts['build:win'], 'pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && node scripts/build-windows-release.cjs');
+  assert.match(packageJson.scripts['build:win'], /^pnpm typecheck && pnpm test:windows && pnpm audit:resources && pnpm verify:release-website && pnpm benchmark:assets:smoke && pnpm benchmark:projects:release && pnpm benchmark:tasks:release && node scripts\/build-windows-release\.cjs$/);
+  assert.match(releaseScript, /assertReleaseWebsiteParity\(\)/);
   assert.match(releaseScript, /process\.env\.LOCALAPPDATA/);
   assert.match(releaseScript, /release-stage/);
   assert.match(releaseScript, /EDU_WINDOWS_CANDIDATE_TAG/);
@@ -29,19 +31,26 @@ test('Windows release builds through an isolated local staging directory', () =>
 
 test('staged runtime is dependency-free after Vite has bundled renderer dependencies', () => {
   assert.match(releaseScript, /main: 'electron\/main\.cjs'/);
-  assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'cloud-report-service\/\*\*\/\*', 'package\.json'\]/);
+  assert.match(releaseScript, /files: \['dist\/\*\*\/\*', 'electron\/\*\*\/\*', 'shared\/\*\*\/\*', 'cloud-report-service\/\*\*\/\*', 'package\.json'\]/);
+  assert.deepEqual(packageJson.build.files, ['dist/**/*', 'electron/**/*', 'shared/**/*', 'package.json']);
+  assert.match(releaseScript, /copyDirectoryFiles\(path\.join\(repoRoot, 'shared'\), path\.join\(stageRoot, 'shared'\)\)/);
+  assert.match(releaseScript, /Packaged workspace template catalog is missing/);
+  assert.match(releaseScript, /Packaged workspace template catalog differs from source/);
   assert.doesNotMatch(releaseScript, /runtimePackage\.(?:dependencies|devDependencies)/);
   assert.match(releaseScript, /Minimal runtime package unexpectedly contains node_modules/);
   assert.match(releaseScript, /app\.asar exceeds 21 MiB/);
-  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1']);
-  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1', 'electron\/project-knowledge-guard\.ps1'\]/);
+  assert.deepEqual(packageJson.build.asarUnpack, ['electron/invoke-agent.ps1', 'electron/capture-timeline-ocr.ps1', 'electron/project-knowledge-guard.ps1', 'electron/practice-print-gdi.ps1', 'electron/windows-firewall.ps1']);
+  assert.match(releaseScript, /asarUnpack: \['electron\/invoke-agent\.ps1', 'electron\/capture-timeline-ocr\.ps1', 'electron\/project-knowledge-guard\.ps1', 'electron\/practice-print-gdi\.ps1', 'electron\/windows-firewall\.ps1'\]/);
   assert.match(releaseScript, /Packaged Agent parameter bridge is missing/);
   assert.match(releaseScript, /Packaged timeline OCR bridge is missing/);
   assert.match(releaseScript, /Packaged knowledge commit guard is missing/);
+  assert.match(releaseScript, /Packaged Windows print compatibility bridge is missing or differs from source/);
+  assert.match(releaseScript, /Packaged Windows firewall compatibility bridge is missing or differs from source/);
   assert.match(releaseScript, /bundleMaterialExtractor\(stageRoot, locateEsbuildModule\(\)\)/);
   assert.match(releaseScript, /stagePdfRuntime\(stageRoot\)/);
   assert.match(releaseScript, /extraResources: \[\{ from: 'material-pdf-runtime', to: 'material-pdf-runtime' \}\]/);
   assert.match(releaseScript, /pdfRuntime: pdfRuntimeAudit/);
+  assert.match(releaseScript, /verifyPackagedCanvasRuntime\(unpackedRoot\)/);
   assert.match(releaseScript, /'cloud-report-service\/remote-result-contract\.cjs'/);
   assert.match(releaseScript, /'cloud-report-service\/v2-contract\.cjs'/);
   assert.match(releaseScript, /Packaged cloud result runtime is missing/);
@@ -107,4 +116,20 @@ test('release artifacts are published only after package audits pass', () => {
   assert.doesNotMatch(releaseScript, /artifactSizeLimitBytes/);
   assert.match(releaseScript, /auditWindowsResources\(\{ repoRoot, packagedRoot: unpackedRoot, strict: true \}\)/);
   assert.match(releaseScript, /resourceAudit:/);
+});
+
+test('a formal installer is blocked unless its extracted runtime passed the release acceptance gate', () => {
+  assert.match(installerScript, /assertFormalRuntimeAccepted/);
+  const runtimeHash = installerScript.indexOf('const runtimeAsarSha256 = sha256(runtimeAsar)');
+  const acceptanceGate = installerScript.indexOf('assertFormalRuntimeAccepted({');
+  const build = installerScript.indexOf('await build({');
+  assert.ok(runtimeHash > 0 && acceptanceGate > runtimeHash && build > acceptanceGate);
+  assert.match(installerScript, /EDU_WINDOWS_ACCEPTANCE_INDEX/);
+});
+
+test('same-version corrective candidates require an explicit narrowly named rebuild mode', () => {
+  const source = fs.readFileSync(path.join(root, 'scripts', 'build-windows-release.cjs'), 'utf8');
+  assert.match(source, /EDU_WINDOWS_CORRECTIVE_REBUILD/);
+  assert.match(source, /candidateTag\.startsWith\(`\$\{version\}-corrective-`\)/);
+  assert.match(source, /correctiveRebuild\s*&&\s*!candidateTag/);
 });

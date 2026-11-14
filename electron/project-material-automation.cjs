@@ -4,6 +4,8 @@ const { invariant } = require('./project-material-contract.cjs');
 const { unchanged } = require('./project-materials.cjs');
 const { createProjectMaterialClassification,
   reconcileWorkspacePathClassifications } = require('./project-material-classification.cjs');
+const { resolveAutomationFeatureFlags } = require('./automation-feature-flags.cjs');
+const AUTOMATION_FEATURES = resolveAutomationFeatureFlags();
 
 const MATERIAL_AUTOMATION_PIPELINE_VERSION = 'project-material-v1';
 const SYSTEM_GENERATED_NAMES = new Set([
@@ -49,12 +51,14 @@ function normalizeMaterialAutomation(project) {
   const source = current || {};
   return {
     enabled: source.enabled === true || inherited,
+    processingPaused: source.processingPaused === true,
     autoAdoptPathClassified: source.autoAdoptPathClassified !== false && (Boolean(current) || inherited),
     autoDigest: source.autoDigest !== false && (Boolean(current) || inherited),
     maxBatch: Math.max(1, Math.min(20, Number(source.maxBatch || project?.materialOrganization?.maxBatch || 20))),
     onWorkspaceChange: source.onWorkspaceChange !== false,
     intervalMinutes: Math.max(15, Math.min(10080,
       Number(source.intervalMinutes || project?.materialOrganization?.intervalMinutes || 1440))),
+    nextRunAt: String(source.nextRunAt || ''),
     migratedFromMaterialOrganization: inherited,
     authorizationId: String(source.authorizationId || project?.materialOrganization?.authorizationId || ''),
     authorizedAt: String(source.authorizedAt || project?.materialOrganization?.authorizedAt || ''),
@@ -73,17 +77,20 @@ function automationDisposition(project, record) {
   if (['missing', 'unavailable'].includes(record.availability)) {
     return { state: 'error', reasons: [record.availability === 'missing' ? 'source_missing' : 'source_unavailable'] };
   }
-  if (['failed', 'unsupported'].includes(record.processing?.state)) {
+  if (record.processing?.state === 'skipped_unsupported') {
+    return { state: 'completed', reasons: ['skipped_unsupported'] };
+  }
+  if (['failed', 'unsupported', 'failed_retryable', 'failed_terminal', 'execution_unknown', 'needs_user_action'].includes(record.processing?.state)) {
     return { state: 'error', reasons: ['processing_failed'] };
   }
   if (record.fingerprintConflict === true || !/^[a-f0-9]{64}$/i.test(String(record.sha256 || ''))) {
     return { state: 'confirmation', reasons: [record.fingerprintConflict ? 'fingerprint_conflict' : 'fingerprint_incomplete'] };
   }
   if (record.adoption?.state === 'accepted') {
-    if (!record.classification?.categoryId) return { state: 'confirmation', reasons: ['needs_classification'] };
     const complete = record.processing?.state === 'completed'
       && record.processing?.processedVersion === record.version;
-    return { state: complete ? 'completed' : 'processing', reasons: complete ? [] : ['pending_digest'] };
+    return { state: complete ? 'completed' : 'processing', reasons: complete ? []
+      : [record.classification?.categoryId ? 'pending_digest' : 'pending_digest_provisional_category'] };
   }
   if (record.adoption?.state === 'excluded') return { state: 'completed', reasons: [] };
   if (record.classification?.manualLocked) return { state: 'confirmation', reasons: ['manual_locked'] };
@@ -95,6 +102,12 @@ function automationDisposition(project, record) {
     && !projectStudents.has(String(source.studentId)));
   if (crossScope) return { state: 'confirmation', reasons: ['scope_conflict'] };
   const classification = record.classification || {};
+  // The workspace already proves project ownership. Category uncertainty is a
+  // reversible local decision, so it must not block project adoption/digestion;
+  // the file remains in the project inbox and may be reclassified later.
+  if (!classification.categoryId) return AUTOMATION_FEATURES.provisionalProjectInbox
+    ? { state: 'auto_ready', reasons: ['provisional_project_inbox'] }
+    : { state: 'confirmation', reasons: ['needs_classification'] };
   const pathReady = classification.source === 'workspace_path' && Boolean(classification.categoryId);
   const aiReady = classification.source === 'ai' && classification.confidence === 'high'
     && Boolean(classification.categoryId) && classification.hostValidated === true;
@@ -114,7 +127,8 @@ function projectMaterialAutomationOverview(project, index, job = null) {
     if (/^[a-f0-9]{64}$/.test(sha256)) unique.add(sha256);
     if (record.adoption?.state === 'accepted') {
       acceptedCount++;
-      if (record.processing?.state !== 'completed' || record.processing?.processedVersion !== record.version) {
+      if (!['completed', 'skipped_unsupported'].includes(record.processing?.state)
+        || (record.processing?.state === 'completed' && record.processing?.processedVersion !== record.version)) {
         digestPendingReferenceCount++;
         if (sha256) pendingDigest.add(sha256);
       }
@@ -182,15 +196,19 @@ function listProjectMaterialExceptions(project, index, request = {}) {
 
 async function tagProjectMaterialKinds(store) {
   const baseline = await inspectStore(store, { fresh: true });
-  if (!(baseline.materials || []).some((record) => record.recordKind !== projectMaterialRecordKind(record))) {
+  if (!(baseline.materials || []).some((record) => record.recordKind !== projectMaterialRecordKind(record)
+    || ['unsupported', 'failed'].includes(record.processing?.state))) {
     return { result: { changed: 0 }, revision: baseline.revision, unchanged: true };
   }
   const result = await store.mutate((index) => {
     let changed = 0;
     for (const record of index.materials || []) {
       const kind = projectMaterialRecordKind(record);
-      if (record.recordKind === kind) continue;
+      const legacyState = record.processing?.state;
+      if (record.recordKind === kind && !['unsupported', 'failed'].includes(legacyState)) continue;
       record.recordKind = kind;
+      if (legacyState === 'unsupported') record.processing = { ...record.processing, state: 'skipped_unsupported' };
+      if (legacyState === 'failed') record.processing = { ...record.processing, state: 'failed_terminal' };
       record.recordRevision++;
       record.updatedAt = new Date().toISOString();
       changed++;
@@ -247,7 +265,9 @@ function aiClassificationCandidates(project, index, limit) {
       || record.classification?.categoryId) return false;
     if (record.location?.kind !== 'workspace' || record.location?.rootId !== 'workspace') return false;
     if (!/^[a-f0-9]{64}$/i.test(String(record.sha256 || '')) || record.fingerprintConflict === true) return false;
-    return automationDisposition(project, record).reasons.includes('needs_classification');
+    const disposition = automationDisposition(project, record);
+    return disposition.reasons.includes('needs_classification')
+      || disposition.reasons.includes('provisional_project_inbox');
   }).slice(0, limit);
 }
 

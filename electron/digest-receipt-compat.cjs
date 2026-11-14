@@ -29,8 +29,11 @@ function receiptFingerprint(payload) {
 
 function readReceiptCandidate(file) {
   try {
-    if (!fs.statSync(file).isFile()) return null;
+    const before=fs.statSync(file);if(!before.isFile())return null;
     const source = fs.readFileSync(file, 'utf8');
+    const after=fs.statSync(file);
+    const signature=s=>`${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+    if(signature(before)!==signature(after))return null;
     const parsed = parseDigestReceipt(source);
     let payload = parsed.ok ? parsed.value : null;
     if (!isDigestReceiptPayload(payload)) {
@@ -44,6 +47,7 @@ function readReceiptCandidate(file) {
     if (!isDigestReceiptPayload(payload)) return null;
     return {
       file,
+      fileSignature:signature(before),
       mtimeMs: fs.statSync(file).mtimeMs,
       payload,
       batchId: receiptBatchId(payload),

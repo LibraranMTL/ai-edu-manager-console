@@ -1,0 +1,47 @@
+{
+  "schema": "research-timeout-real-host.v1",
+  "checkedAt": "2026-10-30T15:28:41.861Z",
+  "executable": "C:/Users/bxw00/AppData/Local/OpenAI/Codex/bin/codex.exe",
+  "mode": "unconfirmed",
+  "executableVersion": "codex-cli 0.130.0-alpha.5",
+  "processId": 28740,
+  "error": {
+    "code": "RESEARCH_TIMEOUT",
+    "messageClass": "research_timeout"
+  },
+  "evidence": {
+    "executionId": "synthetic-timeout-1",
+    "workKey": "synthetic:research-timeout",
+    "sourceVersion": "v1",
+    "providerId": "codex",
+    "terminationState": "unknown",
+    "terminationCause": "unknown",
+    "exitCode": null,
+    "signal": null,
+    "stdoutDrained": false,
+    "stderrDrained": false,
+    "outputCheckedAfterClose": false,
+    "completedWebEvents": 0,
+    "completedToolEvents": 0,
+    "outputPresent": false,
+    "outputSize": 0,
+    "localReceiptPresent": false,
+    "businessWriteStarted": false,
+    "sideEffectClass": "read_only_research",
+    "identityMatches": true,
+    "stderrSummary": "other",
+    "eventTypeCounts": {},
+    "startedAt": "2026-10-30T15:28:40.349Z",
+    "timeoutAt": "2026-10-30T15:28:41.352Z",
+    "closedAt": "",
+    "graceCompletedAt": "",
+    "checkedAt": "2026-10-30T15:28:41.603Z"
+  },
+  "classification": {
+    "disposition": "execution_unknown",
+    "reasonCode": "research_timeout_effects_unresolved",
+    "nextRetryAt": "2026-10-30T15:29:11.605Z",
+    "nextProviderPolicy": "reconcile_same_execution",
+    "evidenceRef": "synthetic-timeout-1"
+  }
+}

@@ -8,6 +8,14 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { databasePathForLegacy } = require('../../electron/task-state-store.cjs');
 
+function functionDeclarationAt(source, start, name) {
+  for (let end = source.indexOf('}', start); end >= 0; end = source.indexOf('}', end + 1)) {
+    const declaration = source.slice(start, end + 1);
+    try { new vm.Script(declaration); return declaration; } catch {}
+  }
+  throw Error(`Incomplete production function ${name}`);
+}
+
 async function createTaskHost(root, options = {}) {
   const runtime = options.runtime || path.resolve(__dirname, '../../electron');
   const source = fs.readFileSync(path.join(runtime, 'main.cjs'), 'utf8');
@@ -23,32 +31,37 @@ async function createTaskHost(root, options = {}) {
   const context = vm.createContext({ fs, path, crypto, structuredClone,
     ...require(path.join(runtime, 'task-protocol.cjs')),
     ...require(path.join(runtime, 'task-history-policy.cjs')),
+    ...require(path.join(runtime, 'task-runtime-policy.cjs')),
     ...require(path.join(runtime, 'task-store-compaction.cjs')),
+    ...require(path.join(runtime, 'task-work-identity.cjs')),
+    ...require(path.join(runtime, 'task-closure-decision.cjs')),
     taskStoreGuard: service,
     taskProgressBuffer: require(path.join(runtime, 'task-progress-buffer.cjs')).createTaskProgressBuffer(),
     taskStorePath: () => file, taskCenterDirPath: () => path.dirname(file),
     sha1Text: value => crypto.createHash('sha1').update(String(value)).digest('hex'),
     taskNow: () => new Date().toISOString(), taskChildProcesses: new Map(),
+    taskRequiresApproval: () => false, materialTaskCheckpointForCandidate: () => null,
+    scheduleAutomaticTaskWakeups: () => {},
     TASK_TERMINAL_STATUSES: new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'timed_out', 'archived']),
     taskCenterSnapshotCache: {}, taskLegacySnapshot: '',
   });
   for (const name of ['normalizeTaskStatus', 'taskStatusGroup', 'taskRiskForKind', 'normalizeTaskEnvelope',
-    'readTaskStore', 'writeTaskStore', 'writeTaskStoreDurably', 'appendTaskEvent', 'transitionTaskInStore', 'upsertTaskCandidates']) {
+    'readTaskStore', 'writeTaskStore', 'writeTaskStoreDurably', 'appendTaskEvent', 'transitionTaskInStore', 'upsertTaskCandidates','recordDigestReceiptMonitorCheck']) {
     let start = source.indexOf(`function ${name}(`);
     if (start < 0) throw Error(`Missing production function ${name}`);
     if (source.slice(start - 6, start) === 'async ') start -= 6;
-    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    vm.runInContext(functionDeclarationAt(source, start, name), context);
   }
-  const start = source.indexOf('      async beginBatch(source, manual, batch = {}) {');
-  const end = source.indexOf('      agent: {', start);
-  if (start < 0 || end < 0) throw Error('Missing production batch callbacks');
-  const callbacks = vm.runInContext(`({${source.slice(start, end)}})`, context);
+  const start = source.indexOf('async beginBatch(');
+  const boundary = start < 0 ? null : /}\s*,\s*agent\s*:\s*\{/.exec(source.slice(start));
+  if (start < 0 || !boundary) throw Error('Missing production batch callbacks');
+  const callbacks = vm.runInContext(`({${source.slice(start, start + boundary.index + 1)}})`, context);
   const readRows = (sql) => {
     const db = new DatabaseSync(databasePathForLegacy(file), { readOnly: true });
     try { return db.prepare(sql).all().map(row => JSON.parse(row.payload_json)); } finally { db.close(); }
   };
   return { ...callbacks, context, file, service, client,
-    disk: () => structuredClone(service.read(file).value),
+    disk: () => JSON.parse(JSON.stringify(service.read(file).value)),
     events: () => readRows('SELECT payload_json FROM task_events ORDER BY rowid'),
     async close() { try { await service.flush(); } finally { await client.close(); } },
   };

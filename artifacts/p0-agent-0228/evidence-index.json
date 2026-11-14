@@ -1,0 +1,58 @@
+{
+  "schema": "edu-manager.windows-agent-closure.evidence-index.v2",
+  "capturedAt": "2026-10-30",
+  "candidateHash": "0EA194E6FF0FB31B5989103EC5A3DC9F8A22921E144D2FCAF1C5FE0D2C5CB483",
+  "sourceEquivalence": "not_run",
+  "sourceHashes": {
+    "electron/main.cjs": "414E3426B6E16270951AC193A9986F840A95722BF8F9E2921784B9DBFCFF7B98",
+    "electron/agent-capability-readiness.cjs": "65C38CB29AA0309EB3E96EE8D5944E6D88B438AC32067C27C25B321DE622846B",
+    "electron/planning-research.cjs": "CC351755A030145DD7BA8A233FBD3AF23090419A0E1AC2C390E4C0C2E5BBC05A",
+    "electron/smart-inbox.cjs": "not_recorded_in_task0"
+  },
+  "samples": [
+    {
+      "candidateHash": "historical_not_same_source",
+      "sourceHashes": {},
+      "taskId": "task-weekly_action-4580d72f2b69",
+      "executionId": "manual-1793186415953-322c2e59",
+      "firstBadTransition": "task_prepared->manual_execution_prepared",
+      "evidenceFiles": ["artifacts/p0-agent-0228/task-samples.json"],
+      "confidence": "timeline_supported_source_equivalence_not_run"
+    },
+    {
+      "candidateHash": "historical_not_same_source",
+      "sourceHashes": {},
+      "taskId": "intake-15d99c96e70cfa582003",
+      "executionId": "4920d135-2f22-401d-bfab-374e9b9e7146",
+      "firstBadTransition": "intake_checked->reviewing_needs_attention",
+      "evidenceFiles": ["artifacts/p0-agent-0228/task-samples.json", "artifacts/smart-inbox-execution-reconcile-diagnosis-2026-10-29.md"],
+      "confidence": "source_and_timeline_supported_real_retest_pending"
+    },
+    {
+      "candidateHash": "historical_not_same_source",
+      "sourceHashes": {},
+      "taskId": "task-project_digest-fdaf3489ebfa",
+      "executionId": "material-291a2180-16ef-40bd-aa74-fdc61b43b70c",
+      "firstBadTransition": "controlled_material_started->task_timed_out->controlled_material_failed",
+      "evidenceFiles": ["artifacts/p0-agent-0228/task-samples.json"],
+      "confidence": "timeline_supported_replay_safety_pending"
+    },
+    {
+      "candidateHash": "historical_not_same_source",
+      "sourceHashes": {},
+      "taskId": "task-learning_changes-08ca19a6c9eb",
+      "executionId": "run-1793197243378-694d4d0e",
+      "firstBadTransition": "none_success_control",
+      "evidenceFiles": ["artifacts/p0-agent-0228/task-samples.json"],
+      "confidence": "successful_control_only"
+    }
+  ],
+  "evidenceFiles": [
+    { "path": "artifacts/p0-agent-0228/task-samples.json", "sha256": "44908C4C9E41047BE7281DA2C64FA353C402227FA506630C9083EE34374E2401", "bytes": 9935 },
+    { "path": "artifacts/p0-agent-0228/automatic-execution-validation-r13.md", "sha256": "ACC010C8FD83F9B8DA588C41EA8D000D204A99FAA8FB39E1C4C520E89C5F8995", "bytes": 5807 },
+    { "path": "artifacts/p0-agent-0228/r13-candidate-provenance.json", "sha256": "32CCDCD3ADFC4620E51714CC1381A0F206B0A91F1DBD42D21B8D950CA92D273F", "bytes": 1424 },
+    { "path": "artifacts/p0-agent-0228/agent-queue-target-r8-result.json", "sha256": "BAEC13BDF6F22D7FFB72A6CCAD9ACEA2BA6E36A1DFB7F35260D015116D90FC7E", "bytes": 4245 },
+    { "path": "artifacts/p0-agent-0228/current-delta.json", "sha256": "77B91D8553950B6F8631D626A818390D4CD23AE8C5E8216A20D3D0496463858B", "bytes": 10702 },
+    { "path": "artifacts/smart-inbox-execution-reconcile-diagnosis-2026-10-29.md", "sha256": "C4D628E19873CE01D6282818DA1ADFB7D432501A52B95EC7190B92D9E6D8E634", "bytes": 6996 }
+  ]
+}

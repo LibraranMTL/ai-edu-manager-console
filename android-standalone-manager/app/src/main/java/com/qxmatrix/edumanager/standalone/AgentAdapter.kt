@@ -155,6 +155,13 @@ class OpenAiCompatibleAgentAdapter(
         return request(JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt)).put(JSONObject().put("role", "user").put("content", userPrompt)), configuration.model)
     }
 
+    fun executeWithCheckpoint(systemPrompt: String, userPrompt: String, commit: (String) -> Unit): String {
+        val messages = JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt))
+            .put(JSONObject().put("role", "user").put("content", userPrompt))
+        return provider.generate(ModelRequest(configuration.model, messages, studentId, taskId,
+            commitValidatedResponse = commit)).text
+    }
+
     fun testConnection(): String = execute("你是连接测试工具。只回复 OK。", "连接测试").also {
         require(it.trim() == "OK") { "文本测试返回内容未符合预期；不能标记为通过" }
     }

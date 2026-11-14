@@ -12,8 +12,8 @@ test('phone and tablet navigation share five stable learning-loop destinations',
   const main = read('MainActivity.kt')
   assert.match(navigation, /enum class PrimaryDestination/)
   assert.match(navigation, /HOME\(AppSection\.HOME\).*MATERIALS\(AppSection\.MATERIALS\).*REPORTS\(AppSection\.REPORTS\).*LEARNING\(AppSection\.LEARNING\).*PROJECTS\(AppSection\.PROJECTS\)/s)
-  assert.match(main, /AppSection\.HOME to "首页".*AppSection\.MATERIALS to "收集整理".*AppSection\.REPORTS to "学情报告".*AppSection\.LEARNING to "学习行动".*AppSection\.PROJECTS to "项目成果"/s)
-  assert.match(main, /label\.chunked\(2\)\.joinToString\("\\n"\)/)
+  assert.match(main, /AppSection\.MATERIALS to "收集整理".*AppSection\.REPORTS to "教育档案".*AppSection\.LEARNING to "学习行动".*AppSection\.PROJECTS to "项目成果"/s)
+  assert.match(main, /section\.displayLabel\(this@MainActivity\)/)
   assert.match(main, /contentDescription = label.*ellipsize = null.*minHeight = dp\(64\)/s)
   assert.match(main, /YouthUi\.applyButton\(button, palette,[^\n]+\)\s*if \(!wideLayout[^\n]+configurePortraitNavigationButton/)
   assert.match(main, /primarySections\(\)\.forEach/)
@@ -46,14 +46,18 @@ test('learning and report entries open the shared insights screen at the intende
   assert.match(insights, /openReportRevision/)
 })
 
-test('student management and settings remain utility routes while growth stays last in projects', () => {
+test('student management and settings remain utility routes while growth stays in education archives', () => {
   const main = read('MainActivity.kt')
+  const reportsStart = main.indexOf('private fun renderReports')
   const projectStart = main.indexOf('private fun renderProjects')
   const settingsStart = main.indexOf('private fun renderSettings')
+  const reportsPage = main.slice(reportsStart, projectStart)
   const projectPage = main.slice(projectStart, settingsStart)
   assert.match(main, /setPositiveButton\("管理学生档案"/)
   assert.match(main, /contentDescription = "打开系统设置"/)
-  assert.ok(projectPage.indexOf('规划与成果') < projectPage.indexOf('addGrowthModelActions()'))
+  assert.match(reportsPage, /addGrowthModelActions\(\)/)
+  assert.doesNotMatch(projectPage, /addGrowthModelActions\(\)/)
+  assert.match(projectPage, /规划与成果/)
 })
 
 test('utility routes survive process state saving before primary navigation normalization', () => {

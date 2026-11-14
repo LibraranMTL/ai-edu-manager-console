@@ -13,6 +13,70 @@ const { createService } = require('./service.cjs');
 const ADMIN = 'cloud-test-admin-token-keep-private-123456';
 const CONTENT = '---\ntype: learning_profile\nstatus: active\nupdated: 2026-09-25\n---\n\n# 整体画像\n\n有据可查。\n';
 
+function androidLicenseFixture(deviceId = 'ANDROID-TEST-DEVICE', maxActiveStudents = 2) {
+  const issuer = crypto.generateKeyPairSync('rsa', { modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+  const payload = { schema: 'edu-manager.license.v3', productId: 'ANDROID_STANDALONE', keyId: 'android-test-issuer',
+    licenseId: 'android_license_test', edition: 'FAMILY', deviceId, issuedAt: '2026-09-24T00:00:00.000Z',
+    expiresAt: '2027-09-24T00:00:00.000Z', maxActiveStudents, capabilities: ['course_learning'] };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return { token: `AIE3.${encoded}.${crypto.sign('RSA-SHA256', Buffer.from(`AIE3.${encoded}`), issuer.privateKey).toString('base64url')}`,
+    trust: { issuers: [{ keyId: 'android-test-issuer', maxEdition: 'PLATFORM', publicKey: issuer.publicKey }] } };
+}
+
+test('Android product activation auto-enrolls idempotently without granting material upload', async () => {
+  const license = androidLicenseFixture();
+  await fixture(async ({ call, app }) => {
+    const source = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1',
+      publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+    const request = { licenseToken: license.token, deviceId: 'ANDROID-TEST-DEVICE', bindingKey: crypto.randomBytes(32).toString('base64url'),
+      displayName: '免码学生', publicKey: source.publicKey, contractVersion: 2, profileFields: ['displayName'], materialCategories: [] };
+    const first = await call('POST', '/v2/source-auto-enroll', '', request);
+    const second = await call('POST', '/v2/source-auto-enroll', '', request);
+    assert.equal(first.status, 200); assert.equal(second.status, 200);
+    assert.equal(second.body.cloudStudentId, first.body.cloudStudentId);
+    assert.equal(second.body.deviceId, first.body.deviceId);
+    assert.equal(app.service.db.prepare('SELECT COUNT(*) AS count FROM students').get().count, 1);
+    assert.equal(app.service.db.prepare("SELECT enabled FROM grants WHERE device_id=? AND student_id=? AND scope='report.write'")
+      .get(first.body.deviceId, first.body.cloudStudentId).enabled, 0);
+    assert.equal(app.service.db.prepare("SELECT COUNT(*) AS count FROM v2_grants WHERE scope='student_profile.write'").get().count, 0);
+    assert.equal(app.service.db.prepare("SELECT COUNT(*) AS count FROM v2_grants WHERE scope='material.write'").get().count, 0);
+    const expiry = Date.parse('2026-09-25T00:00:00Z') + 7 * 24 * 60 * 60 * 1000;
+    const granted = app.service.setOwnUploadScope(second.body.deviceToken, {
+      cloudStudentId: second.body.cloudStudentId, profileFields: ['displayName'],
+      materialCategories: ['learning_material'], authorizationPurpose: 'expert_interpretation', authorizationExpiresAt: expiry,
+    });
+    assert.deepEqual(granted.materialCategories, ['learning_material']);
+    assert.equal(app.service.db.prepare("SELECT enabled FROM grants WHERE device_id=? AND student_id=? AND scope='report.write'")
+      .get(second.body.deviceId, second.body.cloudStudentId).enabled, 1);
+    const contents = Buffer.from('Synthetic student material');
+    const upload = app.service.prepareV2Material(second.body.deviceToken, second.body.cloudStudentId, {
+      category: 'learning_material', materialId: 'learning_material:sample-1', idempotencyKey: 'android:sample-upload-1',
+      displayName: 'sample.txt', contentType: 'text/plain',
+    });
+    fs.writeFileSync(upload.tempPath, contents);
+    const receipt = upload.commit({ sha: crypto.createHash('sha256').update(contents).digest('hex'), size: contents.length, head: contents });
+    assert.equal(receipt.byteSize, contents.length);
+    app.service.setOwnWrite(second.body.deviceToken, second.body.cloudStudentId, false);
+    assert.throws(() => app.service.prepareV2Material(second.body.deviceToken, second.body.cloudStudentId, {
+      category: 'learning_material', materialId: 'learning_material:sample-2', idempotencyKey: 'android:sample-upload-2',
+      displayName: 'sample.txt', contentType: 'text/plain',
+    }), /许可|授权|关闭/);
+  }, { trustedLicenseIssuers: license.trust });
+});
+
+test('Android auto-enrollment rejects cross-device replay and enforces student capacity', async () => {
+  const license = androidLicenseFixture('ANDROID-CAPACITY', 1);
+  await fixture(async ({ call }) => {
+    const source = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1', publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const body = key => ({ licenseToken: license.token, deviceId: 'ANDROID-CAPACITY', bindingKey: key, displayName: '学生',
+      publicKey: source.publicKey, contractVersion: 2, profileFields: ['displayName'], materialCategories: [] });
+    assert.equal((await call('POST', '/v2/source-auto-enroll', '', body(crypto.randomBytes(32).toString('base64url')))).status, 200);
+    assert.equal((await call('POST', '/v2/source-auto-enroll', '', body(crypto.randomBytes(32).toString('base64url')))).status, 403);
+    assert.equal((await call('POST', '/v2/source-auto-enroll', '', { ...body(crypto.randomBytes(32).toString('base64url')), deviceId: 'OTHER' })).status, 403);
+  }, { trustedLicenseIssuers: license.trust });
+});
+
 test('admin browser sessions expire, logout revokes them, and login attempts are limited', async () => fixture(async ({ call, advance }) => {
   const invalid = await call('POST', '/v1/admin/sessions', '', { credential: 'wrong' });
   assert.equal(invalid.status, 401);
@@ -111,7 +175,7 @@ async function fixture(fn, serviceOptions = {}) {
       'x-cloud-signature': crypto.sign('sha256', Buffer.from(`${method}\n${route}\n${timestamp}\n${nonce}`),
         key.privateKey).toString('base64url') };
   }
-  try { await fn({ call, base, proofHeaders, advance: ms => { clock += ms; } }); }
+  try { await fn({ call, base, app, proofHeaders, advance: ms => { clock += ms; } }); }
   finally { await app.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -425,4 +489,60 @@ test('source upload authorization limits fields, purpose and expiry across legac
   });
   assert.equal(renewed.status, 200);
   assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
+}));
+
+test('explicit until-revoked scope survives time and stops on withdrawal', async () => fixture(async ({ call, advance }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '合成学生' })).body;
+  const issued = await call('POST', '/v1/source-enrollments', ADMIN, { cloudStudentId: student.id });
+  const source = (await call('POST', '/v1/source-enrollments/redeem', '', { enrollmentCode: issued.body.enrollmentCode,
+    contractVersion: 2, profileFields: ['displayName'], materialCategories: ['learning_report'] })).body;
+  const scoped = await call('POST', '/v2/source-upload-scope', source.deviceToken, { cloudStudentId: student.id,
+    profileFields: ['displayName'], materialCategories: ['learning_report'], authorizationPurpose: 'document_sync',
+    authorizationDuration: 'until_revoked', authorizationExpiresAt: null });
+  assert.equal(scoped.status, 200);
+  assert.equal(scoped.body.authorizationExpiresAt, null);
+  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
+  advance(400 * 86400000);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
+  assert.equal((await call('POST', '/v1/grants/write-state', source.deviceToken, { cloudStudentId: student.id, enabled: false })).status, 200);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
+}));
+
+test('scoped pairing cannot widen source authorization or read unselected legacy reports', async () => fixture(async ({ call, advance }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '合成范围学生' })).body;
+  const issued = await call('POST', '/v1/source-enrollments', ADMIN, { cloudStudentId: student.id });
+  const source = (await call('POST', '/v1/source-enrollments/redeem', '', { enrollmentCode: issued.body.enrollmentCode,
+    contractVersion: 2, profileFields: ['displayName'], materialCategories: ['learning_report'] })).body;
+  const expiresAt = Date.parse('2026-09-25T00:00:00Z') + 7 * 86400000;
+  const scope = (fields, categories) => call('POST', '/v2/source-upload-scope', source.deviceToken, {
+    cloudStudentId: student.id, profileFields: fields, materialCategories: categories,
+    authorizationPurpose: 'document_sync', authorizationExpiresAt: expiresAt });
+  assert.equal((await scope(['displayName'], ['learning_report'])).status, 200);
+  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
+  const uploaded = await call('POST', '/v1/reports', source.deviceToken, report);
+  assert.equal(uploaded.status, 201);
+  assert.equal((await scope([], ['learning_material'])).status, 200);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
+  const viewer = (await call('POST', '/v1/pairings', '')).body;
+  for (const contractVersion of [undefined, 1, 'invalid']) {
+    assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken,
+      { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id], contractVersion })).status, 400);
+  }
+  const request = { pairingCode: viewer.pairingCode, cloudStudentIds: [student.id], contractVersion: 2,
+    profileFields: [], materialCategories: ['learning_report'] };
+  assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken, request)).status, 403);
+  request.materialCategories = ['learning_material'];
+  assert.equal((await call('POST', '/v1/pairings/approve', source.deviceToken, request)).status, 200);
+  assert.equal((await call('GET', `/v1/students/${student.id}/reports`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', `/v1/reports/${uploaded.body.revisionId}/content`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', `/v2/students/${student.id}/profile`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', '/v1/students', viewer.deviceToken)).body.students[0].displayName, '已授权学生');
+  assert.equal((await call('GET', `/v2/students/${student.id}/materials?category=learning_material`, viewer.deviceToken)).status, 200);
+  assert.equal((await scope([], ['learning_report'])).status, 200);
+  assert.equal((await call('GET', `/v2/students/${student.id}/materials?category=learning_material`, viewer.deviceToken)).status, 403);
+  assert.equal((await call('GET', `/v1/students/${student.id}/reports`, viewer.deviceToken)).status, 403);
+  advance(7 * 86400000 + 1);
+  assert.equal((await call('GET', `/v1/students/${student.id}/documents`, viewer.deviceToken)).status, 403);
 }));

@@ -49,6 +49,7 @@ function setup(root) {
     publicOrigin: 'https://www.greatbg.com/edu-cloud' });
   const student = service.createStudent(ADMIN, 'C4合成学生');
   const source = service.registerSource(ADMIN);
+  service.allowWrite(ADMIN, source.deviceId, student.id);
   const viewer = service.createPairing('', crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1',
     publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } }).publicKey);
   service.allowWrite(ADMIN, source.deviceId, student.id);
@@ -64,6 +65,75 @@ function upload(service, source, student, bytes, metadata) {
   fs.writeFileSync(prepared.tempPath, bytes);
   return prepared.commit({ sha: crypto.createHash('sha256').update(bytes).digest('hex'), size: bytes.length, head: bytes.subarray(0, 16) });
 }
+
+test('scoped plain text material is uploaded, indexed and readable by the authorized viewer', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-cloud-text-index-'));
+  const { service, student, source, viewer } = setup(root);
+  const indexer = startMaterialIndexer({ service, pollMs: 60000, timeoutMs: 30000 });
+  try {
+    const bytes = Buffer.from('synthetic course index evidence');
+    const material = upload(service, source, student, bytes, { category: 'learning_material', materialId: 'material:text:001',
+      idempotencyKey: 'material:text:001:v1', displayName: 'synthetic.txt', contentType: 'text/plain', projectId: '', scopeFingerprint: '' });
+    await indexer.drainUntilIdle();
+    assert.equal(service.getV2MaterialIndexStatus(viewer.deviceToken, material.revisionId).status, 'ready');
+    assert.equal(service.getV2Material(viewer.deviceToken, material.revisionId).content.toString(), bytes.toString());
+  } finally { await indexer.stop(); service.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('source integrity hold isolates original revisions and restores only the verified hash', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-cloud-integrity-'));
+  const { service, student, source, viewer } = setup(root);
+  const other = service.registerSource(ADMIN);
+  service.allowWrite(ADMIN, other.deviceId, student.id);
+  service.issueV2Grant(ADMIN, { deviceId: other.deviceId, cloudStudentId: student.id, scope: 'material.write', category: 'learning_material' });
+  const indexer = startMaterialIndexer({ service, pollMs: 60000, timeoutMs: 30000 });
+  try {
+    const firstBytes = Buffer.from('first synthetic source');
+    const secondBytes = Buffer.from('other synthetic source');
+    const first = upload(service, source, student, firstBytes, { category: 'learning_material', materialId: 'source:material:001',
+      idempotencyKey: 'source:material:001:v1', displayName: 'first.txt', contentType: 'text/plain', projectId: '', scopeFingerprint: '' });
+    const second = upload(service, other, student, secondBytes, { category: 'learning_material', materialId: 'source:material:002',
+      idempotencyKey: 'source:material:002:v1', displayName: 'second.txt', contentType: 'text/plain', projectId: '', scopeFingerprint: '' });
+    await indexer.drainUntilIdle();
+    assert.equal(service.setSourceIntegrityHold(source.deviceToken, student.id, { category: 'learning_material', objectId: 'source:material:001', action: 'hold' }).changed, 1);
+    assert.equal(service.setSourceIntegrityHold(source.deviceToken, student.id, { category: 'learning_material', objectId: 'source:material:001', action: 'hold' }).changed, 0);
+    assert.throws(() => service.getV2Material(viewer.deviceToken, first.revisionId), /来源不可用/);
+    assert.equal(service.getV2Material(viewer.deviceToken, second.revisionId).content.toString(), secondBytes.toString());
+    assert.deepEqual(service.listV2Materials(viewer.deviceToken, student.id, { category: 'learning_material' }).materials.map(x => x.revisionId), [second.revisionId]);
+    const session = service.issueRemoteAgentSession(viewer.deviceToken, { provider: 'workbuddy', cloudStudentId: student.id,
+      taskId: 'task:hold:001', executionId: 'execution:hold:001', taskType: 'knowledge_search.v1', idempotencyKey: 'execution:hold:001', materialCategories: ['learning_material'] });
+    assert.equal(service.searchRemoteAgentMaterials(session.sessionToken, { query: 'first' }).materials.length, 0);
+    assert.throws(() => service.getRemoteAgentMaterial(session.sessionToken, first.revisionId), /来源不可用/);
+    assert.equal(service.setSourceIntegrityHold(other.deviceToken, student.id, { category: 'learning_material', objectId: 'source:material:001', action: 'clear', contentSha256: crypto.createHash('sha256').update(firstBytes).digest('hex') }).changed, 0);
+    assert.equal(service.setSourceIntegrityHold(source.deviceToken, student.id, { category: 'learning_material', objectId: 'source:material:001', action: 'clear', contentSha256: '0'.repeat(64) }).changed, 0);
+    assert.equal(service.setSourceIntegrityHold(source.deviceToken, student.id, { category: 'learning_material', objectId: 'source:material:001', action: 'clear', contentSha256: crypto.createHash('sha256').update(firstBytes).digest('hex') }).changed, 1);
+    assert.equal(service.getV2Material(viewer.deviceToken, first.revisionId).content.toString(), firstBytes.toString());
+  } finally { await indexer.stop(); service.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('report source hold blocks v1 and v2 delivery until that exact content is verified again', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-cloud-report-hold-'));
+  const { service, student, source, viewer } = setup(root);
+  try {
+    service.approvePairing(ADMIN, viewer.pairingCode, [student.id]);
+    service.issueV2Grant(ADMIN, { deviceId: source.deviceId, cloudStudentId: student.id, scope: 'material.write', category: 'learning_report' });
+    service.issueV2Grant(ADMIN, { deviceId: viewer.deviceId, cloudStudentId: student.id, scope: 'material.read', category: 'learning_report' });
+    const bytes = Buffer.from('---\ntype: learning_profile\nstatus: active\nupdated: 2026-11-13\n---\n\n# 整体画像\n\n- 合成练习证据显示一次明确的建模进展。\n');
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+    const report = service.uploadReport(source.deviceToken, { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile',
+      sourceStatus: 'active', publishedAt: '2026-11-13', content: bytes.toString(), sourceSha256: hash, contentSha256: hash, filename: 'report.md' });
+    const material = upload(service, source, student, bytes, { category: 'learning_report', materialId: 'profile:report:001',
+      idempotencyKey: 'profile:report:001:v1', displayName: 'report.md', contentType: 'text/markdown', projectId: '', scopeFingerprint: '' });
+    assert.equal(service.setSourceIntegrityHold(source.deviceToken, student.id, { category: 'learning_report', objectId: '*', action: 'hold' }).changed, 1);
+    assert.equal(service.listReports(viewer.deviceToken, student.id).reports.length, 0);
+    assert.throws(() => service.getReport(viewer.deviceToken, report.revisionId), /来源不可用/);
+    assert.throws(() => service.getV2Material(viewer.deviceToken, material.revisionId), /来源不可用/);
+    assert.equal(service.listV2Materials(viewer.deviceToken, student.id, { category: 'learning_report' }).materials.length, 0);
+    assert.equal(service.setSourceIntegrityHold(source.deviceToken, student.id, { category: 'learning_report', objectId: '*', action: 'clear', contentSha256: hash }).changed, 1);
+    assert.equal(service.getReport(viewer.deviceToken, report.revisionId).content.toString(), bytes.toString());
+    assert.equal(service.getV2Material(viewer.deviceToken, material.revisionId).content.toString(), bytes.toString());
+  } finally { service.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test('C4 indexes PDF/DOCX asynchronously and exposes only the explicit current revision', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-cloud-c4-index-'));

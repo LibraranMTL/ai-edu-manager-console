@@ -7,7 +7,7 @@ const { createReadStream } = require('node:fs');
 const { DatabaseSync } = require('node:sqlite');
 
 const DB_NAME = 'cloud-reports.sqlite';
-const OBJECT_NAME = /^[a-f0-9]{64}\.(?:md|pdf|docx)$/;
+const OBJECT_NAME = /^[a-f0-9]{64}\.(?:md|txt|pdf|docx)$/;
 
 function absoluteDirectory(value, label) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error(`${label}须为绝对目录`);

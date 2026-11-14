@@ -12,10 +12,10 @@ const { createPublicContentService, verifySignedObject } = require('./public-con
 
 const pngFixture = (text = 'fixture') => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(text)]);
 
-function fixture() {
+function fixture(now = () => Date.now()) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-public-content-'));
   const adminToken = 'admin-token-that-is-longer-than-24-characters';
-  const service = createService({ dataDir: root, adminToken });
+  const service = createService({ dataDir: root, adminToken, now });
   const session = service.loginAdmin(adminToken).sessionToken;
   const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
   const publicContent = createPublicContentService({
@@ -24,9 +24,92 @@ function fixture() {
     isAdmin: service.isAdmin,
     privateKey: keys.privateKey,
     keyId: 'course-catalog-primary-2026',
+    now,
   });
   return { root, service, session, keys, publicContent, close() { service.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
+
+test('a new deployment serves a stable signed empty revocation list', () => {
+  const fx = fixture();
+  try {
+    const first = fx.publicContent.signedRevocations();
+    const second = fx.publicContent.signedRevocations();
+    assert.deepEqual(first.payload.tombstones, []);
+    assert.match(first.payload.revocationRevision, /^revocations-[a-f0-9]{32}$/);
+    assert.equal(verifySignedObject(first.payload, fx.keys.publicKey), true);
+    assert.equal(first.etag, second.etag);
+    assert.deepEqual(first.payload, second.payload);
+  } finally { fx.close(); }
+});
+
+test('renewal requires explicit approval and preserves the approved signed content', () => {
+  let clock = Date.now(); const fx = fixture(() => clock);
+  try {
+    const asset = fx.publicContent.putAsset(fx.session, { assetId: 'asset:renew-cover', mimeType: 'image/png', contentBase64: pngFixture('renew').toString('base64') });
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
+    fx.publicContent.saveCardTemplate(fx.session, cardTemplate());
+    fx.publicContent.saveCardPack(fx.session, cardPack());
+    const candidate = fx.publicContent.validateRelease(fx.session, { releaseId: 'release:renew-approved-1', courseIds: ['platform:starfall-k5-math'], cardPackIds: [cardPack().packId] });
+    fx.publicContent.publishRelease(fx.session, { releaseId: candidate.releaseId, expectedManifestSha256: candidate.manifestSha256 });
+    assert.equal(fx.publicContent.renewIfDue().status, 'disabled');
+    assert.throws(() => fx.publicContent.configureRenewal(fx.session, { enabled: true, expectedManifestRevision: candidate.manifest.manifestRevision, expectedManifestSha256: '0'.repeat(64) }), /活动清单已变化/);
+    fx.publicContent.configureRenewal(fx.session, { enabled: true, expectedManifestRevision: candidate.manifest.manifestRevision, expectedManifestSha256: candidate.manifestSha256 });
+    assert.equal(fx.publicContent.renewIfDue().status, 'not_due');
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId, { title: 'Unpublished draft' }));
+    clock += 18 * 60 * 60 * 1000 + 1;
+    assert.equal(fx.publicContent.renewIfDue().status, 'renewed');
+    const renewed = fx.publicContent.activeManifest().manifest;
+    assert.equal(verifySignedObject(renewed, fx.keys.publicKey), true);
+    assert.equal(renewed.previousRevision, candidate.manifest.manifestRevision);
+    assert.deepEqual(renewed.courses, candidate.manifest.courses);
+    assert.deepEqual(renewed.cardPacks, candidate.manifest.cardPacks);
+    assert.deepEqual(renewed.assets, candidate.manifest.assets);
+    assert.equal(Date.parse(renewed.expiresAt) - Date.parse(renewed.issuedAt), 24 * 60 * 60 * 1000);
+    assert.equal(fx.publicContent.renewIfDue().status, 'not_due');
+    const freshSession = fx.service.loginAdmin('admin-token-that-is-longer-than-24-characters').sessionToken;
+    fx.publicContent.emergencyWithdraw(freshSession, { releaseId: 'release:renew-withdraw-1', courseId: 'platform:starfall-k5-math' });
+    assert.equal(fx.publicContent.renewalStatus(freshSession).enabled, false);
+    assert.equal(fx.publicContent.renewIfDue().status, 'disabled');
+    assert.equal(fx.publicContent.activeManifest().manifest.courses.length, 0);
+  } finally { fx.close(); }
+});
+
+test('expired candidates and corrupted approved assets fail closed', () => {
+  let clock = Date.now(); const fx = fixture(() => clock);
+  try {
+    const asset = fx.publicContent.putAsset(fx.session, { assetId: 'asset:renew-failure-cover', mimeType: 'image/png', contentBase64: pngFixture('safe').toString('base64') });
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
+    const expired = fx.publicContent.validateRelease(fx.session, { releaseId: 'release:expired-candidate-1', courseIds: ['platform:starfall-k5-math'] });
+    clock += 24 * 60 * 60 * 1000;
+    const freshSession = fx.service.loginAdmin('admin-token-that-is-longer-than-24-characters').sessionToken;
+    assert.throws(() => fx.publicContent.publishRelease(freshSession, { releaseId: expired.releaseId, expectedManifestSha256: expired.manifestSha256 }), /候选清单已过期/);
+    const valid = fx.publicContent.validateRelease(freshSession, { releaseId: 'release:renew-failure-1', courseIds: ['platform:starfall-k5-math'] });
+    fx.publicContent.publishRelease(freshSession, { releaseId: valid.releaseId, expectedManifestSha256: valid.manifestSha256 });
+    fx.publicContent.configureRenewal(freshSession, { enabled: true, expectedManifestRevision: valid.manifest.manifestRevision, expectedManifestSha256: valid.manifestSha256 });
+    const file = fx.publicContent.asset(asset.assetRevisionId).filePath;
+    const bytes = fs.readFileSync(file); bytes[bytes.length - 1] ^= 1; fs.writeFileSync(file, bytes);
+    clock += 19 * 60 * 60 * 1000;
+    assert.throws(() => fx.publicContent.renewIfDue(), /资源校验失败/);
+    assert.equal(fx.publicContent.activeManifest().manifest.manifestRevision, valid.manifest.manifestRevision);
+  } finally { fx.close(); }
+});
+
+test('publication rejects a tampered candidate and a candidate based on a superseded active revision', () => {
+  const fx = fixture();
+  try {
+    const asset = fx.publicContent.putAsset(fx.session, { assetId: 'asset:publish-safety-cover', mimeType: 'image/png', contentBase64: pngFixture('safe').toString('base64') });
+    fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
+    const one = fx.publicContent.validateRelease(fx.session, { releaseId: 'release:publish-safety-one', courseIds: ['platform:starfall-k5-math'] });
+    const stale = fx.publicContent.validateRelease(fx.session, { releaseId: 'release:publish-safety-stale', courseIds: ['platform:starfall-k5-math'] });
+    fx.publicContent.publishRelease(fx.session, { releaseId: one.releaseId, expectedManifestSha256: one.manifestSha256 });
+    assert.throws(() => fx.publicContent.publishRelease(fx.session, { releaseId: stale.releaseId, expectedManifestSha256: stale.manifestSha256 }), /活动清单已变化/);
+    const tampered = fx.publicContent.validateRelease(fx.session, { releaseId: 'release:publish-safety-tampered', courseIds: ['platform:starfall-k5-math'] });
+    const altered = structuredClone(tampered.manifest); altered.courses[0].title = 'Altered after review';
+    fx.service.db.prepare('UPDATE public_content_releases SET manifest_json=? WHERE release_id=?').run(JSON.stringify(altered), tampered.releaseId);
+    assert.throws(() => fx.publicContent.publishRelease(fx.session, { releaseId: tampered.releaseId, expectedManifestSha256: tampered.manifestSha256 }), /签名或哈希不匹配/);
+    assert.equal(fx.publicContent.activeManifest().manifest.manifestRevision, one.manifest.manifestRevision);
+  } finally { fx.close(); }
+});
 
 function course(assetRevisionId, overrides = {}) {
   return {
@@ -97,7 +180,7 @@ test('public course release is signed, idempotent and withdrawable', () => {
     fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
     const validated = fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:course-mvp-1', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T00:00:00.000Z', effectiveAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+
       minClientVersions: { windowsHost: '0.23.4', androidStandalone: '1.3.5' },
     });
     assert.equal(validated.status, 'validated');
@@ -115,7 +198,7 @@ test('public course release is signed, idempotent and withdrawable', () => {
     assert.equal(fx.publicContent.activeManifest().manifest.courses.length, 1);
     const replacement = fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:course-mvp-2', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T01:00:00.000Z', effectiveAt: '2026-11-05T01:00:00.000Z', expiresAt: '2026-11-06T01:00:00.000Z',
+
     });
     fx.publicContent.publishRelease(fx.session, { releaseId: replacement.releaseId, expectedManifestSha256: replacement.manifestSha256 });
     const rolledBack = fx.publicContent.rollbackRelease(fx.session, {
@@ -138,7 +221,7 @@ test('public course release is signed, idempotent and withdrawable', () => {
     }), /已紧急撤回课程/);
     assert.throws(() => fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:course-mvp-republish-blocked', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T02:00:00.000Z', expiresAt: '2026-11-06T02:00:00.000Z',
+
     }), /已紧急撤回课程/);
     const blockedRelease = fx.publicContent.listReleases(fx.session).releases.find(item => item.releaseId === validated.releaseId);
     assert.equal(blockedRelease.containsRevokedCourse, true);
@@ -156,7 +239,7 @@ test('public course contract rejects generic locale, HTTP and changed candidate 
     fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
     const validated = fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:hash-check', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+
     });
     assert.throws(() => fx.publicContent.publishRelease(fx.session, {
       releaseId: validated.releaseId, expectedManifestSha256: '0'.repeat(64),
@@ -182,7 +265,7 @@ test('admin inventory lists assets, course drafts and immutable release hashes',
     fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
     const validated = fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:list-001', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+
     });
     assert.equal(fx.publicContent.listAssets(fx.session).assets[0].assetRevisionId, asset.assetRevisionId);
     assert.equal(fx.publicContent.listCourses(fx.session).courses[0].locale, 'en-US');
@@ -206,7 +289,7 @@ test('public learning-card template and pack drafts enter the signed release wit
     assert.equal(fx.publicContent.listCardPacks(fx.session).packs[0].packId, cardPack().packId);
     const validated = fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:cards-001', courseIds: ['platform:starfall-k5-math'], cardPackIds: [cardPack().packId],
-      issuedAt: '2026-11-06T00:00:00.000Z', expiresAt: '2026-11-07T00:00:00.000Z',
+
     });
     assert.equal(validated.manifest.cardPacks.length, 1);
     assert.equal(validated.manifest.cardPacks[0].templates[0].templateId, cardTemplate().templateId);
@@ -236,7 +319,7 @@ test('public learning-card drafts reject unverifiable answers, mixed locales and
     fx.publicContent.saveCardPack(fx.session, cardPack());
     assert.throws(() => fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:cards-missing-course', cardPackIds: [cardPack().packId],
-      issuedAt: '2026-11-06T00:00:00.000Z', expiresAt: '2026-11-07T00:00:00.000Z',
+
     }), /关联课程未纳入同一发布/);
   } finally { fx.close(); }
 });
@@ -250,7 +333,7 @@ test('public content observability hashes client identity and reconciles bounded
     fx.publicContent.saveCourse(fx.session, course(asset.assetRevisionId));
     const validated = fx.publicContent.validateRelease(fx.session, {
       releaseId: 'release:metrics-001', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+
     });
     fx.publicContent.publishRelease(fx.session, { releaseId: validated.releaseId, expectedManifestSha256: validated.manifestSha256 });
     fx.publicContent.recordDelivery('manifest.read', 'success', validated.manifest.manifestRevision, 1234);
@@ -295,7 +378,7 @@ test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
     app.publicContent.saveCourse(session, course(asset.assetRevisionId));
     const validated = app.publicContent.validateRelease(session, {
       releaseId: 'release:http-1', courseIds: ['platform:starfall-k5-math'],
-      issuedAt: '2026-11-05T00:00:00.000Z', expiresAt: '2026-11-06T00:00:00.000Z',
+
     });
     app.publicContent.publishRelease(session, { releaseId: validated.releaseId, expectedManifestSha256: validated.manifestSha256 });
     const manifest = await fetch(`${base}/v2/public-content/manifest`);
@@ -305,6 +388,13 @@ test('public HTTP endpoints support ETag, 304 and byte ranges', async () => {
     assert.equal((await manifest.json()).releaseId, 'release:http-1');
     const unchanged = await fetch(`${base}/v2/public-content/manifest`, { headers: { 'if-none-match': etag } });
     assert.equal(unchanged.status, 304);
+    const emptyRevocations = await fetch(`${base}/v2/public-content/revocations`);
+    assert.equal(emptyRevocations.status, 200);
+    const revocationEtag = emptyRevocations.headers.get('etag');
+    const emptyPayload = await emptyRevocations.json();
+    assert.deepEqual(emptyPayload.tombstones, []);
+    assert.equal(verifySignedObject(emptyPayload, keys.publicKey), true);
+    assert.equal((await fetch(`${base}/v2/public-content/revocations`, { headers: { 'if-none-match': revocationEtag } })).status, 304);
     const immutableRelease = await fetch(`${base}/v2/public-content/releases/${validated.manifest.manifestRevision}`);
     assert.equal(immutableRelease.status, 200);
     const releaseSnapshot = await immutableRelease.json();
@@ -352,7 +442,7 @@ test('public learning-card draft HTTP endpoints require an administrator and pub
     assert.equal(pack.status, 201);
     const validate = await fetch(`${base}/v2/admin/releases/validate`, { method: 'POST', headers, body: JSON.stringify({
       releaseId: 'release:cards-http-001', courseIds: ['platform:starfall-k5-math'], cardPackIds: [cardPack().packId],
-      issuedAt: '2026-11-06T00:00:00.000Z', expiresAt: '2026-11-07T00:00:00.000Z',
+
     }) });
     assert.equal(validate.status, 200);
     const candidate = await validate.json();

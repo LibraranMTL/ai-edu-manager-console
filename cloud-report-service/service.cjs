@@ -9,7 +9,7 @@ const {
   normalizeProfile, profileRevisionId, sha256, stableJson,
 } = require('./v2-contract.cjs');
 const { normalizeRemoteProjectResult } = require('./remote-result-contract.cjs');
-const { verifyWindowsProductLicense } = require('./product-license.cjs');
+const { verifyCloudSourceProductLicense } = require('./product-license.cjs');
 
 const REPORT_TYPES = new Set(['learning_profile', 'learning_change', 'weekly_action', 'stage_summary']);
 const MAX_REPORT_BYTES = 2 * 1024 * 1024;
@@ -156,6 +156,16 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       PRIMARY KEY(device_id, student_id, scope, category)
     );
     CREATE INDEX IF NOT EXISTS v2_grants_student ON v2_grants(student_id, device_id, scope);
+    CREATE TABLE IF NOT EXISTS scoped_viewer_bindings (
+      device_id TEXT NOT NULL REFERENCES devices(id), student_id TEXT NOT NULL REFERENCES students(id),
+      source_device_id TEXT REFERENCES devices(id), created_at INTEGER NOT NULL,
+      PRIMARY KEY(device_id, student_id)
+    );
+    CREATE TABLE IF NOT EXISTS source_integrity_holds (
+      source_device_id TEXT NOT NULL REFERENCES devices(id), student_id TEXT NOT NULL REFERENCES students(id),
+      category TEXT NOT NULL, object_id TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+      created_at INTEGER NOT NULL, PRIMARY KEY(source_device_id,student_id,category,object_id,content_sha256)
+    );
     CREATE TABLE IF NOT EXISTS device_student_bindings (
       binding_id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id),
       student_id TEXT NOT NULL REFERENCES students(id), local_student_id TEXT NOT NULL,
@@ -586,11 +596,71 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   function requireV2Grant(deviceId, studentId, scope, category = '') {
     const row = v2Grant(deviceId, studentId, scope, category);
     if (!row) fail(403, scope.startsWith('health_record.') ? '该设备没有单独的健康资料许可' : '该设备没有此学生的对应资料许可');
+    if (scope === 'student_profile.read' || scope === 'material.read') {
+      const binding = db.prepare('SELECT source_device_id AS sourceId FROM scoped_viewer_bindings WHERE device_id=? AND student_id=?').get(deviceId, studentId);
+      if (binding?.sourceId) {
+        if (!hasGrant(binding.sourceId, studentId, 'report.write')) fail(403, '来源设备的授权已停止或到期');
+        const source = v2Grant(binding.sourceId, studentId, scope === 'student_profile.read' ? 'student_profile.write' : 'material.write', category);
+        if (!source || (scope === 'student_profile.read' && row.fields.some(field => !source.fields.includes(field)))) fail(403, '读取范围超出当前来源授权');
+      }
+    }
     return row;
+  }
+
+  function requireScopedViewerMaterial(deviceId, studentId, category) {
+    const scoped = db.prepare('SELECT 1 FROM scoped_viewer_bindings WHERE device_id=? AND student_id=?').get(deviceId, studentId);
+    if (scoped) requireV2Grant(deviceId, studentId, 'material.read', category);
+  }
+  function sourceUsesScopedContract(deviceId, studentId) {
+    return Boolean(db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
+      AND scope IN ('student_profile.write','material.write') LIMIT 1`).get(deviceId, studentId)
+      || db.prepare('SELECT 1 FROM source_auto_bindings WHERE source_device_id=? AND student_id=?').get(deviceId, studentId));
+  }
+  function requireScopedSourceMaterial(deviceId, studentId, category) {
+    if (sourceUsesScopedContract(deviceId, studentId)) requireV2Grant(deviceId, studentId, 'material.write', category);
   }
   function appendSyncEvent(studentId, eventType, objectType, objectId, revisionId = '', tombstone = 0) {
     db.prepare(`INSERT INTO sync_events(student_id,event_type,object_type,object_id,revision_id,occurred_at,tombstone)
       VALUES(?,?,?,?,?,?,?)`).run(studentId, eventType, objectType, objectId, revisionId, now(), tombstone ? 1 : 0);
+  }
+  // Holds are reversible and affect only objects originally uploaded by this source.
+  // Existing bytes and version records remain available for controlled recovery.
+  function setSourceIntegrityHold(token, studentId, input = {}) {
+    const source = requireDevice(token, 'source');
+    requireGrant(source.id, studentId, 'report.write');
+    const category = String(input.category || '');
+    const objectId = String(input.objectId || '');
+    const action = String(input.action || '');
+    if (!['learning_report', 'learning_material'].includes(category) ||
+        (category === 'learning_report' ? objectId !== '*' : !/^[A-Za-z0-9:_-]{8,160}$/.test(objectId)) ||
+        !['hold', 'clear'].includes(action)) fail(400, '来源完整性合同无效');
+    requireScopedSourceMaterial(source.id, studentId, category);
+    const hash = String(input.contentSha256 || '');
+    if (action === 'clear' && !/^[a-f0-9]{64}$/.test(hash)) fail(400, '恢复时必须提供已核验内容哈希');
+    return atomic(() => {
+      let changed = 0;
+      if (action === 'hold') {
+        const hashes = new Set();
+        if (category === 'learning_report') db.prepare('SELECT content_sha256 AS hash FROM reports WHERE student_id=? AND origin_device_id=?')
+          .all(studentId, source.id).forEach(row => hashes.add(row.hash));
+        db.prepare(`SELECT content_sha256 AS hash FROM documents WHERE student_id=? AND origin_device_id=?
+          AND material_category=? AND (?='*' OR material_id=?) AND deleted_at IS NULL`)
+          .all(studentId, source.id, category, objectId, objectId).forEach(row => hashes.add(row.hash));
+        const insert = db.prepare('INSERT OR IGNORE INTO source_integrity_holds VALUES(?,?,?,?,?,?)');
+        for (const value of hashes) changed += Number(insert.run(source.id, studentId, category, objectId, value, now()).changes);
+      } else changed = Number(db.prepare(`DELETE FROM source_integrity_holds WHERE source_device_id=? AND student_id=?
+        AND category=? AND object_id=? AND content_sha256=?`).run(source.id, studentId, category, objectId, hash).changes);
+      if (changed) {
+        audit(source.id, `source.integrity.${action}`, studentId, `${category}:${objectId}`);
+        appendSyncEvent(studentId, `source.integrity.${action}`, category, objectId, '', action === 'hold');
+      }
+      return { category, objectId, action, changed };
+    });
+  }
+  function sourceContentHeld(row) {
+    return Boolean(db.prepare(`SELECT 1 FROM source_integrity_holds WHERE source_device_id=? AND student_id=?
+      AND category=? AND (object_id='*' OR object_id=?) AND content_sha256=?`)
+      .get(row.origin_device_id, row.student_id, row.material_category || 'learning_report', row.material_id || '', row.content_sha256));
   }
   function createStudent(token, displayName) {
     if (!isAdmin(token)) fail(401, '管理员凭据无效');
@@ -652,7 +722,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         for (const category of checkedCategories(options.materialCategories)) {
           grantV2(deviceId, record.student_id, 'material.write', { category, actorId: deviceId });
         }
-        // Contract v2 enrollment establishes identity only. Upload starts after a bounded scope is confirmed.
+        // V2 redemption establishes identity first; a bounded upload-scope confirmation enables writes.
         db.prepare(`UPDATE grants SET enabled=0 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
           .run(deviceId, record.student_id);
       }
@@ -666,12 +736,12 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const productDeviceId = String(input.deviceId || '').trim();
     const displayName = String(input.displayName || '').trim();
     if (!/^[A-Za-z0-9_-]{43,128}$/.test(bindingKey)) fail(400, '本机学生绑定凭据无效');
-    if (!productDeviceId || productDeviceId.length > 160) fail(400, 'Windows 主机设备码无效');
+    if (!productDeviceId || productDeviceId.length > 160) fail(400, '来源端设备码无效');
     if (!displayName || displayName.length > 120 || /[\\/\x00-\x1f]/.test(displayName)) fail(400, '学生显示名无效');
-    const verified = verifyWindowsProductLicense(input.licenseToken, {
+    const verified = verifyCloudSourceProductLicense(input.licenseToken, {
       trustedIssuers: trustedLicenseIssuers, deviceId: productDeviceId, now: now(),
     });
-    if (!verified.ok) fail(403, verified.message || 'Windows 主机许可证无效');
+    if (!verified.ok) fail(403, verified.message || '来源端产品许可证无效');
     const selectedFields = checkedFields(input.profileFields);
     const selectedCategories = checkedCategories(input.materialCategories);
     const bindingHash = digest(`${verified.license.licenseId}\n${productDeviceId.toLowerCase()}\n${bindingKey}`);
@@ -702,9 +772,17 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         (binding_hash,license_id,product_device_id,source_device_id,student_id,created_at,updated_at,revoked_at)
         VALUES(?,?,?,?,?,?,?,NULL)`).run(bindingHash, verified.license.licenseId, productDeviceId, deviceId, studentId, now(), now());
       else db.prepare('UPDATE source_auto_bindings SET updated_at=? WHERE binding_hash=?').run(now(), bindingHash);
-      grant(deviceId, studentId, 'report.write', deviceId);
-      grantV2(deviceId, studentId, 'student_profile.write', { fields: selectedFields, actorId: deviceId });
-      for (const category of selectedCategories) grantV2(deviceId, studentId, 'material.write', { category, actorId: deviceId });
+      if (!prior || verified.license.productId !== 'ANDROID_STANDALONE') {
+        grant(deviceId, studentId, 'report.write', deviceId);
+        if (verified.license.productId === 'ANDROID_STANDALONE') {
+          // Product activation creates identity only. The separate, explicit scope request enables upload.
+          db.prepare(`UPDATE grants SET enabled=0 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
+            .run(deviceId, studentId);
+        } else {
+          grantV2(deviceId, studentId, 'student_profile.write', { fields: selectedFields, actorId: deviceId });
+          for (const category of selectedCategories) grantV2(deviceId, studentId, 'material.write', { category, actorId: deviceId });
+        }
+      }
       audit(deviceId, prior ? 'source.auto-enrollment.reuse' : 'source.auto-enrollment.create', studentId, verified.license.licenseId);
     });
     return { deviceId, deviceToken, cloudStudentId: studentId, created: !prior,
@@ -743,7 +821,11 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     if (ids.length < 1 || ids.length > 20 || ids.some(id => !validId(id))) fail(400, '请选择有效学生');
     for (const studentId of ids) {
       if (admin) { if (!studentExists(studentId)) fail(404, '学生不存在'); }
-      else requireGrant(source.id, studentId, 'report.write');
+      else {
+        requireGrant(source.id, studentId, 'report.write');
+        if (sourceUsesScopedContract(source.id, studentId) && !(Number(options.contractVersion) >= 2))
+          fail(400, '已采用范围授权的来源必须按当前授权范围配对');
+      }
     }
     const pairing = db.prepare('SELECT device_id,expires_at,consumed_at FROM pairings WHERE code_hash=?').get(digest(code));
     if (!pairing || pairing.consumed_at || pairing.expires_at <= now()) fail(404, '配对码无效或已过期');
@@ -752,14 +834,38 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
         .run(now(), digest(code), now());
       if (consumed.changes !== 1) fail(409, '配对码已使用');
       for (const studentId of ids) {
+        const requestedFields = Array.isArray(options.profileFields) ? options.profileFields : [];
+        const fields = checkedFields(requestedFields, { requireDisplayName: requestedFields.length > 0 });
+        const categories = checkedCategories(options.materialCategories);
+        let boundedExpiry = now() + READ_GRANT_LIFETIME_MS;
+        if (!admin && Number(options.contractVersion) >= 2) {
+          const write = db.prepare("SELECT expires_at AS expiresAt FROM grants WHERE device_id=? AND student_id=? AND scope='report.write'").get(source.id, studentId);
+          if (write?.expiresAt != null) boundedExpiry = Math.min(boundedExpiry, write.expiresAt);
+          if (fields.length) {
+            const allowed = requireV2Grant(source.id, studentId, 'student_profile.write');
+            if (fields.some(field => !allowed.fields.includes(field))) fail(403, '基础信息范围超出来源授权');
+            if (allowed.expires_at != null) boundedExpiry = Math.min(boundedExpiry, allowed.expires_at);
+          }
+          for (const category of categories) {
+            const allowed = requireV2Grant(source.id, studentId, 'material.write', category);
+            if (allowed.expires_at != null) boundedExpiry = Math.min(boundedExpiry, allowed.expires_at);
+          }
+        }
         grant(pairing.device_id, studentId, 'cloud_document.read', source?.id || 'admin_local');
         if (Number(options.contractVersion) >= 2) {
-          grantV2(pairing.device_id, studentId, 'student_profile.read', {
-            fields: checkedFields(options.profileFields), actorId: source?.id || 'admin_local',
+          db.prepare(`INSERT INTO scoped_viewer_bindings(device_id,student_id,source_device_id,created_at) VALUES(?,?,?,?)
+            ON CONFLICT(device_id,student_id) DO UPDATE SET source_device_id=excluded.source_device_id,created_at=excluded.created_at`)
+            .run(pairing.device_id, studentId, source?.id || null, now());
+          if (fields.length) grantV2(pairing.device_id, studentId, 'student_profile.read', {
+            fields, actorId: source?.id || 'admin_local',
           });
-          for (const category of checkedCategories(options.materialCategories)) {
+          for (const category of categories) {
             grantV2(pairing.device_id, studentId, 'material.read', { category, actorId: source?.id || 'admin_local' });
           }
+          db.prepare("UPDATE grants SET expires_at=? WHERE device_id=? AND student_id=? AND scope='cloud_document.read'")
+            .run(boundedExpiry, pairing.device_id, studentId);
+          db.prepare("UPDATE v2_grants SET expires_at=? WHERE device_id=? AND student_id=? AND scope IN ('student_profile.read','material.read')")
+            .run(boundedExpiry, pairing.device_id, studentId);
           const healthObjectScope = [...new Set((Array.isArray(options.healthObjectScope) ? options.healthObjectScope : []).map(String).filter(Boolean))];
           if (healthObjectScope.length) {
             if (!admin) {
@@ -868,17 +974,20 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     }
     const knownV2Grant = db.prepare(`SELECT 1 FROM v2_grants WHERE device_id=? AND student_id=?
       AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL LIMIT 1`).get(source.id, studentId);
-    if (!knownV2Grant) {
+    const knownAutoBinding = db.prepare(`SELECT 1 FROM source_auto_bindings WHERE source_device_id=? AND student_id=?
+      AND revoked_at IS NULL LIMIT 1`).get(source.id, studentId);
+    if (!knownV2Grant && !knownAutoBinding) {
       fail(403, '旧版上传许可不能直接扩大为新版资料授权，请重新开通');
     }
     const requestedProfileFields = Array.isArray(input?.profileFields) ? input.profileFields : [];
     const profileFields = checkedFields(requestedProfileFields, { requireDisplayName: requestedProfileFields.length > 0 });
     const materialCategories = checkedCategories(input?.materialCategories);
     const authorizationPurpose = String(input?.authorizationPurpose || 'document_sync');
-    const authorizationExpiresAt = Number(input?.authorizationExpiresAt);
+    const indefinite = input?.authorizationDuration === 'until_revoked';
+    const authorizationExpiresAt = indefinite ? null : Number(input?.authorizationExpiresAt);
     if (!['document_sync', 'expert_interpretation'].includes(authorizationPurpose)) fail(400, '授权用途无效');
-    if (!Number.isSafeInteger(authorizationExpiresAt) || authorizationExpiresAt <= now() + 5 * 60 * 1000 ||
-        authorizationExpiresAt > now() + 365 * 24 * 60 * 60 * 1000) fail(400, '上传授权有效期无效');
+    if (!indefinite && (!Number.isSafeInteger(authorizationExpiresAt) || authorizationExpiresAt <= now() + 5 * 60 * 1000 ||
+        authorizationExpiresAt > now() + 365 * 24 * 60 * 60 * 1000)) fail(400, '上传授权有效期无效');
     return atomic(() => {
       db.prepare(`UPDATE v2_grants SET revoked_at=?,policy_version=policy_version+1
         WHERE device_id=? AND student_id=? AND scope IN ('student_profile.write','material.write') AND revoked_at IS NULL`)
@@ -892,7 +1001,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       db.prepare(`UPDATE grants SET expires_at=?,enabled=1 WHERE device_id=? AND student_id=? AND scope='report.write' AND revoked_at IS NULL`)
         .run(authorizationExpiresAt, source.id, studentId);
       audit(source.id, 'source.upload-scope.replace', studentId, source.id);
-      return { cloudStudentId: studentId, profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt };
+      return { cloudStudentId: studentId, profileFields, materialCategories, authorizationPurpose, authorizationExpiresAt,
+        ...(indefinite ? { authorizationDuration: 'until_revoked' } : {}) };
     });
   }
   function setOwnHealthScope(token, input) {
@@ -993,9 +1103,14 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       c.revision_id AS profileRevisionId FROM v2_grants g LEFT JOIN student_profile_current c ON c.student_id=g.student_id
        JOIN students s ON s.id=g.student_id WHERE g.device_id=? AND s.archived_at IS NULL AND g.scope='student_profile.read' AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?)`)
       .all(device.id, now()).map(row => [row.studentId, row]));
-    return legacy.map(row => {
+    return legacy.flatMap(row => {
+      const binding = device.kind === 'viewer' ? db.prepare('SELECT source_device_id AS sourceId FROM scoped_viewer_bindings WHERE device_id=? AND student_id=?').get(device.id, row.id) : null;
+      if (binding?.sourceId && !hasGrant(binding.sourceId, row.id, 'report.write')) return [];
       const profile = profiles.get(row.id);
-      return profile ? { ...row, profileRevisionId: profile.profileRevisionId || '', profileFields: JSON.parse(profile.fieldsJson || '[]') } : row;
+      let allowedProfile = profile;
+      if (binding && profile) { try { requireV2Grant(device.id, row.id, 'student_profile.read'); } catch { allowedProfile = null; } }
+      const visible = binding && !allowedProfile ? { ...row, displayName: '已授权学生' } : row;
+      return [allowedProfile ? { ...visible, profileRevisionId: allowedProfile.profileRevisionId || '', profileFields: JSON.parse(allowedProfile.fieldsJson || '[]') } : visible];
     });
   }
   function uploadStudentProfile(token, studentId, input) {
@@ -1086,13 +1201,25 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   }
   function listSyncEvents(token, studentId, cursor = '') {
     const viewer = requireDevice(token, 'viewer');
-    requireV2Grant(viewer.id, studentId, 'student_profile.read');
+    const scoped = db.prepare('SELECT source_device_id AS sourceId FROM scoped_viewer_bindings WHERE device_id=? AND student_id=?').get(viewer.id, studentId);
+    if (scoped) {
+      requireGrant(viewer.id, studentId, 'cloud_document.read');
+      if (scoped.sourceId && !hasGrant(scoped.sourceId, studentId, 'report.write')) fail(403, '来源设备的授权已停止或到期');
+    } else requireV2Grant(viewer.id, studentId, 'student_profile.read');
     if (cursor && (!/^\d+$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) fail(400, '变化游标无效');
     const rows = db.prepare(`SELECT sequence,event_type AS eventType,object_type AS objectType,object_id AS objectId,
       revision_id AS revisionId,occurred_at AS occurredAt,tombstone FROM sync_events
       WHERE student_id=? AND sequence>? ORDER BY sequence LIMIT 201`).all(studentId, Number(cursor || 0));
-    const events = rows.slice(0, 200);
-    return { events, nextCursor: rows.length > 200 ? String(events.at(-1).sequence) : (events.length ? String(events.at(-1).sequence) : cursor) };
+    const page = rows.slice(0, 200);
+    const events = scoped ? page.filter(event => {
+      try {
+        if (event.objectType === 'student_profile') requireV2Grant(viewer.id, studentId, 'student_profile.read');
+        else if (MATERIAL_CATEGORIES.includes(event.objectType)) requireV2Grant(viewer.id, studentId, 'material.read', event.objectType);
+        else return false;
+        return true;
+      } catch { return false; }
+    }) : page;
+    return { events, nextCursor: page.length ? String(page.at(-1).sequence) : cursor };
   }
   function checkSourceReports(token, input) {
     const source = requireDevice(token, 'source'), studentId = input?.cloudStudentId;
@@ -1109,6 +1236,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const source = requireDevice(token, 'source');
     const studentId = input?.cloudStudentId;
     requireGrant(source.id, studentId, 'report.write');
+    requireScopedSourceMaterial(source.id, studentId, 'learning_report');
     const preference = db.prepare('SELECT enabled FROM grants WHERE device_id=? AND student_id=? AND scope=?')
       .get(source.id, studentId, 'report.write');
     if (!preference?.enabled) fail(403, '该学生已关闭自动上传');
@@ -1174,6 +1302,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const admin = isAdmin(token);
     const viewer = admin ? null : requireDevice(token, 'viewer');
     if (!admin) requireGrant(viewer.id, studentId, 'cloud_document.read');
+    if (!admin) requireScopedViewerMaterial(viewer.id, studentId, 'learning_report');
     const match = String(cursor || '').match(/^(\d+):(rev_[a-f0-9]{48})$/);
     if (cursor && !match) fail(400, '同步游标无效');
     const afterTime = match ? Number(match[1]) : 0;
@@ -1184,6 +1313,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       published_at AS publishedAt, received_at AS receivedAt,
       content_sha256 AS contentSha256, byte_size AS byteSize, filename
       FROM reports WHERE student_id=? AND id NOT IN (SELECT revision_id FROM report_tombstones) AND (?='' OR origin_device_id<>?)
+      AND NOT EXISTS (SELECT 1 FROM source_integrity_holds h WHERE h.student_id=reports.student_id AND h.source_device_id=reports.origin_device_id
+        AND h.category='learning_report' AND h.object_id='*' AND h.content_sha256=reports.content_sha256)
       AND (received_at>? OR (received_at=? AND id>?))
       ORDER BY received_at,id LIMIT 201`).all(studentId, viewer?.id || '', viewer?.id || '', afterTime, afterTime, afterId);
     const page = rows.slice(0, 200);
@@ -1195,8 +1326,12 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const viewer = admin ? null : requireDevice(token, 'viewer');
     const row = db.prepare('SELECT * FROM reports WHERE id=?').get(revisionId);
     if (!row) fail(404, '报告不存在');
-    if (!admin) requireGrant(viewer.id, row.student_id, 'cloud_document.read');
+    if (!admin) {
+      requireGrant(viewer.id, row.student_id, 'cloud_document.read');
+      requireScopedViewerMaterial(viewer.id, row.student_id, 'learning_report');
+    }
     if (db.prepare('SELECT 1 FROM report_tombstones WHERE revision_id=?').get(revisionId)) fail(410, '该报告修订已撤回');
+    if (sourceContentHeld(row)) fail(409, '报告来源不可用，暂时停止读取');
     if (!admin && row.origin_device_id === viewer.id) fail(403, '本机报告无需下载');
     const content = fs.readFileSync(path.join(objectDir, row.object_name));
     if (!safeEqual(digest(content), row.content_sha256)) fail(500, '报告对象校验失败');
@@ -1218,7 +1353,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const admin = isAdmin(token);
     const source = admin ? { id: 'admin_local' } : requireDevice(token, 'source');
     if (admin) { if (!studentExists(studentId)) fail(404, '学生不存在'); }
-    else requireGrant(source.id, studentId, 'report.write');
+    else { requireGrant(source.id, studentId, 'report.write'); requireScopedSourceMaterial(source.id, studentId, 'learning_material'); }
     const name = String(displayName || '').trim();
     if (!name || name.length > 120 || /[\\/\x00-\x1f]/.test(name)) fail(400, '文件名无效');
     const suffix = DOCUMENT_TYPES.get(contentType);
@@ -1251,7 +1386,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const admin = isAdmin(token);
     const source = admin ? { id: 'admin_local' } : requireDevice(token, 'source');
     if (admin) { if (!studentExists(studentId)) fail(404, '学生不存在'); }
-    else requireGrant(source.id, studentId, 'report.write');
+    else { requireGrant(source.id, studentId, 'report.write'); requireScopedSourceMaterial(source.id, studentId, 'learning_material'); }
     const name = String(displayName || '').trim();
     const suffix = DOCUMENT_TYPES.get(contentType);
     if (!name || name.length > 120 || /[\\/\x00-\x1f]/.test(name) || !suffix || !name.toLowerCase().endsWith(suffix)) fail(400, '文档名称或类型无效');
@@ -1260,7 +1395,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     return { tempPath, commit({ sha, size, head }) {
       // Recheck authorization and quota after the async transfer, before publishing the index.
       if (admin ? !isAdmin(token) : !deviceFor(token)) fail(401, '上传凭据已失效');
-      if (!admin) requireGrant(source.id, studentId, 'report.write');
+      if (!admin) { requireGrant(source.id, studentId, 'report.write'); requireScopedSourceMaterial(source.id, studentId, 'learning_material'); }
       if (size < 1 || size > MAX_DOCUMENT_BYTES || !/^[a-f0-9]{64}$/.test(sha)) fail(413, '文件大小无效');
       if (suffix === '.pdf' && !head.subarray(0, 5).equals(Buffer.from('%PDF-'))) fail(400, 'PDF 内容与类型不符');
       if (suffix === '.docx' && !head.subarray(0, 2).equals(Buffer.from('PK'))) fail(400, 'DOCX 内容与类型不符');
@@ -1296,7 +1431,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const contentType = String(metadata?.contentType || '').split(';')[0];
     const projectId = String(metadata?.projectId || '').trim();
     const scopeFingerprint = String(metadata?.scopeFingerprint || '').trim();
-    const suffix = DOCUMENT_TYPES.get(contentType);
+    const suffix = contentType === 'text/plain' && category === 'learning_material' ? '.txt' : DOCUMENT_TYPES.get(contentType);
     if (!/^[A-Za-z0-9:_-]{8,160}$/.test(materialId) || !/^[A-Za-z0-9:_-]{8,200}$/.test(idempotencyKey)) fail(400, '资料标识或幂等键无效');
     if (!displayName || displayName.length > 120 || /[\\/\x00-\x1f]/.test(displayName) || !suffix || !displayName.toLowerCase().endsWith(suffix)) {
       fail(400, '资料名称或类型无效');
@@ -1448,10 +1583,11 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
   }
   function getV2MaterialIndexStatus(token, revisionId) {
     const viewer = requireDevice(token, 'viewer');
-    const row = db.prepare(`SELECT d.student_id,d.material_category FROM documents d
+    const row = db.prepare(`SELECT d.* FROM documents d
       JOIN material_current c ON c.revision_id=d.revision_id WHERE d.revision_id=? AND d.deleted_at IS NULL`).get(revisionId);
     if (!row) fail(404, '当前资料修订不存在');
     requireV2Grant(viewer.id, row.student_id, 'material.read', row.material_category);
+    if (sourceContentHeld(row)) fail(409, '资料来源不可用，暂时停止读取');
     return materialIndexStatusRow(revisionId);
   }
   function claimMaterialIndexJob() {
@@ -1617,6 +1753,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       LEFT JOIN material_index_jobs j ON j.revision_id=d.revision_id
       LEFT JOIN material_search_documents s ON s.revision_id=d.revision_id
       WHERE d.student_id=? AND d.material_category IN (${placeholders}) AND d.revision_id!='' AND d.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM source_integrity_holds h WHERE h.student_id=d.student_id AND h.source_device_id=d.origin_device_id
+        AND h.category=d.material_category AND (h.object_id='*' OR h.object_id=d.material_id) AND h.content_sha256=d.content_sha256)
       AND (d.created_at<? OR (d.created_at=? AND d.revision_id<?)) ORDER BY d.created_at DESC,d.revision_id DESC LIMIT 201`)
       .all(studentId, ...categories, Number(before), Number(before), beforeRevision);
     const materials = rows.slice(0, 200);
@@ -1628,6 +1766,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     const row = db.prepare(`SELECT * FROM documents WHERE revision_id=? AND deleted_at IS NULL`).get(revisionId);
     if (!row) fail(404, '资料修订不存在');
     requireV2Grant(viewer.id, row.student_id, 'material.read', row.material_category);
+    if (sourceContentHeld(row)) fail(409, '资料来源不可用，暂时停止读取');
     const content = fs.readFileSync(path.join(objectDir, row.object_name));
     if (!safeEqual(digest(content), row.content_sha256)) fail(500, '资料对象校验失败');
     audit(viewer.id, `material.download.${row.material_category}`, row.student_id, revisionId);
@@ -1758,6 +1897,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       LEFT JOIN material_index_jobs j ON j.revision_id=d.revision_id
       LEFT JOIN material_search_documents s ON s.revision_id=d.revision_id
       WHERE d.student_id IN (${studentPlaceholders}) AND d.material_category IN (${placeholders}) AND d.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM source_integrity_holds h WHERE h.student_id=d.student_id AND h.source_device_id=d.origin_device_id
+        AND h.category=d.material_category AND (h.object_id='*' OR h.object_id=d.material_id) AND h.content_sha256=d.content_sha256)
       ${projectClause}
       AND (d.created_at<? OR (d.created_at=? AND d.revision_id<?))
       ORDER BY d.created_at DESC,d.revision_id DESC LIMIT 201`).all(...session.studentIds, ...selected,
@@ -1779,6 +1920,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       fail(404, '资料修订不存在或不在授权范围');
     }
     requireV2Grant(session.owner_device_id, row.student_id, 'material.read', row.material_category);
+    if (sourceContentHeld(row)) fail(409, '资料来源不可用，暂时停止读取');
     const content = fs.readFileSync(path.join(objectDir, row.object_name));
     if (!safeEqual(digest(content), row.content_sha256)) fail(500, '资料对象校验失败');
     audit(session.session_id, 'remote_agent.material.download', session.student_id, revisionId);
@@ -1813,6 +1955,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       JOIN documents d ON d.revision_id=material_search_fts.revision_id JOIN material_current c ON c.revision_id=d.revision_id
       WHERE d.student_id IN (${studentPlaceholders}) AND d.material_category IN (${placeholders})
       AND d.deleted_at IS NULL ${projectClause} AND ${predicate}
+      AND NOT EXISTS (SELECT 1 FROM source_integrity_holds h WHERE h.student_id=d.student_id AND h.source_device_id=d.origin_device_id
+        AND h.category=d.material_category AND (h.object_id='*' OR h.object_id=d.material_id) AND h.content_sha256=d.content_sha256)
       ORDER BY d.created_at DESC,d.revision_id DESC LIMIT 100`).all(...session.studentIds, ...selected,
       ...(session.project_id ? [session.project_id, session.scope_fingerprint] : []), ...searchArgs);
     const pending = db.prepare(`SELECT COUNT(*) AS count FROM material_current c JOIN documents d ON d.revision_id=c.revision_id
@@ -1836,13 +1980,14 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       payload = normalizeRemoteProjectResult(payload, { taskId: session.task_id, executionId: session.execution_id, taskType: session.task_type,
         projectId: session.project_id, scopeFingerprint: session.scope_fingerprint });
       for (const source of payload.sources) {
-        const row = db.prepare(`SELECT student_id,material_id,revision_id,content_sha256,material_category,project_id,scope_fingerprint
+        const row = db.prepare(`SELECT student_id,origin_device_id,material_id,revision_id,content_sha256,material_category,project_id,scope_fingerprint
           FROM documents WHERE revision_id=? AND deleted_at IS NULL`).get(source.revisionId);
         if (!row || row.material_id !== source.materialId || row.content_sha256 !== source.contentSha256 ||
             !session.studentIds.includes(row.student_id) || !session.materialCategories.includes(row.material_category) ||
             row.project_id !== session.project_id || row.scope_fingerprint !== session.scope_fingerprint) {
           fail(409, '远程成果引用了任务授权范围外的资料');
         }
+        if (sourceContentHeld(row)) fail(409, '远程成果引用的资料来源已不可用');
       }
       attachments = payload.attachments.map((attachment, index) => ({
         attachmentId: `attachment_${digest(`${session.session_id}|${index}|${attachment.contentSha256}|${attachment.displayName}`).slice(0, 32)}`,
@@ -2018,6 +2163,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     if (!admin && !hasGrant(viewer.id, studentId, 'cloud_document.read') && !hasGrant(viewer.id, studentId, 'report.write')) {
       fail(403, '该设备没有此学生的许可');
     }
+    if (!admin && viewer.kind === 'viewer') requireScopedViewerMaterial(viewer.id, studentId, 'learning_material');
     if (includeTrash && !admin && !hasGrant(viewer.id, studentId, 'report.write')) fail(403, '只有来源设备可查看回收站');
     if (cursor && !/^\d+:doc_[a-f0-9]{32}$/.test(cursor)) fail(400, '文档游标无效');
     const [before, beforeId] = cursor ? cursor.split(':') : [Number.MAX_SAFE_INTEGER, 'z'];
@@ -2025,6 +2171,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
       content_sha256 AS contentSha256, byte_size AS byteSize, origin_device_id AS originDeviceId,
       created_at AS createdAt, deleted_at AS deletedAt
       FROM documents WHERE student_id=? AND ${includeTrash ? 'deleted_at IS NOT NULL' : 'deleted_at IS NULL'}
+      AND NOT EXISTS (SELECT 1 FROM source_integrity_holds h WHERE h.student_id=documents.student_id AND h.source_device_id=documents.origin_device_id
+        AND h.category=documents.material_category AND (h.object_id='*' OR h.object_id=documents.material_id) AND h.content_sha256=documents.content_sha256)
       AND (created_at<? OR (created_at=? AND id<?))
       ORDER BY created_at DESC,id DESC LIMIT 101`).all(studentId, Number(before), Number(before), beforeId);
   }
@@ -2041,6 +2189,8 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     if (!admin && !hasGrant(viewer.id, row.student_id, 'cloud_document.read') && !hasGrant(viewer.id, row.student_id, 'report.write')) {
       fail(403, '该设备没有此学生的许可');
     }
+    if (!admin && viewer.kind === 'viewer') requireScopedViewerMaterial(viewer.id, row.student_id, 'learning_material');
+    if (sourceContentHeld(row)) fail(409, '文档来源不可用，暂时停止读取');
     const content = fs.readFileSync(path.join(objectDir, row.object_name));
     if (!safeEqual(digest(content), row.content_sha256)) fail(500, '文档对象校验失败');
     audit(admin ? 'admin_local' : viewer.id, 'document.download', row.student_id, documentId);
@@ -2080,7 +2230,7 @@ function createService({ dataDir, adminToken, now = () => Date.now(), maxStudent
     studentRemovalPreview, archiveStudent, restoreStudent, relinquishViewerStudent, uploadReport, checkSourceReports, listReports, getReport,
     uploadDocument, listDocuments, getDocument, updateDocument,
     issueV2Grant, revokeV2Grant, listV2Grants, uploadStudentProfile, getStudentProfile, getStudentProfileStatus,
-    recordBinding, recordTransferReceipt, listSyncEvents, prepareV2Material, listV2Materials, getV2Material, getV2MaterialIndexStatus,
+    recordBinding, recordTransferReceipt, listSyncEvents, setSourceIntegrityHold, prepareV2Material, listV2Materials, getV2Material, getV2MaterialIndexStatus,
     prepareHealthRecord, listHealthRecords, getHealthRecord,
     claimMaterialIndexJob, completeMaterialIndexJob, failMaterialIndexJob, materialIndexSummary,
     registerOAuthClient, authorizeOAuth, exchangeOAuthCode, revokeOAuthToken, oauthAuthorizationServerMetadata, oauthProtectedResourceMetadata,

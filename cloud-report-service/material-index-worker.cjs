@@ -130,8 +130,8 @@ async function extract(job) {
   ensure(stat.isFile() && stat.size === Number(job.byteSize) && stat.size <= LIMITS.input, 'source_changed', '云端对象大小不符。');
   const bytes = await fs.readFile(job.objectPath);
   ensure(crypto.createHash('sha256').update(bytes).digest('hex') === job.contentSha256, 'source_changed', '云端对象指纹不符。');
-  if (job.contentType === 'text/markdown') {
-    const text = decode(bytes).trim(); ensure(text && !text.includes('\0'), 'empty_source', 'Markdown没有可索引正文。');
+  if (job.contentType === 'text/markdown' || job.contentType === 'text/plain') {
+    const text = decode(bytes).trim(); ensure(text && !text.includes('\0'), 'empty_source', '文本没有可索引正文。');
     return { text, status: 'complete', pageCount: 0 };
   }
   if (job.contentType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return extractDocx(bytes);

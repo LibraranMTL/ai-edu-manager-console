@@ -96,6 +96,7 @@ function bearer(req) {
 }
 
 function createHttpServer(options) {
+  const serviceVersion = String(options.version || '2.3.0');
   const gateway = options.modelGateway;
   if (gateway && (typeof gateway.issue !== 'function' || typeof gateway.generate !== 'function' || typeof gateway.close !== 'function')) {
     throw new Error('Model gateway requires an explicitly configured authenticated adapter');
@@ -111,6 +112,20 @@ function createHttpServer(options) {
     publicKey: options.publicContentPublicKey,
   });
   const handleRemoteMcp = createRemoteMcpHandler(service);
+  let renewalRuntime = { status: 'not_checked', lastCheckedAt: null, lastError: null };
+  const renewPublicContent = () => {
+    const lastCheckedAt = new Date((options.now || Date.now)()).toISOString();
+    try {
+      const result = publicContent.renewIfDue();
+      renewalRuntime = { ...result, lastCheckedAt, lastError: null };
+    } catch (error) {
+      renewalRuntime = { status: 'error', lastCheckedAt, lastError: error.message };
+      console.error('public content renewal failed:', error.message);
+    }
+  };
+  const renewalTimer = setInterval(renewPublicContent, 60_000);
+  renewalTimer.unref();
+  renewPublicContent();
   let backupScheduler, materialIndexer;
   try {
     if (options.backupRoot) backupScheduler = startBackupScheduler({
@@ -231,7 +246,7 @@ function createHttpServer(options) {
       service.verifyViewerProof(token, req.method, req.url, req.headers);
       req.verifyBody = bytes => service.verifyBody(token, bytes, req.headers);
       if (['GET', 'DELETE'].includes(req.method)) req.verifyBody(Buffer.alloc(0));
-      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: '2.3.0', contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
+      if (req.method === 'GET' && route === '/health') return json(res, 200, { ok: true, service: 'edu-cloud-documents', version: serviceVersion, contracts: [1, 2], schema: { ...service.schemaStatus(), publicContent: publicContent.schemaStatus() },
         materialIndex: materialIndexer?.status() || { enabled: false }, capabilities: ['profile-sync', 'material-sync', 'remote-agent-mcp', 'cloud-inbox', 'student-archive',
           'viewer-student-relinquish', 'current-revision-index', 'async-pdf-docx-extraction', 'oauth-pkce', 'public-course-manifest', 'public-course-revocations',
           'public-course-sync-receipts', 'public-course-operations', 'public-learning-card-packs'] });
@@ -264,6 +279,12 @@ function createHttpServer(options) {
       }
       if (req.method === 'GET' && route === '/v2/admin/public-content/operations') {
         return json(res, 200, publicContent.operations(token, url.searchParams.get('windowHours')));
+      }
+      if (req.method === 'GET' && route === '/v2/admin/public-content/renewal') {
+        return json(res, 200, { ...publicContent.renewalStatus(token), runtime: renewalRuntime });
+      }
+      if (req.method === 'POST' && route === '/v2/admin/public-content/renewal') {
+        return json(res, 200, publicContent.configureRenewal(token, await readJson(req)));
       }
       if (req.method === 'POST' && route === '/v2/admin/releases/validate') {
         return json(res, 200, publicContent.validateRelease(token, await readJson(req)));
@@ -444,6 +465,8 @@ function createHttpServer(options) {
       if (changeMatch && req.method === 'GET') {
         return json(res, 200, service.listSyncEvents(token, changeMatch[1], url.searchParams.get('cursor') || ''));
       }
+      const integrityMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/source-integrity$/);
+      if (integrityMatch && req.method === 'POST') return json(res, 200, service.setSourceIntegrityHold(token, integrityMatch[1], await readJson(req)));
       const materialListMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/materials$/);
       if (materialListMatch && req.method === 'GET') {
         return json(res, 200, service.listV2Materials(token, materialListMatch[1], {
@@ -665,6 +688,7 @@ function createHttpServer(options) {
     }
   });
   return { server, service, publicContent, materialIndexer, close: async () => {
+    clearInterval(renewalTimer);
     await new Promise(resolve => server.close(resolve));
     await backupScheduler?.stop();
     await materialIndexer?.stop();
@@ -695,6 +719,7 @@ if (require.main === module) {
   const trustedLicenseIssuers = JSON.parse(fs.readFileSync(licenseTrustPath, 'utf8'));
   const materialOcrArgs = process.env.CLOUD_MATERIAL_OCR_ARGS_JSON ? JSON.parse(process.env.CLOUD_MATERIAL_OCR_ARGS_JSON) : [];
   const app = createHttpServer({ dataDir, adminToken, maxStudentBytes, backupRoot, backupIntervalMs, modelGateway: gateway, publicOrigin, trustedLicenseIssuers,
+    version: process.env.CLOUD_REPORT_VERSION || '2.3.0',
     publicContentKeyId: process.env.CLOUD_PUBLIC_CONTENT_KEY_ID || 'course-catalog-primary-2026',
     publicContentPrivateKey: publicContentPrivateKeyPath ? fs.readFileSync(publicContentPrivateKeyPath, 'utf8') : '',
     publicContentPublicKey: publicContentPublicKeyPath ? fs.readFileSync(publicContentPublicKeyPath, 'utf8') : '',

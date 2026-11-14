@@ -23,15 +23,15 @@ function normalizedIssuers(input = {}) {
   return issuers;
 }
 
-function verifyWindowsProductLicense(token, { trustedIssuers, deviceId, now = Date.now() } = {}) {
+function verifyProductLicense(token, { trustedIssuers, deviceId, now = Date.now(), allowedProducts = ['WINDOWS_HOST'] } = {}) {
   try {
     const compact = String(token || '').trim();
     const parts = compact.split('.');
-    if (parts.length !== 3 || parts[0] !== 'AIE3') throw new Error('需要有效的 Windows License v3');
+    if (parts.length !== 3 || parts[0] !== 'AIE3') throw new Error('需要有效的产品 License v3');
     const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-    if (payload.schema !== 'edu-manager.license.v3' || String(payload.productId || '').toUpperCase() !== 'WINDOWS_HOST') {
-      throw new Error('许可证产品与 Windows 主机不匹配');
-    }
+    const productId = String(payload.productId || '').toUpperCase();
+    const acceptedProducts = new Set((allowedProducts || []).map(value => String(value).toUpperCase()));
+    if (payload.schema !== 'edu-manager.license.v3' || !acceptedProducts.has(productId)) throw new Error('许可证产品与当前来源端不匹配');
     const edition = String(payload.edition || payload.plan || '').toUpperCase();
     if (!Object.hasOwn(EDITION_RANK, edition)) throw new Error('许可证版本无效');
     const issuer = normalizedIssuers(trustedIssuers).get(String(payload.keyId || ''));
@@ -54,7 +54,7 @@ function verifyWindowsProductLicense(token, { trustedIssuers, deviceId, now = Da
     if (JSON.stringify(expectedCapabilities) !== JSON.stringify(declaredCapabilities)) throw new Error('许可证能力声明与版本不一致');
     const licenseId = String(payload.licenseId || '').trim();
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(licenseId)) throw new Error('许可证 ID 无效');
-    return { ok: true, license: { licenseId, edition, deviceId: boundDeviceId || requestedDeviceId,
+    return { ok: true, license: { licenseId, productId, edition, deviceId: boundDeviceId || requestedDeviceId,
       maxActiveStudents: Math.max(1, Math.min(999999, Number.parseInt(payload.maxActiveStudents ?? payload.studentLimit, 10) || 1)),
       tokenHash: crypto.createHash('sha256').update(compact).digest('hex') } };
   } catch (error) {
@@ -62,4 +62,12 @@ function verifyWindowsProductLicense(token, { trustedIssuers, deviceId, now = Da
   }
 }
 
-module.exports = { verifyWindowsProductLicense };
+function verifyWindowsProductLicense(token, options = {}) {
+  return verifyProductLicense(token, { ...options, allowedProducts: ['WINDOWS_HOST'] });
+}
+
+function verifyCloudSourceProductLicense(token, options = {}) {
+  return verifyProductLicense(token, { ...options, allowedProducts: ['WINDOWS_HOST', 'ANDROID_STANDALONE'] });
+}
+
+module.exports = { verifyProductLicense, verifyWindowsProductLicense, verifyCloudSourceProductLicense };

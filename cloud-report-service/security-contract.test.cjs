@@ -26,6 +26,22 @@ async function fixture(work) {
   finally { await app.close(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 
+test('source integrity endpoint requires a fresh device proof over the exact body', () => fixture(async ({ call, session }) => {
+  const student = (await call('POST', '/v1/students', session, { displayName: '合成来源' })).body;
+  const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1', publicKeyEncoding: { format: 'pem', type: 'spki' }, privateKeyEncoding: { format: 'pem', type: 'pkcs8' } });
+  const code = (await call('POST', '/v1/source-enrollments', session, { cloudStudentId: student.id })).body.enrollmentCode;
+  const source = (await call('POST', '/v1/source-enrollments/redeem', '', { enrollmentCode: code, publicKey: keys.publicKey })).body;
+  const route = `/v2/students/${student.id}/source-integrity`;
+  const body = { category: 'learning_report', objectId: '*', action: 'hold' };
+  assert.equal((await call('POST', route, source.deviceToken, body)).status, 401);
+  const proof = sourceProof(source.deviceId, keys.privateKey, 'POST', route, JSON.stringify(body));
+  const changed = { ...body, action: 'clear', contentSha256: '0'.repeat(64) };
+  assert.equal((await call('POST', route, source.deviceToken, changed, proof)).status, 401);
+  const fresh = sourceProof(source.deviceId, keys.privateKey, 'POST', route, JSON.stringify(body));
+  assert.equal((await call('POST', route, source.deviceToken, body, fresh)).status, 200);
+  assert.equal((await call('POST', route, source.deviceToken, body, fresh)).status, 401);
+}));
+
 test('strict source signatures bind body, reject replay, rotate/revoke credentials, and retain withdrawal tombstones', () => fixture(async ({ app, call, session }) => {
   assert.equal((await call('GET', '/v1/students', ADMIN)).status, 401);
   const student = (await call('POST', '/v1/students', session, { displayName: '测试学生' })).body;

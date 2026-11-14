@@ -491,6 +491,24 @@ test('source upload authorization limits fields, purpose and expiry across legac
   assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
 }));
 
+test('explicit until-revoked scope survives time and stops on withdrawal', async () => fixture(async ({ call, advance }) => {
+  const student = (await call('POST', '/v1/students', ADMIN, { displayName: '合成学生' })).body;
+  const issued = await call('POST', '/v1/source-enrollments', ADMIN, { cloudStudentId: student.id });
+  const source = (await call('POST', '/v1/source-enrollments/redeem', '', { enrollmentCode: issued.body.enrollmentCode,
+    contractVersion: 2, profileFields: ['displayName'], materialCategories: ['learning_report'] })).body;
+  const scoped = await call('POST', '/v2/source-upload-scope', source.deviceToken, { cloudStudentId: student.id,
+    profileFields: ['displayName'], materialCategories: ['learning_report'], authorizationPurpose: 'document_sync',
+    authorizationDuration: 'until_revoked', authorizationExpiresAt: null });
+  assert.equal(scoped.status, 200);
+  assert.equal(scoped.body.authorizationExpiresAt, null);
+  const report = { cloudStudentId: student.id, originPlatform: 'android', reportType: 'learning_profile', sourceStatus: 'active',
+    content: CONTENT, contentSha256: crypto.createHash('sha256').update(CONTENT).digest('hex'), publishedAt: '2026-09-25' };
+  advance(400 * 86400000);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 201);
+  assert.equal((await call('POST', '/v1/grants/write-state', source.deviceToken, { cloudStudentId: student.id, enabled: false })).status, 200);
+  assert.equal((await call('POST', '/v1/reports', source.deviceToken, report)).status, 403);
+}));
+
 test('scoped pairing cannot widen source authorization or read unselected legacy reports', async () => fixture(async ({ call, advance }) => {
   const student = (await call('POST', '/v1/students', ADMIN, { displayName: '合成范围学生' })).body;
   const issued = await call('POST', '/v1/source-enrollments', ADMIN, { cloudStudentId: student.id });

@@ -126,7 +126,7 @@ class CloudReportSync(private val context: Context) {
         configured = prefs.getString("cloud:$studentId", "").orEmpty().isNotBlank() &&
             prefs.getString("bindingDevice:$studentId", "").orEmpty().let { it.isNotBlank() && it == prefs.getString("deviceId", "") },
         enabled = prefs.getBoolean("enabled:$studentId", false) &&
-            prefs.getLong("authorizationExpiresAt:$studentId", 0L) > System.currentTimeMillis(),
+            prefs.getLong("authorizationExpiresAt:$studentId", 0L).let { it == CloudUploadAuthorizationPolicy.UNTIL_REVOKED || it > System.currentTimeMillis() },
         cloudStudentId = prefs.getString("cloud:$studentId", "").orEmpty(),
         lastSyncAt = prefs.getLong("lastSync:$studentId", 0),
         lastError = prefs.getString("lastError:$studentId", "").orEmpty(),
@@ -220,7 +220,7 @@ class CloudReportSync(private val context: Context) {
 
     fun setUpload(studentId: String, enabled: Boolean): CloudReportStatus {
         require(status(studentId).configured) { "请先为当前学生开通云端报告" }
-        if (enabled) require(status(studentId).authorizationExpiresAt > System.currentTimeMillis()) { "请先重新确认上传范围和有效期" }
+        if (enabled) require(status(studentId).authorizationExpiresAt.let { it == CloudUploadAuthorizationPolicy.UNTIL_REVOKED || it > System.currentTimeMillis() }) { "请先重新确认上传范围" }
         prefs.edit().putBoolean("enabled:$studentId", enabled)
             .putString("pending:$studentId", if (enabled) "enable" else "disable").apply()
         if (!enabled) {
@@ -241,13 +241,14 @@ class CloudReportSync(private val context: Context) {
         val result = post(server(), "/v2/source-upload-scope", token(), JSONObject()
             .put("cloudStudentId", current.cloudStudentId).put("profileFields", JSONArray(profileFields.sorted()))
             .put("materialCategories", JSONArray(categories.sorted())).put("authorizationPurpose", authorizationPurpose)
-            .put("authorizationExpiresAt", authorizationExpiresAt))
+            .put("authorizationExpiresAt", if (authorizationExpiresAt == CloudUploadAuthorizationPolicy.UNTIL_REVOKED) JSONObject.NULL else authorizationExpiresAt)
+            .apply { if (authorizationExpiresAt == CloudUploadAuthorizationPolicy.UNTIL_REVOKED) put("authorizationDuration", "until_revoked") })
         val accepted = result.optJSONArray("materialCategories")?.let { values -> (0 until values.length()).map { values.getString(it) }.toSet() }
             ?: error("云端未返回授权范围")
         val acceptedFields = result.optJSONArray("profileFields")?.let { values -> (0 until values.length()).map { values.getString(it) }.toSet() }
             ?: error("云端未返回基础信息范围")
         require(accepted == categories && acceptedFields == profileFields && result.optString("authorizationPurpose") == authorizationPurpose &&
-            result.optLong("authorizationExpiresAt") == authorizationExpiresAt) { "云端授权范围与选择不一致" }
+            (if (authorizationExpiresAt == CloudUploadAuthorizationPolicy.UNTIL_REVOKED) result.optString("authorizationDuration") == "until_revoked" && result.isNull("authorizationExpiresAt") else result.optLong("authorizationExpiresAt") == authorizationExpiresAt)) { "云端授权范围与选择不一致" }
         prefs.edit().putStringSet("categories:$studentId", accepted).putStringSet("profileFields:$studentId", acceptedFields)
             .putString("authorizationPurpose:$studentId", authorizationPurpose).putLong("authorizationExpiresAt:$studentId", authorizationExpiresAt)
             .putBoolean("enabled:$studentId", true).putString("pending:$studentId", "").apply()
@@ -324,7 +325,7 @@ class CloudReportSync(private val context: Context) {
 
     fun synchronize(studentId: String) {
         val expiry = prefs.getLong("authorizationExpiresAt:$studentId", 0L)
-        if ((expiry <= 0L || CloudUploadAuthorizationPolicy.isExpired(expiry)) && prefs.getBoolean("enabled:$studentId", false)) {
+        if (expiry != CloudUploadAuthorizationPolicy.UNTIL_REVOKED && (expiry <= 0L || CloudUploadAuthorizationPolicy.isExpired(expiry)) && prefs.getBoolean("enabled:$studentId", false)) {
             prefs.edit().putBoolean("enabled:$studentId", false).putString("pending:$studentId", "disable").apply()
             CloudSyncReceiptStore(context).append(studentId, "withdrawn", "scope-expired:$studentId:$expiry", "授权已到期，已停止后续上传")
         }

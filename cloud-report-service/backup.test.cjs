@@ -12,6 +12,26 @@ const { createBackup, verifyBackup, restoreBackup } = require('./backup.cjs');
 const ADMIN = 'local-backup-test-admin-credential-123456';
 const CONTENT = '---\ntype: learning_profile\nstatus: active\nupdated: 2026-09-25\n---\n\n# 整体画像\n\n- 合成练习证据显示一次明确的建模进展。\n';
 
+test('backup and restore retain text material objects with validated hashes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-backup-text-'));
+  const live = path.join(root, 'live');
+  const service = createService({ dataDir: live, adminToken: ADMIN, allowLegacyTestCredentials: true });
+  try {
+    const student = service.createStudent(ADMIN, '合成学生');
+    service.uploadDocument(ADMIN, student.id, '合成.md', 'text/markdown', Buffer.from('synthetic'));
+    const row = service.db.prepare('SELECT object_name AS name FROM documents').get();
+    const textName = row.name.replace(/\.md$/, '.txt');
+    fs.renameSync(path.join(live, 'objects', row.name), path.join(live, 'objects', textName));
+    service.db.prepare('UPDATE documents SET object_name=?').run(textName);
+    const backup = path.join(root, 'backup');
+    assert.equal((await createBackup(live, backup)).objectCount, 1);
+    assert.equal((await verifyBackup(backup)).objectCount, 1);
+    const restored = path.join(root, 'restored');
+    assert.equal((await restoreBackup(backup, restored)).objectCount, 1);
+    assert.equal(fs.readFileSync(path.join(restored, 'objects', textName), 'utf8'), 'synthetic');
+  } finally { service.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('consistent report/document backup verifies and restores without overwriting an existing target', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-backup-test-'));
   const liveDir = path.join(root, 'live');

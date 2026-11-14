@@ -6,6 +6,7 @@ object CloudUploadAuthorizationPolicy {
     val PURPOSES = setOf("document_sync", "expert_interpretation")
     const val MIN_LIFETIME_MS = 10 * 60 * 1_000L
     const val MAX_LIFETIME_MS = 365L * 24 * 60 * 60 * 1_000
+    const val UNTIL_REVOKED = -1L
 
     fun validate(profileFields: Set<String>, materialCategories: Set<String>, purpose: String,
         expiresAt: Long, now: Long = System.currentTimeMillis()) {
@@ -15,7 +16,7 @@ object CloudUploadAuthorizationPolicy {
         }
         require(materialCategories.all { it in MATERIAL_CATEGORIES }) { "资料类别无效" }
         require(purpose in PURPOSES) { "授权用途无效" }
-        require(expiresAt in (now + MIN_LIFETIME_MS)..(now + MAX_LIFETIME_MS)) { "授权有效期须在10分钟至365天之间" }
+        require(expiresAt == UNTIL_REVOKED || expiresAt in (now + MIN_LIFETIME_MS)..(now + MAX_LIFETIME_MS)) { "授权有效期无效" }
     }
 
     fun isExpired(expiresAt: Long, now: Long = System.currentTimeMillis()) = expiresAt > 0 && expiresAt <= now

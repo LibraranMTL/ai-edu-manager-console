@@ -465,6 +465,8 @@ function createHttpServer(options) {
       if (changeMatch && req.method === 'GET') {
         return json(res, 200, service.listSyncEvents(token, changeMatch[1], url.searchParams.get('cursor') || ''));
       }
+      const integrityMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/source-integrity$/);
+      if (integrityMatch && req.method === 'POST') return json(res, 200, service.setSourceIntegrityHold(token, integrityMatch[1], await readJson(req)));
       const materialListMatch = route.match(/^\/v2\/students\/([a-zA-Z0-9_-]{8,96})\/materials$/);
       if (materialListMatch && req.method === 'GET') {
         return json(res, 200, service.listV2Materials(token, materialListMatch[1], {

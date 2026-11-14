@@ -3337,7 +3337,7 @@ class MainActivity : ComponentActivity() {
 
     private fun confirmOfficialCloudSwitch(sync: CloudReportSync) {
         AlertDialog.Builder(this).setTitle("切换到阿里云正式服务")
-            .setMessage("将停止并清除本机保存的旧试点云端许可，然后固定使用：\n${sync.officialServiceAddress()}\n\n本机报告不会删除；旧服务上的数据和许可也不会被远程删除。有效的 Android 单机版产品授权可免开通码建立云端身份，上传前仍需选择范围和有效期。")
+            .setMessage("将停止并清除本机保存的旧试点云端许可，然后固定使用：\n${sync.officialServiceAddress()}\n\n本机报告不会删除；旧服务上的数据和许可也不会被远程删除。有效的 Android 单机版产品授权可免开通码建立云端身份，上传前仍需选择范围并确认授权。")
             .setNegativeButton("取消", null).setPositiveButton("确认切换") { _, _ ->
                 val count = sync.switchToOfficialService()
                 showMessage("已切换到阿里云正式服务", "已停止 $count 名学生的旧云端任务。本机报告保持不变；可使用当前产品授权免码重新建立云端身份。")
@@ -3347,7 +3347,7 @@ class MainActivity : ComponentActivity() {
     private fun showCloudEnrollmentDialog(student: StudentRecord, onSuccess: (() -> Unit)? = null) {
         val sync = CloudReportSync(this)
         AlertDialog.Builder(this).setTitle("开通 ${student.name} 的云端身份")
-            .setMessage("使用当前 Android 单机版产品授权免开通码建立云端学生身份。此步骤不会上传资料；完成后仍需明确选择字段、资料类别、用途和有效期。\n\n服务：${sync.officialServiceAddress()}")
+            .setMessage("使用当前 Android 单机版产品授权免开通码建立云端学生身份。此步骤不会上传资料；完成后仍需明确选择字段、资料类别和用途。\n\n服务：${sync.officialServiceAddress()}")
             .setNegativeButton("取消", null).setNeutralButton("使用旧开通码") { _, _ -> showLegacyCloudEnrollmentDialog(student, onSuccess) }
             .setPositiveButton("免码开通") { _, _ -> runCloudEnrollment(student, onSuccess) }.show()
     }
@@ -3375,7 +3375,7 @@ class MainActivity : ComponentActivity() {
 
     private fun completeCloudEnrollment(student: StudentRecord, onSuccess: (() -> Unit)?) {
         if (onSuccess != null) onSuccess.invoke() else {
-            showMessage("云端身份已建立", "尚未上传资料。请在下一页选择上传范围、用途和有效期。")
+            showMessage("云端身份已建立", "尚未上传资料。请在下一页选择上传范围和用途。")
             startActivity(Intent(this, CloudSyncActivity::class.java).putExtra(CloudSyncActivity.EXTRA_STUDENT_ID, student.id))
         }
     }
@@ -3443,7 +3443,7 @@ class MainActivity : ComponentActivity() {
             val status = sync.status(student.id)
             if (!status.configured) {
                 AlertDialog.Builder(this).setTitle("开通 ${student.name} 的云端授权")
-                    .setMessage("下一步使用当前产品授权免码建立云端学生身份。只有随后明确选择资料范围和有效期才会启用上传；本次点击不会上传资料或创建咨询单。")
+                    .setMessage("下一步使用当前产品授权免码建立云端学生身份。只有随后明确选择资料范围并确认授权才会启用上传；本次点击不会上传资料或创建咨询单。")
                     .setNegativeButton("取消", null)
                     .setPositiveButton("免码开通") { _, _ ->
                         showCloudEnrollmentDialog(student) { launchExpertAuthorization(student, sourcePage, reportType, reportRevision) }

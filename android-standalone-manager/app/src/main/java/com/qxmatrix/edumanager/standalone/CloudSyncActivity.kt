@@ -86,7 +86,7 @@ class CloudSyncActivity : Activity() {
                 list.removeAllViews()
                 result.onSuccess { (student, cloud, receipts) ->
                     status.text = "${student.name} · 云同步"
-                    val expiry = if (cloud.authorizationExpiresAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.authorizationExpiresAt)) else "尚未确认"
+                    val expiry = if (cloud.authorizationExpiresAt == CloudUploadAuthorizationPolicy.UNTIL_REVOKED) "直到关闭授权" else if (cloud.authorizationExpiresAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.authorizationExpiresAt)) else "尚未确认"
                     list.addView(text("自动同步：${if (cloud.enabled) "已开启" else "已关闭"}\n基础字段：${cloud.profileFields.map(::profileFieldLabel).joinToString("、").ifBlank { "未选择" }}\n资料类别：${cloud.materialCategories.map(::categoryLabel).joinToString("、").ifBlank { "未选择" }}\n用途：${if (cloud.authorizationPurpose == "expert_interpretation") "真人专家解读咨询" else "云端文档同步"}\n有效至：$expiry\n最近送达：${if (cloud.lastSyncAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(cloud.lastSyncAt)) else "尚无"}${if (cloud.lastError.isBlank()) "" else "\n最近同步未完成：${cloud.lastError}"}", 15f))
                     list.addView(text("同步结果", 18f))
                     if (receipts.isEmpty()) list.addView(text("暂无回执。", 14f))
@@ -129,17 +129,15 @@ class CloudSyncActivity : Activity() {
                     .map { it.removePrefix("profile:") }.toMutableSet().apply { if (isNotEmpty()) add("displayName") }
                 val selectedCategories = ids.filterIndexed { index, id -> checked[index] && id.startsWith("category:") }
                     .map { it.removePrefix("category:") }.toSet()
-                chooseAuthorizationExpiry(sync, selectedFields, selectedCategories)
+                confirmUploadAuthorization(sync, selectedFields, selectedCategories)
             }.show()
     }
 
-    private fun chooseAuthorizationExpiry(sync: CloudReportSync, fields: Set<String>, categories: Set<String>) {
-        val days = listOf(7L, 30L, 90L)
-        AlertDialog.Builder(this).setTitle("选择授权有效期（到期停止后续上传）")
-            .setSingleChoiceItems(arrayOf("7天", "30天（推荐）", "90天"), 1, null)
-            .setNegativeButton("取消", null).setPositiveButton("授权并开始上传") { dialog, _ ->
-                val selected = (dialog as AlertDialog).listView.checkedItemPosition.takeIf { it in days.indices } ?: 1
-                val expiresAt = System.currentTimeMillis() + days[selected] * 24 * 60 * 60 * 1_000
+    private fun confirmUploadAuthorization(sync: CloudReportSync, fields: Set<String>, categories: Set<String>) {
+        AlertDialog.Builder(this).setTitle("确认上传授权")
+            .setMessage("授权将持续生效，直到您关闭上传授权。仅上传所选范围内的资料。")
+            .setNegativeButton("取消", null).setPositiveButton("授权并开始上传") { _, _ ->
+                val expiresAt = CloudUploadAuthorizationPolicy.UNTIL_REVOKED
                 val purpose = if (expertIntent) "expert_interpretation" else "document_sync"
                 worker.execute {
                     val result = runCatching { sync.setUploadScope(studentId, fields, categories, purpose, expiresAt) }

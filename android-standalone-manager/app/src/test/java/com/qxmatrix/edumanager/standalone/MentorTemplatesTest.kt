@@ -12,10 +12,14 @@ class MentorTemplatesTest {
             assertTrue(prompt.contains(MentorTemplates.label(value)))
             assertTrue(prompt.contains("学生甲（student-a）"))
             assertTrue(prompt.contains(value.substringAfter('｜')))
+            assertTrue(prompt.contains(HostMentorActions.learning[g][a].workflow.first()))
+            assertTrue(prompt.contains(HostMentorActions.learning[g][a].output))
         } }
         MentorTemplates.projectActions.forEachIndexed { stage, actions -> actions.forEachIndexed { action, value ->
             val prompt = MentorTemplates.project("学生甲", "student-a", "项目甲", "project-a", stage, action)
             assertTrue(prompt.contains(value.substringAfter('｜')))
+            assertTrue(prompt.contains(HostMentorActions.project[stage][action].workflow.first()))
+            assertTrue(prompt.contains(HostMentorActions.project[stage][action].boundary))
             assertTrue(prompt.contains("学生甲（student-a）"))
             assertTrue(prompt.contains("项目甲（project-a）"))
         } }

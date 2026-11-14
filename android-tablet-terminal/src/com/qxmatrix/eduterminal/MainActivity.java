@@ -127,8 +127,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_DIRECT_UPLOAD = 8112;
     static final int REQUEST_DIRECT_IMAGE_UPLOAD = 8113;
     static final int REQUEST_IMPORT_CONVERSATION_FILE = 8114;
-    static final String VERSION_NAME = "0.6.32";
-    static final int VERSION_CODE = 102;
+    static final String VERSION_NAME = "0.6.33";
+    static final int VERSION_CODE = 103;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -4142,7 +4142,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             "研究与原型 · 4 项行动", "阶段复盘 · 4 项行动", "成果展示交流 · 4 项行动"
         };
         new AlertDialog.Builder(this).setTitle(project.name + " · 项目导师").setItems(stages, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) { showProjectMentorActionDialog(project, stages[which], projectMentorActions()[which]); }
+            @Override public void onClick(DialogInterface dialog, int which) { showProjectMentorActionDialog(project, stages[which], MentorTemplates.LABELS[which + 5]); }
         }).setNegativeButton("取消", null).show();
     }
 
@@ -4152,11 +4152,16 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                 String action = actions[which];
                 String label = action.contains("｜") ? action.substring(0, action.indexOf("｜")) : action;
                 String summary = action.contains("｜") ? action.substring(action.indexOf("｜") + 1) : "";
-                String markdown = "# 项目导师 · " + label + "\n\n"
+                int templateGroup = java.util.Arrays.asList("定义问题", "方案比较", "制定计划", "研究与原型", "阶段复盘", "成果展示交流").indexOf(stage.split(" · ")[0]) + 5;
+                String markdown = MentorTemplates.PROMPTS[templateGroup][which]
+                    .replace("STUDENT_NAME_TOKEN", selectedStudent.name).replace("STUDENT_ID_TOKEN", selectedStudent.id)
+                    .replace("PROJECT_NAME_TOKEN", project.name).replace("PROJECT_ID_TOKEN", project.id);
+                /*
+                String unused = "# 项目导师 · " + label + "\n\n"
                     + "## 当前范围\n- 学生：" + selectedStudent.name + "（" + selectedStudent.id + "）\n- 项目：" + project.name + "（" + project.id + "）\n- 阶段：" + stage + "\n\n"
                     + "## 本次任务\n" + summary + "\n\n"
                     + "## 使用边界\n- 仅使用用户在当前对话主动提供的项目资料，或先在受控工具中确认同一学生和项目的授权。\n- 明确区分资料事实、合理推断、假设与缺失信息。\n- 不自动发送、查询或写回项目资料；任何归档均须另行确认并取得真实回执。\n- 不把一次尝试、项目经历或 Agent 文本表述为学生已掌握的能力。\n\n"
-                    + "## 开始方式\n先用不超过 5 行复述任务、当前资料范围和成功标准；如缺少关键信息，只问一个最影响结果的问题，然后给出可核验的下一步。";
+                    + "## 开始方式\n先用不超过 5 行复述任务、当前资料范围和成功标准；如缺少关键信息，只问一个最影响结果的问题，然后给出可核验的下一步。"; */
                 MarkdownReadOnlyDialog.show(MainActivity.this, "项目导师 · " + label,
                     "点击上方“复制正文”可粘贴到当前 Agent；复制本身不会读取或写入主机资料。", markdown, false);
             }
@@ -4177,22 +4182,27 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     void showLearningMentorDialog() {
         final String[] groups = new String[] { "学习", "互动", "测验", "核验", "计划" };
         new AlertDialog.Builder(this).setTitle("学习导师 · 学习模式").setItems(groups, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) { showLearningMentorActionDialog(groups[which], learningMentorActions()[which]); }
+            @Override public void onClick(DialogInterface dialog, int which) { showLearningMentorActionDialog(groups[which], MentorTemplates.LABELS[which]); }
         }).setNegativeButton("取消", null).show();
     }
 
     void showLearningMentorActionDialog(final String group, final String[] actions) {
+        if (selectedStudent == null) { toast("请先进入学生空间。"); return; }
         new AlertDialog.Builder(this).setTitle("学习导师 · " + group).setItems(actions, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int which) {
                 String action = actions[which];
                 String label = action.contains("｜") ? action.substring(0, action.indexOf("｜")) : action;
                 String summary = action.contains("｜") ? action.substring(action.indexOf("｜") + 1) : "";
                 String student = selectedStudent == null ? "当前学生（进入学生空间后请重新确认）" : selectedStudent.name + "（" + selectedStudent.id + "）";
-                String markdown = "# 学习导师 · " + label + "\n\n"
+                int templateGroup = java.util.Arrays.asList("学习", "互动", "测验", "核验", "计划").indexOf(group);
+                String markdown = MentorTemplates.PROMPTS[templateGroup][which]
+                    .replace("STUDENT_NAME_TOKEN", selectedStudent.name).replace("STUDENT_ID_TOKEN", selectedStudent.id);
+                /*
+                String unused = "# 学习导师 · " + label + "\n\n"
                     + "## 当前范围\n- 学生：" + student + "\n- 学习模式：" + group + "\n\n"
                     + "## 本次任务\n" + summary + "\n\n"
                     + "## 使用边界\n- 只使用当前对话中用户主动提供的内容；如需查询主机资料，先确认当前学生授权。\n- 资料数量、单次答题或一次项目经历都不直接等同于掌握、能力或成长结论。\n- 不自动发送、归档或改写主机资料。\n\n"
-                    + "## 开始方式\n先用不超过 5 行确认本次目标、难度、时长和资料范围；若信息不足，只问一个最影响学习效果的问题。";
+                    + "## 开始方式\n先用不超过 5 行确认本次目标、难度、时长和资料范围；若信息不足，只问一个最影响学习效果的问题。"; */
                 MarkdownReadOnlyDialog.show(MainActivity.this, "学习导师 · " + label,
                     "点击上方“复制正文”可粘贴到当前 Agent；复制本身不会读取或写入主机资料。", markdown, false);
             }

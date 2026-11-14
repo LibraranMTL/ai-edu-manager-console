@@ -7,7 +7,7 @@ $studentKeystorePassword = [Environment]::GetEnvironmentVariable('EDU_ANDROID_ST
 $studentKeyAlias = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEY_ALIAS', 'Process')
 $studentKeyPassword = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_KEY_PASSWORD', 'Process')
 $expectedCertificateSha256 = '42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB'
-$versionName = '0.6.32'
+$versionName = '0.6.33'
 $candidateTag = [Environment]::GetEnvironmentVariable('EDU_ANDROID_STUDENT_CANDIDATE_TAG', 'Process')
 if (-not [string]::IsNullOrWhiteSpace($candidateTag)) {
   $candidateTag = ($candidateTag.Trim() -replace '[^A-Za-z0-9._-]+', '-').Trim('-')
@@ -99,6 +99,7 @@ try {
 
   $javaFiles = @(
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\MainActivity.java'),
+    (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\MentorTemplates.java'),
     (Join-Path $scriptRoot 'src\com\qxmatrix\eduterminal\ConversationDraftStore.java'),
     (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\projectmaterials\ProjectMaterialsDialog.java'),
     (Join-Path $projectRoot 'android-shared\src\com\qxmatrix\terminallearning\TerminalLearningDialog.java'),

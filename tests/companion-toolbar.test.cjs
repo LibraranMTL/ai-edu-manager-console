@@ -12,6 +12,25 @@ test('companion actions cover approved study interaction quiz verification and p
   assert.ok(MODE_GROUPS.every(group => group.actions.every(id => ACTIONS[id])));
 });
 
+test('learning prompt packets support a null project without weakening project scope', () => {
+  const student = { id: 's-1', name: '测试学生' };
+  const target = { capabilities: { query: true } };
+  for (const scope of ['conversation', 'student']) {
+    for (const group of MODE_GROUPS) for (const actionId of group.actions) {
+      const packet = createCompanionPromptPacket({ actionId, student, target, scope, project: null });
+      assert.equal(packet.projectId, '');
+      assert.equal(packet.projectRevision, undefined);
+      assert.match(packet.promptText, /学生 ID：s-1/);
+      assert.doesNotMatch(packet.promptText, /项目 ID：/);
+    }
+  }
+  assert.throws(() => createCompanionPromptPacket({ actionId: 'flashcards', student, target, scope: 'project', project: null }), /请选择学习项目/);
+  const packet = createCompanionPromptPacket({ actionId: 'flashcards', student, target, scope: 'project', project: { id: 'p-1', name: '测试项目' } });
+  assert.equal(packet.projectId, 'p-1');
+  assert.ok(packet.projectRevision);
+  assert.match(packet.promptText, /项目 ID：p-1/);
+});
+
 test('animation learning requires real tools and a playable video artifact', () => {
   const action = ACTIONS.animated_video;
   assert.match(action.task, /调用.*视频生成.*动画.*工具及技能/);

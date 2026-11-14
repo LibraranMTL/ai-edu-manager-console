@@ -156,6 +156,7 @@ function cleanProjectText(value, max) {
 }
 
 function normalizeProjectSummary(project = {}) {
+  project = project && typeof project === 'object' ? project : {};
   return {
     id: cleanProjectText(project.id, 80),
     name: cleanProjectText(project.name, 80),

@@ -174,7 +174,7 @@ test('web manuals are synchronized to the current product workflows', () => {
   const androidTeacher = read(path.join('release', '网站文件', 'android-teacher-manual.html'));
   const androidStandalone = read(path.join('release', '网站文件', 'android-standalone-manual.html'));
 
-  assert.match(windowsStudent, /配套主机：Windows 主机 0\.23\.7/u);
+  assert.match(windowsStudent, new RegExp(`配套主机：Windows 主机 ${publicManifest.windowsVersionName.replaceAll('.', '\\.')}`, 'u'));
   assert.match(androidStudent, /配套主机：Windows\s+主机端需开启学生终端协作服务/u);
   assert.match(androidStudent, new RegExp(`适用版本：Android 学生端 ${publicManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}（versionCode ${publicManifest.tabletTerminalVersionCode}）`, 'u'));
   assert.match(androidStudent, /拍照\s*\/\s*上传图片或文件/u);

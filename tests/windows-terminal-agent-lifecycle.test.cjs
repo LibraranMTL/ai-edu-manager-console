@@ -17,6 +17,7 @@ const {
   drainTerminalLifecycleQueue,
   lifecycleHookIdentity,
   managedLifecycleHookCommand,
+  resolveWindowsPowerShellExecutable,
   reconcileTerminalLifecycle,
   terminalGrantId,
   terminalLifecyclePaths,
@@ -119,7 +120,7 @@ test('Codex managed command runs through the Windows shell, including paths with
   assert.deepEqual(JSON.parse(nativeResult.stdout), {});
 
   const spacedCommand = managedLifecycleHookCommand('codex', scriptPath, descriptorPath, spacedNativePath);
-  assert.match(spacedCommand, /^powershell\.exe /i);
+  assert.ok(spacedCommand.startsWith(`${resolveWindowsPowerShellExecutable()} -NoProfile`));
   const spacedResult = invoke(spacedCommand);
   assert.equal(spacedResult.status, 0, spacedResult.stderr);
   assert.deepEqual(JSON.parse(spacedResult.stdout), {});
@@ -302,9 +303,12 @@ test('S1 host, terminal UI and package contract enforce personal Windows student
   assert.match(terminal, /terminal:get-agent-capture', \(\) => refreshPersonalAgentCapture\(\)/);
   assert.match(terminal, /return \{ \.\.\.publicAgentCaptureState\(\), message: remote\.message/);
   assert.match(preload, /setAgentCapture/);
-  assert.match(ui, /一次授权后，只采集本机受支持 Agent 的后续用户对话并归入当前绑定学生/);
+  assert.match(ui, /授权后，本 Windows 用户账户中受支持 Agent 的后续会话将尝试归入当前绑定学生/);
+  assert.match(ui, /混用账号可能将其他学生任务错误归属/);
   assert.match(ui, /共享终端不支持自动会话采集/);
-  assert.match(ui, /已检测到.*个受支持 Agent.*授权后接入/);
+  assert.match(ui, /<StudentActionTile icon=\{Bot\} title="会话自动采集"/);
+  assert.doesNotMatch(ui, /learningCapabilities\.conversationImport \? <StudentActionTile icon=\{Bot\} title="会话自动采集"/);
+  assert.match(ui, /已检测到.*个受支持 Agent.*授权后写入接入配置/);
   for (const file of ['student-agent-lifecycle.cjs', 'agent-adapter-registry.cjs', 'agent-lifecycle-hook.ps1', 'agent-lifecycle-hook.cs', 'agent-lifecycle-hook.exe']) {
     assert.match(build, new RegExp(file.replace(/\./g, '\\.')));
   }

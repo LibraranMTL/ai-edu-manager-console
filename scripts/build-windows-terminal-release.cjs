@@ -68,6 +68,46 @@ function copyFile(relativePath) {
   fs.copyFileSync(source, destination);
 }
 
+function auditStagedRelativeDependencies(stageDirectory) {
+  const electronRoot = path.join(stageDirectory, 'electron');
+  const extensions = ['', '.cjs', '.js', '.mjs', '.json', '.node'];
+  const importPattern = /\brequire\s*\(\s*(['"])(\.\.?\/[^'"]+)\1\s*\)|\bimport\s*\(\s*(['"])(\.\.?\/[^'"]+)\3\s*\)|\bfrom\s+(['"])(\.\.?\/[^'"]+)\5/g;
+  const missing = [];
+  let filesScanned = 0;
+  let relativeImports = 0;
+
+  function walk(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const filePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(filePath);
+        continue;
+      }
+      if (!/\.(?:cjs|js|mjs)$/.test(entry.name)) continue;
+      filesScanned += 1;
+      const source = fs.readFileSync(filePath, 'utf8');
+      for (const match of source.matchAll(importPattern)) {
+        const specifier = match[2] || match[4] || match[6];
+        const target = path.resolve(path.dirname(filePath), specifier);
+        const candidates = extensions.map((extension) => `${target}${extension}`);
+        for (const indexFile of ['index.cjs', 'index.js', 'index.mjs', 'index.json']) {
+          candidates.push(path.join(target, indexFile));
+        }
+        relativeImports += 1;
+        if (!candidates.some((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile())) {
+          missing.push(`${path.relative(stageDirectory, filePath)} -> ${specifier}`);
+        }
+      }
+    }
+  }
+
+  walk(electronRoot);
+  if (missing.length) {
+    throw new Error(`Terminal staging has unresolved relative runtime dependencies:\n${missing.map((item) => `- ${item}`).join('\n')}`);
+  }
+  return { filesScanned, relativeImports };
+}
+
 function minifyStagedMainProcess() {
   const esbuild = require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild');
   const target = path.join(stageRoot, 'electron', 'terminal-main.cjs');
@@ -179,6 +219,7 @@ function build() {
     'electron/companion-popover-preload.cjs',
     'electron/companion-popover-renderer.js',
     'electron/companion-toolbar.cjs',
+    'electron/project-mentor-actions.cjs',
     'electron/terminal-agent-bridge.cjs',
     'electron/terminal-agent-mcp.cjs',
     'electron/terminal-practice-drafts.cjs',
@@ -209,6 +250,7 @@ function build() {
   minifyStagedMainProcess();
   compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
   require('./build-practice-runtime.cjs').bundlePracticeRuntime(stageRoot, require('node:module').createRequire(require.resolve('vite/package.json'))('esbuild'), {minify:true});
+  const runtimeDependencyAudit = auditStagedRelativeDependencies(stageRoot);
   writeRuntimePackage();
 
   process.stdout.write('[windows-terminal-release] package-electron\n');
@@ -244,6 +286,7 @@ function build() {
     '\\electron\\companion-popover-preload.cjs',
     '\\electron\\companion-popover-renderer.js',
     '\\electron\\companion-toolbar.cjs',
+    '\\electron\\project-mentor-actions.cjs',
     '\\electron\\terminal-agent-bridge.cjs',
     '\\electron\\terminal-agent-mcp.cjs',
     '\\electron\\terminal-practice-drafts.cjs',
@@ -291,10 +334,10 @@ function build() {
     builtAt: new Date().toISOString(),
     sourceControl,
     baseline: {
-      version: '0.18.8',
-      versionCode: 238,
-      candidateTag: 'windows-student-learning-cockpit-r4-20261105',
-      exeSha256: 'D9947CB3067C1259A967B7E2DBCE7825D22D89498D8630076C5B315061B549AC',
+      version: '0.18.10',
+      versionCode: 240,
+      candidateTag: '',
+      exeSha256: 'F6B9133149F65F0B56FADF5E8C1A31CF43127DC7EA006A02955D62FD0CAF56B1',
     },
     publicCourseContract: {
       manifest: 'edu-manager.public-course-manifest.v1',
@@ -304,6 +347,7 @@ function build() {
     stagingRoot: stageRoot,
     electronLanguages,
     package: { asarBytes, asarFiles: asarFiles.length, nodeModuleFiles: nodeModuleFiles.length },
+    runtimeDependencyAudit,
     artifact: { path: releaseArtifact, bytes: fs.statSync(releaseArtifact).size, sha256: sha256(releaseArtifact) },
     zip: { path: zipArtifact, bytes: fs.statSync(zipArtifact).size, sha256: sha256(zipArtifact) },
   };

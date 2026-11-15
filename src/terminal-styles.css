@@ -211,7 +211,7 @@ button:focus-visible { outline: 4px solid rgba(23, 111, 206, .24); outline-offse
 .student-topbar-button.quiet { color: #697b77; background: transparent; }
 .student-topbar-button.quiet:hover:not(:disabled) { background: #f0f4f3; }
 .student-settings-panel { margin-bottom: 10px; }
-.student-agent-capture-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; margin-top: 14px; padding: 16px 18px; border: 1px solid #cdded9; border-radius: 16px; background: #f8fbfa; }
+.student-agent-capture-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; order: -1; margin-top: 0; padding: 16px 18px; border: 1px solid #cdded9; border-radius: 16px; background: #f8fbfa; }
 .student-agent-capture-card.enabled { border-color: #74baa9; background: #eef9f5; }
 .student-agent-capture-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; color: #176b5d; background: #dff2ec; }
 .student-agent-capture-card h3 { margin: 0 0 5px; color: #234c43; }

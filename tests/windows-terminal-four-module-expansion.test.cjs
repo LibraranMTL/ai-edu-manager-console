@@ -132,7 +132,8 @@ test('archive owns knowledge tracking and planning; project material and mentor 
 
 test('conversation collection combines explicit AI share import with personal-session auto capture', () => {
   const ui = read('src', 'terminal-main.tsx');
-  assert.match(ui, /title="对话采集"/);
+  assert.match(ui, /title="会话自动采集".*revealWorkspace\('conversation'\)/);
+  assert.match(ui, /activeWorkspace === 'conversation' \? '对话采集'/);
   assert.match(ui, /AI 对话分享导入/);
   assert.match(ui, /会话自动采集/);
   assert.match(ui, /其他 AI 应用分享/);

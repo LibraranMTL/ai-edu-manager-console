@@ -12,6 +12,10 @@ const {
   normalizeLifecycleEnvelope,
 } = require('../electron/agent-lifecycle-capture.cjs');
 const { compileLifecycleHook } = require('../scripts/compile-lifecycle-hook.cjs');
+const {
+  managedLifecycleHookCommand,
+  resolveWindowsPowerShellExecutable,
+} = require('../electron/student-agent-lifecycle.cjs');
 
 test('Codex and WorkBuddy lifecycle events become deterministic user and assistant messages', () => {
   const user = normalizeLifecycleEnvelope({
@@ -179,7 +183,11 @@ test('Windows WorkBuddy lifecycle hook accepts the managed marker and queues an 
       lifecycleCapture: { enabled: true, captureEpoch: 'epoch-test', allowedAgents: ['workbuddy'], queueDir },
     }), 'utf8');
     const prompt = '自动会话采集验收测试 🧪';
-    const result = spawnSync('powershell.exe', [
+    const powershell = resolveWindowsPowerShellExecutable();
+    const command = managedLifecycleHookCommand('workbuddy', path.join(__dirname, '..', 'electron', 'agent-lifecycle-hook.ps1'), descriptorPath, '');
+    assert.ok(path.isAbsolute(powershell));
+    assert.ok(command.startsWith(`${powershell} -NoProfile`));
+    const result = spawnSync(powershell, [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-File', path.join(__dirname, '..', 'electron', 'agent-lifecycle-hook.ps1'),
       '-Descriptor', descriptorPath,
@@ -189,6 +197,7 @@ test('Windows WorkBuddy lifecycle hook accepts the managed marker and queues an 
       input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's1', prompt }),
       encoding: 'utf8',
       windowsHide: true,
+      env: { ...process.env, PATH: '' },
     });
     assert.equal(result.status, 0);
     const queued = fs.readdirSync(queueDir).filter((name) => name.endsWith('.json'));

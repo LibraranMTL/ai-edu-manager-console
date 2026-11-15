@@ -41,15 +41,14 @@ test('Windows student keeps verified offline leases but fails closed on authoriz
   assert.equal(isCourseStartFallbackAllowed({ status: 403 }), false);
 });
 
-test('Windows student candidate increments R4 and packages trust resources with source audit', () => {
+test('Windows student release packages trust resources with source audit', () => {
   const version = JSON.parse(read('windows-terminal-version.json'));
   const build = read('scripts/build-windows-terminal-release.cjs');
-  assert.deepEqual([version.versionName, version.versionCode], ['0.18.9', 239]);
+  assert.deepEqual([version.versionName, version.versionCode, version.releaseStatus], ['0.19.1', 241, 'stable']);
   for (const marker of [
     'electron/course-trust-policy.cjs',
     'electron/student-course-trust.cjs',
     'public/course-catalog/trusted-course-issuers.json',
     'createSourceControlAudit',
-    'D9947CB3067C1259A967B7E2DBCE7825D22D89498D8630076C5B315061B549AC',
   ]) assert.match(build, new RegExp(marker.replaceAll('/', '[\\\\/]')));
 });

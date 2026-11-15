@@ -90,7 +90,7 @@ test('Android student release matches the signed application and preserves other
   assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.34\.apk/u);
   assert.match(formal, /"teacherTerminalVersionName": "0\.1\.5"/u);
   assert.match(formal, /"windowsVersionName": "0\.23\.8"/u);
-  assert.match(formal, /"windowsTerminalVersionName": "0\.18\.10"/u);
+  assert.match(formal, /"windowsTerminalVersionName": "0\.19\.1"/u);
   assert.match(formal, /"standaloneVersionName": "1\.3\.7"/u);
 });
 

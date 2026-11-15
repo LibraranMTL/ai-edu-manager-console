@@ -305,6 +305,8 @@ test('S1 host, terminal UI and package contract enforce personal Windows student
   assert.match(preload, /setAgentCapture/);
   assert.match(ui, /已打开的 Codex 会话在 Hook 已生效时，从下一条提问开始采集/);
   assert.match(ui, /共享终端不支持自动会话采集/);
+  assert.match(ui, /<StudentActionTile icon=\{Bot\} title="会话自动采集"/);
+  assert.doesNotMatch(ui, /learningCapabilities\.conversationImport \? <StudentActionTile icon=\{Bot\} title="会话自动采集"/);
   assert.match(ui, /已检测到.*个受支持 Agent.*授权后接入/);
   for (const file of ['student-agent-lifecycle.cjs', 'agent-adapter-registry.cjs', 'agent-lifecycle-hook.ps1', 'agent-lifecycle-hook.cs', 'agent-lifecycle-hook.exe']) {
     assert.match(build, new RegExp(file.replace(/\./g, '\\.')));

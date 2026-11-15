@@ -1949,6 +1949,7 @@ function TerminalApp() {
           </div>
           <section className="student-action-grid student-home-module-grid" aria-label="学生端主要模块">
             <StudentActionTile icon={Upload} title="资料搜集" description="文件、图片、拍照、录音与对话" meta={queuedUploadCount ? `${queuedUploadCount} 份待发送` : '立即收集'} tone="tone-upload" onClick={() => selectPrimaryModule('collection')} />
+            <StudentActionTile icon={Bot} title="会话自动采集" description="授权 Codex、WorkBuddy 等受支持 Agent" meta={agentCapture.enabled ? '已授权采集' : '个人终端可授权'} tone="tone-auto" onClick={() => { setActivePrimaryModule('collection'); revealWorkspace('conversation'); }} />
             <StudentActionTile icon={Archive} title="教育档案" description="报告、知识点与规划" meta={`${selectedStudent.archiveFileCount || 0} 份档案`} tone="tone-archive" onClick={() => selectPrimaryModule('archive')} />
             <StudentActionTile icon={BookOpen} title="学习行动" description="课程、学习卡片与学习导师" meta={`${courses.length} 门课程`} tone="tone-growth" onClick={() => selectPrimaryModule('learning')} />
             <StudentActionTile icon={LibraryBig} title="项目管理" description="项目资料、报告与项目导师" meta={`${knowledgeProjects.length} 个关联项目`} tone="tone-knowledge" onClick={() => selectPrimaryModule('project')} />
@@ -1961,7 +1962,7 @@ function TerminalApp() {
           <StudentActionTile icon={Mic} title="录音" description="录制学习讲解或谈话资料" meta="原件保留" tone="tone-report" disabled={busy || !selectedTarget} onClick={() => void openMediaCapture('audio')} />
           <StudentActionTile icon={MonitorUp} title="屏幕采集" description="主动截取学习屏幕或应用窗口" meta={captureSession?.status === 'capturing' ? `采集中 · ${captureSession.count} 张` : captureSession?.status === 'paused' ? `已暂停 · ${captureSession.count} 张` : captureSession?.status === 'completed' ? `${captureSession.count} 张待上传` : '需要时主动开启'} tone="tone-capture" active={capturePanelOpen || captureSession?.status === 'capturing' || captureSession?.status === 'paused'} onClick={openCapturePanel} />
           <StudentActionTile icon={FolderSync} title="自动投递" description={config.terminalMode === 'personal' ? '监测指定文件夹中的新资料' : '共享终端不持续监测文件夹'} meta={config.terminalMode === 'personal' ? (autoEnabled ? '已开启' : '未开启') : '个人终端可用'} tone="tone-auto" active={activeWorkspace === 'auto-delivery'} onClick={() => revealWorkspace('auto-delivery')} />
-          {learningCapabilities.conversationImport ? <StudentActionTile icon={Bot} title="对话采集" description="AI 对话分享导入与会话自动采集" meta={agentCapture.enabled ? '自动采集已开启' : '预览确认后写入'} tone="tone-upload" active={activeWorkspace === 'conversation'} disabled={busy} onClick={() => revealWorkspace('conversation')} /> : null}
+          <StudentActionTile icon={Bot} title="会话自动采集" description="授权 Codex、WorkBuddy 等受支持 Agent；也可导入对话" meta={agentCapture.enabled ? '已授权采集' : '个人终端可授权'} tone="tone-upload" active={activeWorkspace === 'conversation'} onClick={() => revealWorkspace('conversation')} />
           {learningCapabilities.remoteInbox ? <StudentActionTile icon={FileText} title="分享收件箱" description="把主动分享的文字送入主机待整理" meta="只限当前学生" tone="tone-knowledge" active={activeWorkspace === 'inbox'} disabled={busy} onClick={() => void openLearningInbox()} /> : null}
         </section> : null}
 
@@ -2136,7 +2137,7 @@ function TerminalApp() {
         </div> : null}
 
         {activeWorkspace === 'conversation' ? <div className="student-tool-form student-conversation-capture">
-          <section className="student-conversation-import" aria-labelledby="conversation-import-title">
+          {learningCapabilities.conversationImport ? <section className="student-conversation-import" aria-labelledby="conversation-import-title">
           <h3 id="conversation-import-title">AI 对话分享导入</h3>
           <p>支持从其他 AI 应用分享、粘贴文字、导入文本文件或解析公开 HTTPS 链接。内容先在本机预览，确认当前学生和资料目标后才提交主机。</p>
           <div className="document-actions"><button className="terminal-secondary" onClick={() => void importConversationFile()} disabled={learningBusy}>导入 .md/.txt/.json</button></div>
@@ -2144,7 +2145,7 @@ function TerminalApp() {
           <label><span>对话正文</span><textarea value={conversationText} onChange={event => setConversationText(event.target.value)} rows={10} maxLength={60000} placeholder="粘贴或导入对话正文" /></label>
           <p>当前学生：{selectedStudent.name} · 写入位置：{selectedTarget?.name || '请先选择资料目标'}</p>
           <button className="terminal-primary" onClick={() => void submitConversation()} disabled={learningBusy || !selectedTarget || !conversationText.trim()}>确认并提交主机</button>
-          </section>
+          </section> : <p>当前主机暂未提供对话分享导入；会话自动采集授权仍可单独设置。</p>}
           <section className={`student-agent-capture-card${agentCapture.enabled ? ' enabled' : ''}`} aria-labelledby="agent-capture-title">
             <span className="student-agent-capture-icon" aria-hidden="true"><Bot size={24} /></span>
             <div>

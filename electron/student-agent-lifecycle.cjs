@@ -134,6 +134,19 @@ function quoteHookCommandArgument(value) {
   return `"${String(value || '').replace(/"/g, '\\"')}"`;
 }
 
+function resolveWindowsPowerShellExecutable(env = process.env) {
+  if (process.platform !== 'win32') return 'powershell.exe';
+  const systemRoot = String(env.SystemRoot || env.WINDIR || '').trim();
+  if (!systemRoot || !path.win32.isAbsolute(systemRoot)) {
+    throw new Error('无法确定 Windows 系统目录，未安装会话采集 Hook。');
+  }
+  const executable = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  if (!fs.existsSync(executable)) {
+    throw new Error(`找不到 Windows PowerShell：${executable}，未安装会话采集 Hook。`);
+  }
+  return executable;
+}
+
 function lifecycleHookIdentity(hookSourcePath, nativeHookPath) {
   const nativeSourcePath = String(hookSourcePath || '').replace(/\.ps1$/i, '.cs');
   const identityPath = fs.existsSync(nativeSourcePath) ? nativeSourcePath : nativeHookPath;
@@ -152,7 +165,10 @@ function managedLifecycleHookCommand(sourceAgent, hookPath, descriptorPath, nati
     '-ManagedMarker', MANAGED_MARKER,
   ].join(' ');
   return [
-    'powershell.exe',
+    (() => {
+      const executable = resolveWindowsPowerShellExecutable();
+      return /[\s&|<>^()%!"]/u.test(executable) ? quoteHookCommandArgument(executable) : executable;
+    })(),
     '-NoProfile',
     '-NonInteractive',
     '-ExecutionPolicy Bypass',
@@ -570,6 +586,7 @@ module.exports = {
   managedLifecycleHookCommand,
   parseJsoncObject,
   reconcileTerminalLifecycle,
+  resolveWindowsPowerShellExecutable,
   setOpenClawLifecyclePluginEnabled,
   setTerminalLifecycleDescriptorEnabled,
   terminalGrantId,

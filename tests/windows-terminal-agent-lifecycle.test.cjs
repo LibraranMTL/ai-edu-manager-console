@@ -17,6 +17,7 @@ const {
   drainTerminalLifecycleQueue,
   lifecycleHookIdentity,
   managedLifecycleHookCommand,
+  resolveWindowsPowerShellExecutable,
   reconcileTerminalLifecycle,
   terminalGrantId,
   terminalLifecyclePaths,
@@ -119,7 +120,7 @@ test('Codex managed command runs through the Windows shell, including paths with
   assert.deepEqual(JSON.parse(nativeResult.stdout), {});
 
   const spacedCommand = managedLifecycleHookCommand('codex', scriptPath, descriptorPath, spacedNativePath);
-  assert.match(spacedCommand, /^powershell\.exe /i);
+  assert.ok(spacedCommand.startsWith(`${resolveWindowsPowerShellExecutable()} -NoProfile`));
   const spacedResult = invoke(spacedCommand);
   assert.equal(spacedResult.status, 0, spacedResult.stderr);
   assert.deepEqual(JSON.parse(spacedResult.stdout), {});

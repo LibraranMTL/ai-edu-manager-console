@@ -134,6 +134,8 @@ let pairStatusBusy = false;
 let agentCaptureDrainTimer = null;
 let agentCaptureInstallTimer = null;
 let agentCaptureBusy = false;
+let agentCaptureRetryAt = 0;
+let agentCaptureRetryDelayMs = 2000;
 let terminalAgentBridge = null;
 const pendingConversationImports = [];
 const discoveredLanHosts = new Map();
@@ -682,6 +684,8 @@ function reconcilePersonalAgentCapture(config = readConfig()) {
 }
 
 async function authorizePersonalAgentCapture(enabled) {
+  agentCaptureRetryAt = 0;
+  agentCaptureRetryDelayMs = 2000;
   const { config, studentId } = currentStudentSession();
   if (config.terminalMode !== 'personal') throw new Error('只有个人终端可以启用自动会话采集。');
   if (!enabled) {
@@ -804,6 +808,7 @@ async function refreshPersonalAgentCapture() {
 
 async function runAgentCaptureDrain() {
   if (agentCaptureBusy) return publicAgentCaptureState();
+  if (Date.now() < agentCaptureRetryAt) return publicAgentCaptureState();
   const config = readConfig();
   if (
     config.terminalMode !== 'personal'
@@ -811,20 +816,44 @@ async function runAgentCaptureDrain() {
     || !config.currentStudent?.id
     || !config.agentCapture?.enabled
     || !config.agentCapture?.captureEpoch
+    || !config.agentCapture?.authorizedAt
   ) return publicAgentCaptureState(config);
   agentCaptureBusy = true;
   try {
+    let rejectedAuthorization = '';
     const result = await drainTerminalLifecycleQueue({
       queueDir: terminalLifecyclePaths(terminalUserData()).queueDir,
       studentId: String(config.currentStudent.id),
       deviceId: deviceId(),
       captureEpoch: String(config.agentCapture.captureEpoch || ''),
-      postEnvelope: (envelope) => requestJson('/api/student-session/agent-memory/events', {
-        method: 'POST',
-        token: config.sessionToken,
-        body: envelope,
-      }),
+      postEnvelope: async (envelope) => {
+        try {
+          return await requestJson('/api/student-session/agent-memory/events', {
+            method: 'POST',
+            token: config.sessionToken,
+            body: envelope,
+          });
+        } catch (error) {
+          if ([401, 403].includes(Number(error.status || 0))) rejectedAuthorization = String(error.message || error);
+          throw error;
+        }
+      },
     });
+    if (rejectedAuthorization) {
+      setTerminalLifecycleDescriptorEnabled(terminalUserData(), false);
+      agentCaptureRetryAt = 0;
+      agentCaptureRetryDelayMs = 2000;
+      return publicAgentCaptureState(updateLocalAgentCapture({
+        enabled: false,
+        captureEpoch: '',
+        authorizedAt: '',
+        pending: result.pending,
+        warnings: [rejectedAuthorization],
+        message: `主机已拒绝自动会话采集授权：${rejectedAuthorization}`,
+      }));
+    }
+    agentCaptureRetryAt = result.deferred ? Date.now() + agentCaptureRetryDelayMs : 0;
+    agentCaptureRetryDelayMs = result.deferred ? Math.min(agentCaptureRetryDelayMs * 2, 60_000) : 2000;
     const next = updateLocalAgentCapture({
       pending: result.pending,
       lastSyncAt: result.processed ? new Date().toISOString() : String(config.agentCapture?.lastSyncAt || ''),

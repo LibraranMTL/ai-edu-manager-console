@@ -127,8 +127,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     static final int REQUEST_DIRECT_UPLOAD = 8112;
     static final int REQUEST_DIRECT_IMAGE_UPLOAD = 8113;
     static final int REQUEST_IMPORT_CONVERSATION_FILE = 8114;
-    static final String VERSION_NAME = "0.6.33";
-    static final int VERSION_CODE = 103;
+    static final String VERSION_NAME = "0.6.34";
+    static final int VERSION_CODE = 104;
     static final String CONNECTION_BACKUP_KIND = "ai-edu-manager-tablet-connection-backup";
     static final int CONNECTION_BACKUP_VERSION = 1;
     static final String UPDATE_MANIFEST_URL = "https://www.greatbg.com/download/edu-manager-version.json";
@@ -212,6 +212,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     TextView navigationStudentText;
     TextView cockpitStatusText;
     TextView collectionInboxStatusText;
+    Button shareInboxButton;
     LinearLayout homePage;
     LinearLayout collectionPage;
     LinearLayout connectionPage;
@@ -389,6 +390,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     boolean uploadInProgress = false;
     ProjectMaterialUploadQueue projectMaterialUploadQueue;
     StudentCollectionInbox studentCollectionInbox;
+    StudentCollectionInbox shareCollectionInbox;
+    boolean updateAfterShareSave;
+    boolean shareSessionRestorePending;
+    final ArrayList<ArrayList<String>> pendingShareBatches = new ArrayList<ArrayList<String>>();
+    boolean shareDestinationDialogOpen = false;
     boolean conversationSubmitInProgress = false;
     String pendingConversationText = "";
     String pendingConversationSource = "手动粘贴";
@@ -415,10 +421,17 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         initializeProjectMaterialUploadQueue();
         initializeCollectionInbox();
         refreshCollectionInboxUi();
-        handleIncomingShare(getIntent());
+        shareSessionRestorePending = normalizedBaseUrl().length() > 0 && apiToken().length() > 0 && dataToken().length() > 0;
+        Intent launchIntent = getIntent();
+        String launchAction = launchIntent == null ? "" : launchIntent.getAction();
+        updateAfterShareSave = savedInstanceState == null
+            && (Intent.ACTION_SEND.equals(launchAction) || Intent.ACTION_SEND_MULTIPLE.equals(launchAction))
+            && !extractUris(launchIntent).isEmpty();
+        if (savedInstanceState == null) handleIncomingShare(launchIntent);
         restoreNextConversationDraft();
-        checkForUpdate(true);
-        maybeStartCaptureFromIntent(getIntent());
+        if (!updateAfterShareSave) checkForUpdate(true);
+        maybeStartCaptureFromIntent(launchIntent);
+        setIntent(new Intent());
         if (normalizedBaseUrl().length() > 0 && apiToken().length() > 0) {
             connectAndLoadStudents();
         }
@@ -430,6 +443,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         setIntent(intent);
         handleIncomingShare(intent);
         maybeStartCaptureFromIntent(intent);
+        setIntent(new Intent());
     }
 
     @Override
@@ -1157,6 +1171,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         conversationImportButton.setOnClickListener(this);
         collectFolder.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { chooseAutoDeliveryFolder(); } });
         collectionPage.addView(collectionActions);
+        LinearLayout shareInboxCard = card();
+        shareInboxCard.addView(label("分享收件箱"));
+        shareInboxCard.addView(label("从其他应用分享的文件先保存在本机；进入学生空间后选择资料、确认归属和上传位置。"));
+        shareInboxButton = button("打开分享收件箱", false);
+        shareInboxButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) { showShareInbox(); } });
+        shareInboxCard.addView(shareInboxButton);
+        collectionPage.addView(shareInboxCard);
         collectionPage.addView(uploadCard);
         collectionPage.addView(captureCard);
         collectionPage.addView(autoDeliveryPanel);
@@ -1808,6 +1829,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         return studentSessionToken == null ? "" : studentSessionToken.trim();
     }
 
+    boolean isCurrentBootstrapSession(String expectedToken) {
+        String savedToken = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_STUDENT_SESSION_TOKEN, "").trim();
+        return expectedToken.equals(dataToken()) && expectedToken.equals(savedToken);
+    }
+
     void loginStudent(String loginIdOrQr) {
         String value = loginIdOrQr == null ? "" : loginIdOrQr.trim();
         if (value.length() == 0) {
@@ -1855,6 +1881,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     void applyStudentSession(JSONObject payload, String error) {
+        shareSessionRestorePending = false;
         if (error != null) {
             clearStudentSession(error);
             status(error);
@@ -1885,11 +1912,13 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             .apply();
         applyStudents(result, projectResult, null, false);
         updateStudentSessionUi();
+        showPendingShareDestination();
         if (studentLoginInput != null) studentLoginInput.setText("");
         resumeProjectMaterialUploadQueue();
     }
 
     void clearStudentSession(String message) {
+        shareSessionRestorePending = false;
         studentSessionToken = "";
         selectedStudent = null;
         students.clear();
@@ -1917,6 +1946,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         refreshCaptureUi();
         updateStudentProgressCard();
         if (message != null && message.length() > 0 && studentSessionText != null) studentSessionText.setText(message);
+        if (!pendingShareBatches.isEmpty()) showPendingShareDestination();
     }
 
     void updateStudentSessionUi() {
@@ -3454,13 +3484,15 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (clipData != null) {
             for (int i = 0; i < clipData.getItemCount(); i++) {
                 Uri uri = clipData.getItemAt(i).getUri();
-                if (uri != null) result.add(uri);
+                if (uri != null && !result.contains(uri)) result.add(uri);
             }
         }
         Uri data = intent.getData();
         if (data != null && !result.contains(data)) result.add(data);
-        Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-        if (stream instanceof Uri && !result.contains((Uri) stream)) result.add((Uri) stream);
+        try {
+            Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (stream instanceof Uri && !result.contains((Uri) stream)) result.add((Uri) stream);
+        } catch (Exception ignored) {}
         try {
             ArrayList<Uri> streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
             if (streams != null) for (Uri uri : streams) if (uri != null && !result.contains(uri)) result.add(uri);
@@ -3472,13 +3504,18 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (intent == null) return;
         String action = intent.getAction();
         if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
+        List<Uri> uris = extractUris(intent);
+        if (!uris.isEmpty()) {
+            CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            receiveSharedFiles(uris, sharedText == null ? "" : sharedText.toString());
+            return;
+        }
         ConversationDraftStore.Draft draft = ConversationDraftStore.capture(this, intent);
         if (draft != null) {
             if (pendingConversationText.length() == 0) acceptConversationDraft(draft.text, draft.source, draft.reference, draft.id);
             else status("已保存新的对话草稿；完成当前草稿后可继续导入。");
             return;
         }
-        List<Uri> uris = extractUris(intent);
         CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
         if (uris.size() == 0 && sharedText != null && sharedText.toString().trim().length() > 0) {
             acceptConversationDraft(sharedText.toString());
@@ -3488,7 +3525,6 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             toast("未发现可接收的分享文件或对话正文。");
             return;
         }
-        collectMaterials(uris, "android_system_share");
     }
 
     void updateSharedUploadButton() {
@@ -4825,6 +4861,8 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             studentCollectionInbox = null;
             if (collectionInboxStatusText != null) collectionInboxStatusText.setText("本机待上传暂存不可用：" + safeErrorMessage(error));
         }
+        try { shareCollectionInbox = new StudentCollectionInbox(new File(getFilesDir(), "student-share-inbox")); }
+        catch (Exception error) { shareCollectionInbox = null; }
     }
 
     String currentStudentScopeId() {
@@ -4851,7 +4889,267 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             sharedUploadButton.setText("管理待上传暂存(" + count + ")");
             sharedUploadButton.setEnabled(currentStudentScopeId().length() > 0 && count > 0);
         }
+        if (shareInboxButton != null) {
+            try {
+                String queued = selectedStudent == null ? "" : sharedInboxQueuedSummary(selectedStudent.id);
+                shareInboxButton.setText("打开分享收件箱（待选择 " + sharedInboxEntries().size()
+                    + (queued.length() == 0 ? "" : " · 有待核对") + "）");
+            }
+            catch (Exception ignored) { shareInboxButton.setText("打开分享收件箱"); }
+        }
         refreshCockpitStatus();
+    }
+
+    List<StudentCollectionInbox.Entry> sharedInboxEntries() throws Exception {
+        ArrayList<StudentCollectionInbox.Entry> result = new ArrayList<StudentCollectionInbox.Entry>();
+        if (shareCollectionInbox == null) return result;
+        String studentId = selectedStudent == null ? "" : selectedStudent.id;
+        if (studentId.length() > 0) {
+            for (StudentCollectionInbox.Entry entry : shareCollectionInbox.readyForDisplay(studentId))
+                if ("android_system_share".equals(entry.metadata.sourceType)) result.add(entry);
+        }
+        result.addAll(shareCollectionInbox.readyForDisplay(StudentCollectionInbox.UNASSIGNED_SHARE));
+        return result;
+    }
+
+    String sharedInboxQueuedSummary(String studentId) throws Exception {
+        if (shareCollectionInbox == null) return "";
+        List<ProjectMaterialUploadQueue.Entry> uploads = projectMaterialUploadQueue == null
+            ? new ArrayList<ProjectMaterialUploadQueue.Entry>() : projectMaterialUploadQueue.list();
+        StringBuilder summary = new StringBuilder();
+        for (StudentCollectionInbox.Entry entry : shareCollectionInbox.listForDisplay(studentId)) {
+            if (entry.state != StudentCollectionInbox.State.QUEUED) continue;
+            ProjectMaterialUploadQueue.Entry upload = null;
+            for (ProjectMaterialUploadQueue.Entry item : uploads) {
+                if (entry.uploadRequestId.equals(item.requestId) && studentId.equals(item.studentId)) { upload = item; break; }
+            }
+            if (upload != null && upload.state == ProjectMaterialUploadQueue.State.RECEIVED) {
+                shareCollectionInbox.completeQueued(entry.collectionId, studentId, upload.requestId);
+                continue;
+            }
+            summary.append("\n• ").append(entry.metadata.fileName).append("：")
+                .append(upload == null ? "上传记录暂不可用，本机副本保留" : uploadEntryStateLabel(upload));
+        }
+        return summary.toString();
+    }
+
+    void receiveSharedFiles(final List<Uri> uris, final String sharedText) {
+        if (shareCollectionInbox == null) initializeCollectionInbox();
+        if (shareCollectionInbox == null) {
+            toast("分享收件箱不可用，请重新分享文件。");
+            if (updateAfterShareSave) { updateAfterShareSave = false; checkForUpdate(true); }
+            return;
+        }
+        final String studentId = selectedStudent == null ? StudentCollectionInbox.UNASSIGNED_SHARE : selectedStudent.id;
+        status("正在保存分享文件到本机，请稍候…");
+        new Thread(new Runnable() { @Override public void run() {
+            int saved = 0;
+            final ArrayList<String> savedIds = new ArrayList<String>();
+            ArrayList<String> failures = new ArrayList<String>();
+            for (Uri uri : uris) {
+                InputStream input = null;
+                String name = displayName(uri);
+                try {
+                    input = openUriInput(uri);
+                    if (input == null) throw new IllegalStateException("无法读取文件");
+                    String mime = "content".equals(uri.getScheme()) ? getContentResolver().getType(uri) : null;
+                    StudentCollectionInbox.Entry savedEntry = shareCollectionInbox.collect(input, new StudentCollectionInbox.Metadata(studentId,
+                        "android_system_share", name, mime, "android-share"));
+                    if (!savedIds.contains(savedEntry.collectionId)) savedIds.add(savedEntry.collectionId);
+                    saved++;
+                } catch (Exception error) { failures.add(name + "：" + safeErrorMessage(error)); }
+                finally { if (input != null) try { input.close(); } catch (Exception ignored) {} }
+            }
+            if (sharedText != null && sharedText.trim().length() > 0) {
+                try {
+                    StudentCollectionInbox.Entry savedEntry = shareCollectionInbox.collect(new ByteArrayInputStream(sharedText.getBytes("UTF-8")),
+                        new StudentCollectionInbox.Metadata(studentId, "android_system_share",
+                            "分享说明.txt", "text/plain", "android-share-text"));
+                    if (!savedIds.contains(savedEntry.collectionId)) savedIds.add(savedEntry.collectionId);
+                    saved++;
+                } catch (Exception error) { failures.add("分享说明：" + safeErrorMessage(error)); }
+            }
+            final int count = saved;
+            final ArrayList<String> errors = failures;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                refreshCollectionInboxUi();
+                showWorkspace("collection");
+                if (!savedIds.isEmpty()) pendingShareBatches.add(savedIds);
+                if (!errors.isEmpty()) {
+                    String message = "已保存 " + count + " 项。未保存 " + errors.size() + " 项，请重新分享：\n" + android.text.TextUtils.join("\n", errors);
+                    new AlertDialog.Builder(MainActivity.this).setTitle("部分文件未保存").setMessage(message)
+                        .setPositiveButton("继续", new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface dialog, int which) { showPendingShareDestination(); }
+                        }).setCancelable(false).show();
+                } else showPendingShareDestination();
+            }});
+        }}).start();
+    }
+
+    void showPendingShareDestination() {
+        if (shareDestinationDialogOpen) return;
+        if (pendingShareBatches.isEmpty()) {
+            if (updateAfterShareSave) { updateAfterShareSave = false; checkForUpdate(true); }
+            return;
+        }
+        if (selectedStudent == null) {
+            if (shareSessionRestorePending) {
+                status("已保存分享文件，正在恢复学生空间…");
+                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (shareSessionRestorePending && selectedStudent == null) {
+                            shareSessionRestorePending = false;
+                            showPendingShareDestination();
+                        }
+                    }
+                }, 12000L);
+                return;
+            }
+            shareDestinationDialogOpen = true;
+            new AlertDialog.Builder(this).setTitle("文件已保存")
+                .setMessage("请先进入本人学生空间，再选择学生资料库或关联项目。文件已保存在分享收件箱。")
+                .setPositiveButton("进入学生空间", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        shareDestinationDialogOpen = false; showWorkspace("connection");
+                        if (selectedStudent != null) showPendingShareDestination();
+                    }
+                }).setNegativeButton("稍后处理", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        pendingShareBatches.remove(0); shareDestinationDialogOpen = false; showPendingShareDestination();
+                    }
+                }).setCancelable(false).show();
+            return;
+        }
+        ArrayList<String> ids = pendingShareBatches.remove(0);
+        shareDestinationDialogOpen = true;
+        chooseSharedDestination(ids);
+    }
+
+    void finishShareDestination() {
+        shareDestinationDialogOpen = false;
+        showPendingShareDestination();
+    }
+
+    void chooseSharedDestination(final List<String> ids) {
+        if (selectedStudent == null || shareCollectionInbox == null) {
+            toast("请先进入学生空间；文件仍在分享收件箱。"); finishShareDestination(); return;
+        }
+        final String studentId = selectedStudent.id;
+        final String studentName = selectedStudent.name;
+        final String hostId = connectedHostId();
+        final String generation = connectedHostDataGeneration();
+        final ArrayList<StudentCollectionInbox.Entry> entries = new ArrayList<StudentCollectionInbox.Entry>();
+        try {
+            for (StudentCollectionInbox.Entry entry : sharedInboxEntries()) if (ids.contains(entry.collectionId)) entries.add(entry);
+        } catch (Exception error) { toast("读取分享文件失败：" + safeErrorMessage(error)); finishShareDestination(); return; }
+        if (entries.size() != ids.size()) {
+            toast("部分文件不属于当前学生或已变化，请在分享收件箱中重新选择。"); finishShareDestination(); return;
+        }
+        final ArrayList<UploadTarget> targets = new ArrayList<UploadTarget>();
+        targets.add(new UploadTarget("student", studentId, studentName + "原始资料库", studentId));
+        for (LearningProject project : projectsForSelectedStudent()) targets.add(new UploadTarget("project", project.id, project.name, studentId));
+        String[] labels = new String[targets.size()];
+        for (int i = 0; i < targets.size(); i++) labels[i] = ("project".equals(targets.get(i).type) ? "项目资料 · " : "学生原始资料库 · ")
+            + targets.get(i).name.replace("原始资料库", "");
+        final AlertDialog targetDialog = new AlertDialog.Builder(this)
+            .setTitle("分享文件 · 选择投递位置\n当前学生：" + studentName + " · " + entries.size() + " 项\n请确认文件属于本人")
+            .setSingleChoiceItems(labels, -1, null).setNegativeButton("稍后处理", new DialogInterface.OnClickListener() {
+                @Override public void onClick(DialogInterface dialog, int which) { finishShareDestination(); }
+            }).setPositiveButton("确认上传", null).setCancelable(false).create();
+        targetDialog.setOnShowListener(new DialogInterface.OnShowListener() { @Override public void onShow(DialogInterface dialog) {
+            targetDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() { @Override public void onClick(View view) {
+                int position = targetDialog.getListView().getCheckedItemPosition();
+                if (position < 0 || position >= targets.size()) { toast("请选择学生资料库或关联项目。"); return; }
+                if (selectedStudent == null || !studentId.equals(selectedStudent.id) || !hostId.equals(connectedHostId())
+                    || !generation.equals(connectedHostDataGeneration())) {
+                    targetDialog.dismiss(); toast("学生空间或主机已变化，请重新选择；文件仍在收件箱。"); finishShareDestination(); return;
+                }
+                if (hostId.length() == 0 || generation.length() == 0 || normalizedBaseUrl().length() == 0 || dataToken().length() == 0) {
+                    targetDialog.dismiss(); toast("请先连接主机；文件仍在分享收件箱。"); finishShareDestination(); return;
+                }
+                final UploadTarget target = targets.get(position);
+                targetDialog.dismiss();
+                status("正在核对分享文件和学生归属…");
+                new Thread(new Runnable() { @Override public void run() {
+                    final ArrayList<Uri> selected = new ArrayList<Uri>();
+                    String errorText = "";
+                    try {
+                        for (StudentCollectionInbox.Entry value : entries) {
+                            StudentCollectionInbox.Entry entry = value;
+                            if (StudentCollectionInbox.UNASSIGNED_SHARE.equals(entry.metadata.studentId))
+                                entry = shareCollectionInbox.assignSharedEntry(entry.collectionId, studentId);
+                            selected.add(Uri.fromFile(entry.payloadFile()));
+                        }
+                    } catch (Exception error) { errorText = safeErrorMessage(error); }
+                    final String failure = errorText;
+                    runOnUiThread(new Runnable() { @Override public void run() {
+                        refreshCollectionInboxUi();
+                        if (selectedStudent == null || !studentId.equals(selectedStudent.id) || !hostId.equals(connectedHostId())
+                            || !generation.equals(connectedHostDataGeneration())) toast("学生空间或主机已变化；文件仍在收件箱，请重新选择。");
+                        else if (failure.length() > 0) toast("核对失败，文件仍在收件箱：" + failure);
+                        else uploadMaterialsToTarget(selected, true, target);
+                        finishShareDestination();
+                    }});
+                }}).start();
+            }});
+        }});
+        targetDialog.show();
+    }
+
+    void showShareInbox() {
+        if (shareCollectionInbox == null) { toast("分享收件箱不可用。"); return; }
+        if (selectedStudent == null) { toast("请先进入本人学生空间，再查看和确认分享资料。"); showWorkspace("connection"); return; }
+        final String studentId = selectedStudent.id;
+        final String studentName = selectedStudent.name;
+        try {
+            final List<StudentCollectionInbox.Entry> entries = sharedInboxEntries();
+            final String queuedSummary = sharedInboxQueuedSummary(studentId);
+            if (entries.isEmpty()) {
+                if (queuedSummary.length() == 0) { toast("分享收件箱暂无待处理文件。"); return; }
+                new AlertDialog.Builder(this).setTitle("分享收件箱 · " + studentName)
+                    .setMessage("以下文件仍保存在本机，主机确认接收后自动完成：" + queuedSummary)
+                    .setPositiveButton("核对上传状态", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface dialog, int which) { resumeProjectMaterialUploadQueue(); }
+                    }).setNegativeButton("关闭", null).show();
+                return;
+            }
+            final boolean[] checked = new boolean[entries.size()];
+            String[] labels = new String[entries.size()];
+            for (int i = 0; i < entries.size(); i++) {
+                StudentCollectionInbox.Entry entry = entries.get(i);
+                labels[i] = entry.metadata.fileName + " · " + formatSize(entry.size)
+                    + (StudentCollectionInbox.UNASSIGNED_SHARE.equals(entry.metadata.studentId) ? " · 待确认归属" : "");
+            }
+            new AlertDialog.Builder(this).setTitle("分享收件箱 · " + studentName + "\n待确认资料请核实归属"
+                    + (queuedSummary.length() == 0 ? "" : "\n另有资料等待主机确认，可在上传状态中查看"))
+                .setMultiChoiceItems(labels, checked, new DownloadsChoiceClickListener(checked))
+                .setPositiveButton("选择上传位置", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) {
+                    if (selectedStudent == null || !studentId.equals(selectedStudent.id)) { toast("学生空间已变化，请重新选择。"); return; }
+                    ArrayList<String> ids = new ArrayList<String>();
+                    for (int i = 0; i < entries.size(); i++) if (checked[i]) ids.add(entries.get(i).collectionId);
+                    if (ids.isEmpty()) { toast("请至少选择一项资料。"); return; }
+                    if (shareDestinationDialogOpen) { toast("请先完成当前目标选择。"); return; }
+                    shareDestinationDialogOpen = true; chooseSharedDestination(ids);
+                }})
+                .setNeutralButton("删除所选", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface dialog, int which) {
+                    if (selectedStudent == null || !studentId.equals(selectedStudent.id)) { toast("学生空间已变化，请重新选择。"); return; }
+                    int count = 0; for (boolean value : checked) if (value) count++;
+                    if (count == 0) { toast("请至少选择一项资料。"); return; }
+                    new AlertDialog.Builder(MainActivity.this).setTitle("删除分享文件？")
+                        .setMessage("将删除选中的 " + count + " 项本机副本，不影响其他应用中的原文件。")
+                        .setNegativeButton("取消", null).setPositiveButton("确认删除", new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface confirm, int ignored) {
+                                if (selectedStudent == null || !studentId.equals(selectedStudent.id)) { toast("学生空间已变化，请重新选择。"); return; }
+                                try {
+                                    int removed = 0;
+                                    for (int i = 0; i < entries.size(); i++) if (checked[i]
+                                        && shareCollectionInbox.remove(entries.get(i).collectionId, entries.get(i).metadata.studentId)) removed++;
+                                    refreshCollectionInboxUi(); toast("已删除 " + removed + " 项本机副本。");
+                                } catch (Exception error) { toast("删除失败：" + safeErrorMessage(error)); }
+                            }
+                        }).show();
+                }}).setNegativeButton("关闭", null).show();
+        } catch (Exception error) { toast("读取分享收件箱失败：" + safeErrorMessage(error)); }
     }
 
     void collectMaterials(final List<Uri> uris, final String fallbackSourceType) {
@@ -5042,6 +5340,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
             setUploadQueueText("上传状态读取失败：" + safeErrorMessage(error));
         }
         updateSharedUploadButton();
+        refreshCollectionInboxUi();
     }
 
     boolean uploadEntryMatchesCurrentScope(ProjectMaterialUploadQueue.Entry entry) {
@@ -5172,6 +5471,11 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
                             return;
                         }
                         UploadTarget target = targets.get(position);
+                        if (selectedStudent == null || !target.studentId.equals(selectedStudent.id)) {
+                            toast("学生空间已变化，请重新选择资料和上传位置。");
+                            targetDialog.dismiss();
+                            return;
+                        }
                         uploadMaterialsToTarget(new ArrayList<Uri>(uris), reloadAfterFinish, target);
                         targetDialog.dismiss();
                     }
@@ -5210,6 +5514,10 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
     }
 
     QueuedMaterialDescriptor queuedMaterialDescriptor(Uri uri) throws Exception {
+        if (shareCollectionInbox != null && selectedStudent != null && "file".equals(uri.getScheme()) && uri.getPath() != null) {
+            StudentCollectionInbox.Entry shared = shareCollectionInbox.findByPayloadPath(selectedStudent.id, uri.getPath());
+            if (shared != null) return new QueuedMaterialDescriptor(shared.metadata.sourceType, "", shared.metadata.sourceReference);
+        }
         boolean captureFile = "file".equals(uri.getScheme()) && uri.getPath() != null
             && uri.getPath().contains("screen-captures");
         if (!captureFile) return new QueuedMaterialDescriptor("android_terminal_file", "", uri.toString());
@@ -6682,6 +6990,12 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
 
     String displayName(Uri uri) {
         if (uri != null && "file".equalsIgnoreCase(uri.getScheme())) {
+            try {
+                if (shareCollectionInbox != null && selectedStudent != null) {
+                    StudentCollectionInbox.Entry entry = shareCollectionInbox.findByPayloadPath(selectedStudent.id, uri.getPath());
+                    if (entry != null) return entry.metadata.fileName;
+                }
+            } catch (Exception ignored) {}
             File file = new File(uri.getPath());
             return file.getName().replaceAll("[\\\\/:*?\"<>|]", "_");
         }
@@ -7632,7 +7946,7 @@ public class MainActivity extends Activity implements View.OnClickListener, Adap
         if (learningActionPage != null) learningActionPage.setVisibility("learning".equals(workspace) ? View.VISIBLE : View.GONE);
         if (morePage != null) morePage.setVisibility("more".equals(workspace) ? View.VISIBLE : View.GONE);
         if (rootScroll != null) rootScroll.scrollTo(0, 0);
-        if ("collection".equals(workspace)) refreshCollectionInboxUi();
+        if ("collection".equals(workspace)) refreshProjectMaterialQueueStatus();
         if ("home".equals(workspace)) refreshLearningWorkbenchHome();
         refreshCockpitStatus();
     }
@@ -9034,6 +9348,7 @@ class BootstrapStudentSessionTask implements Runnable {
                 && device.optBoolean("requiresStudentBinding", "personal".equals(mode) && boundStudentId.length() == 0);
             activity.runOnUiThread(new Runnable() {
                 @Override public void run() {
+                    if (!activity.isCurrentBootstrapSession(existingSessionToken)) return;
                     activity.terminalMode = mode;
                     activity.boundStudentId = boundStudentId;
                     activity.personalRequiresBinding = requiresStudentBinding;
@@ -9044,20 +9359,22 @@ class BootstrapStudentSessionTask implements Runnable {
                 try {
                     JSONObject session = activity.getJson(base + "/api/student-session/me", existingSessionToken);
                     session.put("terminalMode", mode);
-                    activity.runOnUiThread(new StudentSessionApplyTask(activity, session, null));
+                    activity.runOnUiThread(new BootstrapSessionApplyTask(activity, existingSessionToken, session));
                     return;
-                } catch (Exception ignored) {
+                } catch (Exception error) {
+                    if (error instanceof java.io.IOException) throw error;
                 }
             }
             if ("personal".equals(mode) && !requiresStudentBinding && boundStudentId.length() > 0) {
                 JSONObject session = activity.postJson(base + "/api/student-session/auto", new JSONObject(), deviceToken);
                 session.put("terminalMode", mode);
-                activity.runOnUiThread(new StudentSessionApplyTask(activity, session, null));
+                activity.runOnUiThread(new BootstrapSessionApplyTask(activity, existingSessionToken, session));
                 return;
             }
             if ("personal".equals(mode)) {
                 activity.runOnUiThread(new Runnable() {
                     @Override public void run() {
+                        if (!activity.isCurrentBootstrapSession(existingSessionToken)) return;
                         activity.clearStudentSession("个人终端尚未绑定学生，请输入本人学生 ID 或扫码完成首次绑定。");
                         activity.updateConnectionSummary("已连接，等待首次绑定学生", 0);
                     }
@@ -9066,14 +9383,38 @@ class BootstrapStudentSessionTask implements Runnable {
             }
             activity.runOnUiThread(new Runnable() {
                 @Override public void run() {
+                    if (!activity.isCurrentBootstrapSession(existingSessionToken)) return;
                     activity.terminalMode = mode;
                     activity.clearStudentSession("\u8bf7\u626b\u7801\u6216\u8f93\u5165\u5b66\u751f ID \u8fdb\u5165\u672c\u4eba\u8d44\u6599\u3002");
                     activity.updateConnectionSummary("\u5df2\u8fde\u63a5\uff0c\u7b49\u5f85\u5b66\u751f\u8fdb\u5165", 0);
                 }
             });
         } catch (Exception error) {
-            activity.runOnUiThread(new StudentSessionApplyTask(activity, null, error.getMessage()));
+            final boolean transportFailure = error instanceof java.io.IOException;
+            final String message = error.getMessage();
+            activity.runOnUiThread(new Runnable() { @Override public void run() {
+                if (!activity.isCurrentBootstrapSession(existingSessionToken)) return;
+                if (transportFailure) {
+                    activity.shareSessionRestorePending = false;
+                    activity.status("主机暂不可连接，学生会话和待上传资料已保留；联网后可重试。");
+                    activity.updateConnectionSummary("连接暂不可用", activity.students.size());
+                    activity.showPendingShareDestination();
+                } else activity.applyStudentSession(null, message);
+            }});
         }
+    }
+}
+
+class BootstrapSessionApplyTask implements Runnable {
+    private final MainActivity activity;
+    private final String expectedToken;
+    private final JSONObject payload;
+    BootstrapSessionApplyTask(MainActivity activity, String expectedToken, JSONObject payload) {
+        this.activity = activity; this.expectedToken = expectedToken; this.payload = payload;
+    }
+    @Override public void run() {
+        if (!activity.isCurrentBootstrapSession(expectedToken)) return;
+        activity.applyStudentSession(payload, null);
     }
 }
 
@@ -9475,6 +9816,13 @@ class EnqueueProjectMaterialsTask implements Runnable {
                 activity.runOnUiThread(new StatusTask(activity, "正在安全保存 " + (i + 1) + "/" + uris.size() + "：" + fileName));
                 activity.runOnUiThread(new UploadQueueStatusTask(activity, "上传准备：" + (i + 1) + "/" + uris.size() + "，正在建立私有稳定副本：" + fileName));
                 QueuedMaterialDescriptor descriptor = activity.queuedMaterialDescriptor(uri);
+                if (activity.shareCollectionInbox != null && "file".equals(uri.getScheme()) && uri.getPath() != null) {
+                    StudentCollectionInbox.Entry shared = activity.shareCollectionInbox.findByPayloadPath(studentId, uri.getPath());
+                    if (shared != null) {
+                        fileName = shared.metadata.fileName;
+                        descriptor = new QueuedMaterialDescriptor(shared.metadata.sourceType, "", shared.metadata.sourceReference);
+                    }
+                }
                 input = activity.openUriInput(uri);
                 if (input == null) throw new SecurityException("文件读取授权已失效");
                 ProjectMaterialUploadQueue.Metadata metadata = new ProjectMaterialUploadQueue.Metadata(
@@ -9483,6 +9831,9 @@ class EnqueueProjectMaterialsTask implements Runnable {
                 ProjectMaterialUploadQueue.Entry queuedEntry = activity.projectMaterialUploadQueue.enqueue(input, metadata);
                 if (activity.studentCollectionInbox != null && "file".equals(uri.getScheme()) && uri.getPath() != null) {
                     activity.studentCollectionInbox.markQueuedByPayloadPath(uri.getPath(), queuedEntry.requestId);
+                }
+                if (activity.shareCollectionInbox != null && "file".equals(uri.getScheme()) && uri.getPath() != null) {
+                    activity.shareCollectionInbox.markQueuedByPayloadPath(uri.getPath(), queuedEntry.requestId, true);
                 }
                 queued += 1;
                 copiedUris.add(uri);

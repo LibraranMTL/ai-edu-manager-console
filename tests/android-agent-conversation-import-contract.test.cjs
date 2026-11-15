@@ -31,7 +31,7 @@ test('student exposes one governed conversation import entry while teacher keeps
 test('ACTION_SEND text enters governed conversation import while generic shared files use offline staging', () => {
   assert.match(studentManifest, /android\.intent\.action\.SEND/u);
   assert.match(student, /acceptConversationDraft\(sharedText\.toString\(\)\)/u);
-  assert.match(student, /collectMaterials\(uris, "android_system_share"\)/u);
+  assert.match(student, /receiveSharedFiles\(uris, sharedText/u);
   assert.match(teacherManifest, /android\.intent\.action\.SEND/u);
   assert.match(teacher, /pendingSharedUris\.addAll\(uris\)/u);
   assert.match(student, /previewConversationLink\(text\)/u);
@@ -84,10 +84,10 @@ test('student public link preview is host mediated and bounded before submit', (
 });
 
 test('student candidate and teacher release expose their expected Android versions', () => {
-  assert.match(student, /VERSION_NAME = "0\.6\.33"/u);
-  assert.match(student, /VERSION_CODE = 103/u);
-  assert.match(studentManifest, /android:versionName="0\.6\.33"/u);
-  assert.match(studentManifest, /android:versionCode="103"/u);
+  assert.match(student, /VERSION_NAME = "0\.6\.34"/u);
+  assert.match(student, /VERSION_CODE = 104/u);
+  assert.match(studentManifest, /android:versionName="0\.6\.34"/u);
+  assert.match(studentManifest, /android:versionCode="104"/u);
   assert.match(teacher, /VERSION_NAME = "0\.1\.5"/u);
   assert.match(teacher, /VERSION_CODE = 6/u);
   assert.match(teacherManifest, /android:versionName="0\.1\.5"/u);

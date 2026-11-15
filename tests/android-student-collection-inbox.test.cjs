@@ -64,10 +64,33 @@ public class InboxHarness {
       new StudentCollectionInbox.Metadata("student-a", "manual", "tampered.txt", "text/plain", "picker"));
     FileOutputStream changed = new FileOutputStream(tampered.payloadFile(), true); changed.write('x'); changed.close();
     check(box.ready("student-a").size() == 1, "tampered payload is quarantined by hash verification");
-    new File(new File(root, "staging"), "crash.partial").createNewFile();
+    File partial = new File(new File(root, "staging"), "crash.partial"); partial.createNewFile();
+    partial.setLastModified(System.currentTimeMillis() - 11 * 60 * 1000L);
     box = new StudentCollectionInbox(root);
     check(!new File(new File(root, "staging"), "crash.partial").exists(), "partial cleaned on restart");
     check(box.remove(two.collectionId, "student-a") && !two.payloadFile().exists(), "confirmed delete removes payload");
+    StudentCollectionInbox.Entry shared = box.collect(new ByteArrayInputStream("shared file".getBytes(StandardCharsets.UTF_8)),
+      new StudentCollectionInbox.Metadata(StudentCollectionInbox.UNASSIGNED_SHARE, "android_system_share", "original.txt", "text/plain", "android-share"));
+    box = new StudentCollectionInbox(root);
+    check(box.ready(StudentCollectionInbox.UNASSIGNED_SHARE).size() == 1, "share survives restart before login");
+    check(box.ready("student-a").isEmpty() && box.ready("student-b").isEmpty(), "unassigned share not silently attributed");
+    StudentCollectionInbox.Entry assigned = box.assignSharedEntry(shared.collectionId, "student-a");
+    check(assigned.metadata.fileName.equals("original.txt"), "original name survives assignment");
+    check(box.ready(StudentCollectionInbox.UNASSIGNED_SHARE).isEmpty(), "assignment removes unassigned visibility");
+    check(box.ready("student-a").size() == 1 && box.ready("student-b").isEmpty(), "assignment isolates students");
+    boolean rejected = false;
+    try { box.assignSharedEntry(shared.collectionId, "student-b"); } catch (Exception expected) { rejected = true; }
+    check(rejected, "assigned share cannot be reassigned");
+    check(box.findByPayloadPath("student-b", assigned.payloadPath) == null, "other student cannot resolve payload");
+    check(box.findByPayloadPath("student-a", assigned.payloadPath) != null, "owner can resolve payload");
+    check(box.markQueuedByPayloadPath(assigned.payloadPath, "share-request", true), "share handed to durable queue");
+    check(box.ready("student-a").isEmpty(), "successful handoff removes share from inbox");
+    box = new StudentCollectionInbox(root);
+    check(assigned.payloadFile().isFile() && box.listForDisplay("student-a").get(0).state == StudentCollectionInbox.State.QUEUED, "queued original survives restart or failed upload");
+    check(!box.completeQueued(assigned.collectionId, "student-b", "share-request"), "other student cannot complete");
+    check(!box.completeQueued(assigned.collectionId, "student-a", "wrong-request"), "wrong receipt cannot complete");
+    check(box.completeQueued(assigned.collectionId, "student-a", "share-request"), "matching receipt completes share");
+    check(!assigned.payloadFile().exists(), "confirmed receipt releases retained copy");
     System.out.println("INBOX_HARNESS_OK");
   }
 }`, 'utf8');
@@ -82,4 +105,20 @@ test('student UI hands inbox payload to durable queue before releasing the origi
   const main = fs.readFileSync(path.join(root, 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'MainActivity.java'), 'utf8');
   assert.match(main, /projectMaterialUploadQueue\.enqueue\(input, metadata\)/);
   assert.match(main, /studentCollectionInbox\.markQueuedByPayloadPath\(uri\.getPath\(\), queuedEntry\.requestId\)/);
+  assert.match(main, /shareCollectionInbox\.markQueuedByPayloadPath\(uri\.getPath\(\), queuedEntry\.requestId, true\)/);
+});
+
+test('system file shares enter a separate persistent inbox before student and target confirmation', () => {
+  const main = fs.readFileSync(path.join(root, 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'MainActivity.java'), 'utf8');
+  const manifest = fs.readFileSync(path.join(root, 'android-tablet-terminal', 'AndroidManifest.xml'), 'utf8');
+  assert.match(manifest, /android\.intent\.action\.SEND_MULTIPLE/);
+  assert.match(main, /if \(!uris\.isEmpty\(\)\) \{[\s\S]*receiveSharedFiles\(uris,/);
+  assert.match(main, /"student-share-inbox"/);
+  assert.match(main, /StudentCollectionInbox\.UNASSIGNED_SHARE/);
+  assert.match(main, /assignSharedEntry\(entry\.collectionId, studentId\)/);
+  assert.match(main, /chooseSharedDestination\(ids\)/);
+  assert.match(main, /uploadMaterialsToTarget\(selected, true, target\)/);
+  assert.match(main, /shareCollectionInbox\.completeQueued\(entry\.collectionId, studentId, upload\.requestId\)/);
+  assert.match(main, /删除分享文件？/);
+  assert.match(main, /学生空间已变化，请重新选择/);
 });

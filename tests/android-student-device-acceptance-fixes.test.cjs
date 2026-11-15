@@ -24,6 +24,16 @@ test('a saved host connection is restored on cold start so a bound personal term
   assert.match(sessionUi, /updateConversationImportUi\(\)/);
 });
 
+test('transport failure and stale bootstrap responses preserve the current student session', () => {
+  const bootstrap = activity.slice(activity.indexOf('class BootstrapStudentSessionTask'), activity.indexOf('class StudentLoginTask'));
+  assert.match(bootstrap, /if \(error instanceof java\.io\.IOException\) throw error/);
+  assert.match(bootstrap, /transportFailure = error instanceof java\.io\.IOException/);
+  assert.match(bootstrap, /主机暂不可连接，学生会话和待上传资料已保留/);
+  assert.match(bootstrap, /isCurrentBootstrapSession\(existingSessionToken\)/);
+  assert.match(bootstrap, /BootstrapSessionApplyTask/);
+  assert.match(activity, /expectedToken\.equals\(dataToken\(\)\) && expectedToken\.equals\(savedToken\)/);
+});
+
 test('the back-to-top affordance stays above portrait bottom navigation', () => {
   assert.match(activity, /topParams\.setMargins\(0, 0, dp\(20\), dp\(isWideLandscape\(\) \? 20 : 88\)\)/);
 });
@@ -67,20 +77,20 @@ test('structured planning is capability gated and rendered from host sections on
   for (const section of ['pathways', 'majors', 'careers']) assert.match(planning, new RegExp(section));
 });
 
-test('Android student source and public release metadata remain aligned with the current client set', () => {
+test('Android student release matches the signed application and preserves other current releases', () => {
   const manifest = read('android-tablet-terminal/AndroidManifest.xml');
   const build = read('android-tablet-terminal/build.ps1');
   const formal = read('release/edu-manager-version.json');
-  assert.match(manifest, /android:versionCode="103"/u);
-  assert.match(manifest, /android:versionName="0\.6\.33"/u);
-  assert.match(build, /\$versionName = '0\.6\.33'/u);
+  assert.match(manifest, /android:versionCode="104"/u);
+  assert.match(manifest, /android:versionName="0\.6\.34"/u);
+  assert.match(build, /\$versionName = '0\.6\.34'/u);
   assert.match(build, /AI-edu-manager-tablet-terminal-\$versionName\.apk/u);
-  assert.match(formal, /"tabletTerminalVersionCode": 103/u);
-  assert.match(formal, /"tabletTerminalVersionName": "0\.6\.33"/u);
-  assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.33\.apk/u);
+  assert.match(formal, /"tabletTerminalVersionCode": 104/u);
+  assert.match(formal, /"tabletTerminalVersionName": "0\.6\.34"/u);
+  assert.match(formal, /AI-edu-manager-tablet-terminal-0\.6\.34\.apk/u);
   assert.match(formal, /"teacherTerminalVersionName": "0\.1\.5"/u);
-  assert.match(formal, /"windowsVersionName": "0\.23\.7"/u);
-  assert.match(formal, /"windowsTerminalVersionName": "0\.18\.9"/u);
+  assert.match(formal, /"windowsVersionName": "0\.23\.8"/u);
+  assert.match(formal, /"windowsTerminalVersionName": "0\.18\.10"/u);
   assert.match(formal, /"standaloneVersionName": "1\.3\.7"/u);
 });
 

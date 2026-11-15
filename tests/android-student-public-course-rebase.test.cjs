@@ -47,10 +47,12 @@ test('Android student dashboard candidate increments version and enforces the ex
   const build = read('android-tablet-terminal/build.ps1');
 
   const release = JSON.parse(read('release/android-student-release.json'));
-  assert.ok(manifest.includes(`android:versionCode="${release.versionCode}"`));
-  assert.ok(manifest.includes(`android:versionName="${release.versionName}"`));
-  assert.ok(source.includes(`VERSION_NAME = "${release.versionName}"`));
-  assert.ok(source.includes(`VERSION_CODE = ${release.versionCode}`));
+  assert.equal(release.versionName, '0.6.34');
+  assert.equal(release.versionCode, 104);
+  assert.ok(manifest.includes('android:versionCode="104"'));
+  assert.ok(manifest.includes('android:versionName="0.6.34"'));
+  assert.ok(source.includes('VERSION_NAME = "0.6.34"'));
+  assert.ok(source.includes('VERSION_CODE = 104'));
   assert.match(build, /42FF27472C21FD214C17A9DFB153DA0454489D4E2AD70CE823F3369118A5F1CB/);
   assert.match(build, /EDU_ANDROID_STUDENT_KEYSTORE/);
   assert.match(build, /EDU_ANDROID_STUDENT_CANDIDATE_TAG/);

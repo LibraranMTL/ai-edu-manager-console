@@ -334,10 +334,10 @@ function build() {
     builtAt: new Date().toISOString(),
     sourceControl,
     baseline: {
-      version: '0.18.8',
-      versionCode: 238,
-      candidateTag: 'windows-student-learning-cockpit-r4-20261105',
-      exeSha256: 'D9947CB3067C1259A967B7E2DBCE7825D22D89498D8630076C5B315061B549AC',
+      version: '0.18.10',
+      versionCode: 240,
+      candidateTag: '',
+      exeSha256: 'F6B9133149F65F0B56FADF5E8C1A31CF43127DC7EA006A02955D62FD0CAF56B1',
     },
     publicCourseContract: {
       manifest: 'edu-manager.public-course-manifest.v1',

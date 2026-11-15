@@ -166,6 +166,32 @@ class LocalProjectMaterialService(private val context: Context) {
         return registry.getJSONArray("materials").objects().single { it.getJSONObject("location").getString("relativePath") == target }
     }
 
+    internal fun importCollectionBytes(projectId: String, studentId: String, name: String, mime: String, bytes: ByteArray) {
+        synchronized(LOCK) { registerCollectionBytes(projectId, studentId, name, mime, bytes) }
+        ProjectDigestQueue(context).enqueueAutomatic(projectId)
+    }
+
+    private fun registerCollectionBytes(projectId: String, studentId: String, name: String, mime: String, bytes: ByteArray) {
+        val project = projects.requireExact(projectId)
+        require(studentId in project.studentIds) { "学生已不属于该项目，请核对投递目标" }
+        requireWritable(project)
+        val hash = ScopedContentPolicy.hash(bytes)
+        val store = controlStore(project)
+        val registry = readRegistry(project)
+        val previous = registry.getJSONArray("materials").objects().firstOrNull {
+            it.optString("sha256") == hash && it.optString("availability", "available") == "available"
+        }
+        if (previous == null) {
+            val directory = "${project.paths.workspacePath}/收件箱"
+            store.ensureDirectory(directory)
+            val target = "$directory/${hash.take(24)}-${LocalProjectMaterialPolicy.safeFilename(name)}"
+            if (!store.exists(target)) store.writeStreamNewSafely(target, mime) { it.write(bytes) }
+            require(fingerprint(store, target) == (hash to bytes.size.toLong())) { "项目收件副本校验失败" }
+            register(registry, "workspace", target, hash, bytes.size.toLong(), "local_import", "collection:$hash")
+            writeRegistry(project, registry)
+        }
+    }
+
     @Synchronized fun relinkMissingFromUri(projectId: String, materialId: String, sourceUri: Uri,
                                             displayName: String, mimeType: String = "application/octet-stream"): JSONObject {
         val project = projects.requireExact(projectId); requireWritable(project)

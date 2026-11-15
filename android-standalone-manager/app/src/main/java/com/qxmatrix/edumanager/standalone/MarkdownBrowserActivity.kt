@@ -2,6 +2,9 @@ package com.qxmatrix.edumanager.standalone
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -14,6 +17,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -38,8 +42,13 @@ class MarkdownBrowserActivity : Activity() {
     private var current: Document? = null
     private var currentText = ""
     private var rendered = true
+    private var documentRequest = 0
+    private var popupMode = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val mode = intent.getStringExtra(EXTRA_MODE)
+        popupMode = mode in setOf(MODE_ARCHIVE, MODE_REPORT, MODE_PROJECT)
+        if (popupMode) setTheme(android.R.style.Theme_Material_Light_Dialog)
         super.onCreate(savedInstanceState)
         val ui = UiPreferences(this); ui.applyOrientation(this); val palette = ui.palette()
         window.statusBarColor = palette.page; window.navigationBarColor = palette.page
@@ -60,9 +69,35 @@ class MarkdownBrowserActivity : Activity() {
             }
         }
         rawView = TextView(this).apply { setTextColor(Color.rgb(31, 41, 55)); textSize = 16f; setPadding(18, 18, 18, 40); setBackgroundColor(Color.WHITE); visibility = View.GONE; setTextIsSelectable(true) }
-        content.addView(webView, frameMatch()); content.addView(rawView, frameMatch()); root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        content.addView(webView, frameMatch())
+        val rawScroll = ScrollView(this).apply { visibility = View.GONE; addView(rawView, matchWrap()) }
+        content.addView(rawScroll, frameMatch())
+        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        if (mode == MODE_REPORT) {
+            val output = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            output.addView(Button(this).apply {
+                text = "复制正文"
+                setOnClickListener {
+                    if (current != null) (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                        .setPrimaryClip(ClipData.newPlainText(titleView.text, MarkdownRenderer.reportBody(currentText)))
+                }
+            }, weighted())
+            output.addView(Button(this).apply {
+                text = "打印、导出与分享"
+                setOnClickListener {
+                    if (current != null) startActivity(Intent(this@MarkdownBrowserActivity, EducationPublicationActivity::class.java)
+                        .putExtra(EducationPublicationActivity.EXTRA_STUDENT_ID, intent.getStringExtra(EXTRA_STUDENT_ID))
+                        .putExtra(EducationPublicationActivity.EXTRA_REPORT_ID, intent.getStringExtra(EXTRA_REPORT_ID)))
+                }
+            }, weighted())
+            root.addView(output, matchWrap())
+        }
         setContentView(root)
-        Thread { val result = runCatching { loadDocuments() }; runOnUiThread { result.onSuccess(::applyDocuments).onFailure { showFailure(it.message ?: "读取失败") } } }.start()
+        if (popupMode) window.setLayout((resources.displayMetrics.widthPixels * .92f).toInt(), (resources.displayMetrics.heightPixels * .86f).toInt())
+        Thread {
+            val result = runCatching { loadDocuments() }
+            runOnUiThread { if (!isFinishing && !isDestroyed) result.onSuccess(::applyDocuments).onFailure { showFailure(it.message ?: "读取失败") } }
+        }.start()
     }
 
     private fun loadDocuments(): List<Document> = when (intent.getStringExtra(EXTRA_MODE)) {
@@ -77,12 +112,14 @@ class MarkdownBrowserActivity : Activity() {
                 "概念库" -> listOf("${student.paths.summaryPath}/概念库")
                 "实体库" -> listOf("${student.paths.summaryPath}/实体库")
                 "成长模型", "学情报告" -> StudentArchiveCompatibility.archiveRoots(student, category) + StudentArchiveCompatibility.legacyArchiveRoots(student)
+                "项目贡献" -> listOf("${student.paths.summaryPath}/项目贡献", "${student.paths.summaryPath}/成长模型")
                 else -> listOf(student.paths.summaryPath)
             }
             val exact = roots.filter(String::isNotBlank).asSequence().map { root ->
                 store.listMarkdownFiles(listOf(root), maximum = 500, maximumDepth = 6).filter { file -> when (category) {
                     "成长模型" -> StudentArchiveCompatibility.isGrowthDocumentPath(file.relativePath)
                     "学情报告" -> StudentArchiveCompatibility.isReportDocumentPath(file.relativePath)
+                    "项目贡献" -> file.relativePath.contains("项目贡献")
                     else -> true
                 } }
             }.firstOrNull { it.isNotEmpty() }.orEmpty()
@@ -110,11 +147,17 @@ class MarkdownBrowserActivity : Activity() {
         }
         MODE_PROJECT -> {
             val project = ProjectRepository(this).requireExact(requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID)))
+            intent.getStringExtra(EXTRA_STUDENT_ID)?.let { require(it in project.studentIds) { "项目归属已变化" } }
+            if (intent.getBooleanExtra(EXTRA_PROJECT_REPORT_ONLY, false)) {
+                val reports = ProjectOutcomeService(this).listOutcomes(project.id).filter { it.optString("kind") == "progress_report" }
+                reports.map { Document(it.optString("title"), it.getString("path"), project.knowledgeRootUri) }
+            } else {
             val roots = if (project.paths.knowledgeRootPath.isNotBlank()) listOf(project.paths.knowledgeRootPath) else listOf(
                 project.paths.conceptPath, project.paths.entityPath, project.paths.summaryPath, project.paths.qaPath,
                 project.paths.synthesisPath, project.paths.reportPath, project.paths.contributionPath,
             )
             SafWorkspaceStore(this, Uri.parse(project.knowledgeRootUri)).listMarkdownFiles(roots).map { Document(it.name, it.relativePath, project.knowledgeRootUri) }
+            }
         }
         MODE_REPORT -> {
             val studentId = requireNotNull(intent.getStringExtra(EXTRA_STUDENT_ID)); val reportId = requireNotNull(intent.getStringExtra(EXTRA_REPORT_ID))
@@ -169,7 +212,7 @@ class MarkdownBrowserActivity : Activity() {
         pickerButton.isEnabled = value.size > 1; modeButton.isEnabled = true
         val archiveHint = if (intent.getStringExtra(EXTRA_MODE) == MODE_ARCHIVE) "，已按日期从新到旧排列" else ""
         statusView.text = if (value.size == 1) "已打开 1 份文档$archiveHint" else "共 ${value.size} 份文档$archiveHint，可点击“选择文档”切换"
-        openDocument(value.first())
+        if (intent.getStringExtra(EXTRA_MODE) == MODE_ARCHIVE) showPicker() else openDocument(value.first())
     }
 
     private fun showPicker() {
@@ -180,22 +223,39 @@ class MarkdownBrowserActivity : Activity() {
     }
 
     private fun openDocument(document: Document) {
-        val result = runCatching {
+        val request = ++documentRequest
+        current = null
+        statusView.text = "正在读取文档…"
+        Thread {
+          val result = runCatching {
             if (intent.getStringExtra(EXTRA_MODE) == MODE_PROJECT) {
                 val projectId = requireNotNull(intent.getStringExtra(EXTRA_PROJECT_ID))
+                intent.getStringExtra(EXTRA_STUDENT_ID)?.let {
+                    require(it in ProjectRepository(this).requireExact(projectId).studentIds) { "项目归属已变化" }
+                }
                 LocalProjectMaterialService(this).requireGeneratedKnowledgeCurrent(projectId, document.path)
                 ProjectOutcomeService(this).requireOutcomeSourcesCurrent(projectId, document.path)
             }
             val maximumBytes = if (intent.getStringExtra(EXTRA_MODE) in setOf(MODE_CONVERSATION, MODE_CONVERSATION_DIGEST)) MAX_CONVERSATION_BYTES else MAX_MARKDOWN_BYTES
             val text = document.content ?: SafWorkspaceStore(this, Uri.parse(document.rootUri)).readBytes(document.path).also { require(it.size <= maximumBytes) { "Markdown 文档超过浏览上限" } }.toString(Charsets.UTF_8)
             require(text.toByteArray().size <= maximumBytes) { "Markdown 文档超过浏览上限" }; text
-        }
-        result.onSuccess { current = document; currentText = it; titleView.text = document.title; updateDisplay() }
-            .onFailure { showFailure(it.message ?: "读取文档失败") }
+          }
+          runOnUiThread {
+              if (request != documentRequest || isFinishing || isDestroyed) return@runOnUiThread
+              result.onSuccess {
+                  current = document
+                  currentText = it
+                  titleView.text = document.title
+                  statusView.text = if (intent.getStringExtra(EXTRA_MODE) == MODE_REPORT) "当前有效报告" else "只读查看"
+                  updateDisplay()
+              }.onFailure { showFailure(it.message ?: "读取文档失败") }
+          }
+        }.start()
     }
 
     private fun updateDisplay() {
         rawView.text = currentText; rawView.visibility = if (rendered) View.GONE else View.VISIBLE; webView.visibility = if (rendered) View.VISIBLE else View.GONE
+        (rawView.parent as View).visibility = rawView.visibility
         modeButton.text = if (rendered) "查看原文" else "阅读模式"
         if (rendered) {
             val body = if (intent.getStringExtra(EXTRA_MODE) == MODE_REPORT) MarkdownRenderer.reportBody(currentText) else currentText
@@ -211,6 +271,7 @@ class MarkdownBrowserActivity : Activity() {
     override fun onDestroy() { if (::webView.isInitialized) { webView.stopLoading(); webView.loadUrl("about:blank"); webView.destroy() }; super.onDestroy() }
 
     companion object {
+        const val EXTRA_PROJECT_REPORT_ONLY = "project_report_only"
         const val EXTRA_MODE = "mode"; const val EXTRA_TITLE = "title"; const val EXTRA_STUDENT_ID = "student_id"; const val EXTRA_PROJECT_ID = "project_id"; const val EXTRA_REPORT_ID = "report_id"; const val EXTRA_MATERIAL_ID = "material_id"; const val EXTRA_CONVERSATION_ID = "conversation_id"; const val EXTRA_ARCHIVE_CATEGORY = "archive_category"
         const val MODE_ARCHIVE = "archive"; const val MODE_PROJECT = "project"; const val MODE_REPORT = "report"; const val MODE_OCR = "ocr"; const val MODE_MATERIAL_DIGEST = "material_digest"; const val MODE_CONVERSATION = "conversation"; const val MODE_CONVERSATION_DIGEST = "conversation_digest"
         private const val MAX_MARKDOWN_BYTES = 2 * 1024 * 1024

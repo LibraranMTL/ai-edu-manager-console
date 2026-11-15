@@ -678,7 +678,7 @@ function reconcilePersonalAgentCapture(config = readConfig()) {
     warnings: result.warnings,
     message: result.warnings.length
       ? `部分 Agent 暂未接入：${result.warnings.join('；')}`
-      : '此个人终端已接入受支持 Agent；已有会话从授权后的下一条提问开始采集。',
+      : '已写入受支持 Agent 的接入配置；Codex 需在客户端信任 Hook，请用新会话确认实际送达。',
   });
   return result;
 }

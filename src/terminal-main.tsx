@@ -2151,12 +2151,12 @@ function TerminalApp() {
             <div>
               <h3 id="agent-capture-title">会话自动采集</h3>
               <p>{config.terminalMode === 'personal'
-                ? '一次授权后，只采集本机受支持 Agent 的后续用户对话并归入当前绑定学生；不扫描授权前历史、系统提示、密钥或其他学生内容。已打开的 Codex 会话在 Hook 已生效时，从下一条提问开始采集。'
+                ? '授权后，本 Windows 用户账户中受支持 Agent 的后续会话将尝试归入当前绑定学生。仅在该学生专用的 Windows 与 Agent 账号中使用；混用账号可能将其他学生任务错误归属。不会回读授权前历史或主动读取系统提示、工具密钥；用户发送的内容会随会话采集。Codex Hook 还需在 Codex 中审查并信任。'
                 : '共享终端不支持自动会话采集，避免不同学生之间混入会话。'}</p>
               <small>{config.terminalMode === 'personal'
                 ? (agentCapture.enabled
-                    ? `${agentCapture.connectedCount}/${agentCapture.installedCount} 个已安装 Agent 已接入${agentCapture.pending ? ` · ${agentCapture.pending} 条待补交` : ''}`
-                    : (agentCapture.installedCount ? `已检测到 ${agentCapture.installedCount} 个受支持 Agent · 授权后接入` : '暂未检测到已安装的受支持 Agent'))
+                    ? `${agentCapture.connectedCount}/${agentCapture.installedCount} 个已安装 Agent 已写入接入配置 · 实际触发需验收${agentCapture.pending ? ` · ${agentCapture.pending} 条待补交` : ''}`
+                    : (agentCapture.installedCount ? `已检测到 ${agentCapture.installedCount} 个受支持 Agent · 授权后写入接入配置` : '暂未检测到已安装的受支持 Agent'))
                 : '请切换到个人终端并完成固定绑定后使用。'}</small>
               {agentCapture.warnings.length ? <small className="student-agent-capture-warning">{agentCapture.warnings[0]}</small> : null}
             </div>

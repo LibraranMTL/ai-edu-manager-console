@@ -14,7 +14,7 @@ test('manual imported success cannot be published before durable storage', async
   let release,published=false;
   const task={id:'t',status:'running',executionId:'e'};
   const accept=load('acceptImportedTaskResult',{readTaskStore:()=>({tasks:[task]}),
-    validateExternalTaskResultIdentity:()=>({ok:true}),validateTaskCompletion:()=>({valid:true}),
+    validateExternalTaskResultIdentity:()=>({ok:true}),validateImportedTaskCompletion:async()=>({valid:true}),
     normalizeTaskResult:(_t,p)=>p,commitValidatedTaskResult:()=>({ok:true,task:{...task,status:'succeeded'}}),
     writeTaskStoreDurably:()=>new Promise((_r,reject)=>release=reject),
     publishCompletedRemoteCollaborationTask:()=>{published=true;},isDigestTask:()=>false});
@@ -48,7 +48,7 @@ test('receipt is committed before archive, archive path before inbox removal; fa
     const consume=load('consumeAgentTaskResults',{
       crypto, agentTaskChannel:()=>({}),taskCenterDirPath:()=>'/synthetic',readTaskStore:()=>structuredClone(store),
       validateExternalTaskResultIdentity:()=>({ok:true}),validateTaskChannelIdentity:()=>({ok:true}),
-      validateTaskCompletion:()=>({valid:true}),normalizeTaskResult:(_t,r)=>r,
+      validateImportedTaskCompletion:async()=>({valid:true}),normalizeTaskResult:(_t,r)=>r,
       commitValidatedTaskResult:(s,t,result)=>{commits++;Object.assign(t,{status:'succeeded',result});return {ok:true,task:t};},
       writeTaskStoreDurably:async s=>{events.push('save');if(broken)throw Error('disk full');store=structuredClone(s);},
       archiveAgentPayload:async()=>{events.push('archive');assert.equal(store.tasks[0].status,'succeeded');return '/archive/result.json';},

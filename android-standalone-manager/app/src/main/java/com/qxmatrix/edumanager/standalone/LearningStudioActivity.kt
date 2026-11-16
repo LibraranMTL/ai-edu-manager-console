@@ -123,12 +123,20 @@ class LearningStudioActivity : Activity() {
         val request = ++generation; val wantedMode = mode; val module = selectedModule(); val start = offset
         worker.execute {
             val result = runCatching { loadRows(ScopedContentRepository(this), wantedMode, module, start) }
+            val diagnostic = runCatching {
+                val db = BusinessDatabase.get(this)
+                val key = if (module in ResearchUpdatePolicy.modules) "research-update:$studentId:$module" else "reference-update:$studentId:$module"
+                if (module.isBlank()) null else db.tasks().metadata(key)?.let(::JSONObject)?.let { receipt ->
+                    if (receipt.optString("state") in setOf("queued", "failed", "waiting_receipt")) receipt.optString("message").ifBlank { "等待核对上次请求结果" } else null
+                }
+            }.getOrNull()
             runOnUiThread {
                 if (request != generation || !current()) return@runOnUiThread
                 list.removeAllViews()
                 result.onSuccess { rows ->
                     status.text = "${modeLabel(wantedMode)} · ${rows.size} 项 · 第 ${start / PAGE_SIZE + 1} 页"
                     if (rows.isEmpty()) list.addView(text(emptyMessage(wantedMode)))
+                    if (!diagnostic.isNullOrBlank()) list.addView(text("生成状态：$diagnostic"))
                     rows.forEach { row ->
                         list.addView(button(rowLabel(row)) { details(row.id) })
                     }
@@ -161,8 +169,11 @@ class LearningStudioActivity : Activity() {
     }.getOrDefault("")
 
     private fun rowLabel(row: ScopedContentEntity): String {
+        val sourceLeadOnly = row.kind == "artifact" && runCatching {
+            LearningStudioPolicy.researchIsSourceLeadOnly(JSONObject(row.payload))
+        }.getOrDefault(false)
         val kind = when (row.kind) {
-            "artifact" -> if (payloadModule(row) == "cards") "学习卡片" else "参考建议"
+            "artifact" -> if (sourceLeadOnly) "来源线索" else if (payloadModule(row) == "cards") "学习卡片" else "参考建议"
             "favorite" -> "已留存"
             "attempt" -> "学习记录"
             "review" -> "历史反馈"
@@ -173,7 +184,7 @@ class LearningStudioActivity : Activity() {
             else -> "记录"
         }
         val state = when (row.state) {
-            "candidate", "available" -> "可参考"
+            "candidate", "available" -> if (payloadModule(row) in ResearchUpdatePolicy.modules) "待核验" else "可参考"
             "pending_review", "reviewed", "recorded" -> "已记录"
             "planned" -> "待开始"
             "doing" -> "进行中"
@@ -449,6 +460,13 @@ class LearningStudioActivity : Activity() {
         val module = payload.optString("module")
         appendLine("${LearningStudioService.moduleLabels[module] ?: "参考建议"} · ${payload.optString("createdAt")}")
         appendLine("以下内容仅供参考，不替用户作决定。")
+        if (module in ResearchUpdatePolicy.modules) {
+            val grade = payload.optJSONObject("inputSnapshot")?.optJSONObject("profile")?.optString("grade").orEmpty()
+            appendLine("当前年级：${grade.ifBlank { "未填写" }}。搜索摘要仅供核对，报名资格、地区、年龄、时间及适用性须以主办方或机构最新原文为准。")
+        }
+        if (LearningStudioPolicy.researchIsSourceLeadOnly(payload)) {
+            appendLine("来源线索不足以形成完整建议；标题可能是检索页面而非具体项目，资格、日期和适用性均须查证。")
+        }
         ResearchUpdatePolicy.expiryLabel(payload).takeIf(String::isNotBlank)?.let { appendLine(it) }
         val items = payload.optJSONObject("result")?.optJSONArray("items") ?: return@buildString
         for (i in 0 until items.length()) {
@@ -462,7 +480,14 @@ class LearningStudioActivity : Activity() {
         val sources = payload.optJSONArray("sources")
         if (sources != null) for (i in 0 until sources.length()) {
             val source = sources.getJSONObject(i)
+            val snapshot = payload.optJSONObject("inputSnapshot") ?: JSONObject()
+            if (IndependentSearchPolicy.contradictsGrade(snapshot, SearchEvidence(source.optString("title"),
+                    source.optString("url"), source.optString("excerpt")))) {
+                appendLine("已隐藏明确不符合当前年级的来源；原记录保留。")
+                continue
+            }
             appendLine("${source.optString("title")}\n${source.optString("url")}\n检索时间 ${source.optString("retrievedAt")}")
+            source.optString("excerpt").takeIf { it.isNotBlank() }?.let { appendLine("检索摘要（待核验）：$it") }
         }
         if (module in setOf("competitions", "pathways", "schools")) appendLine("请以官方最新通知为准。")
     }

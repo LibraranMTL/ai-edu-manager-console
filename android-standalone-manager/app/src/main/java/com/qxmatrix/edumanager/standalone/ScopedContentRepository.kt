@@ -22,6 +22,12 @@ class ScopedContentRepository(private val context: Context,
     fun list(studentId: String, kinds: List<String>, limit: Int = 50, offset: Int = 0) = transaction(studentId) {
         dao.list(studentId, kinds, limit.coerceIn(1, 100), offset.coerceAtLeast(0))
     }
+    /** Exact-path lookup for a small, verified set of student-owned sources.  This deliberately
+     * avoids a broad text-search result being displaced by a large adopted archive. */
+    fun indexedPersonalSearchAtPaths(studentId: String, paths: List<String>) = transaction(studentId) {
+        val distinct = paths.filter(String::isNotBlank).distinct()
+        if (distinct.isEmpty()) emptyList() else dao.indexedPersonalSearchAtPaths(studentId, distinct)
+    }
     fun search(studentId: String, query: String, offset: Int = 0) = transaction(studentId) { dao.search(studentId, ScopedContentPolicy.query(query), 50, offset.coerceAtLeast(0)) }
         .filter { row -> row.projectId.isBlank() || runCatching { ContentSourceResolver(context).locate(studentId, row) }.isSuccess }
     fun filtered(studentId: String, kind: String, query: String, offset: Int = 0) = transaction(studentId) {

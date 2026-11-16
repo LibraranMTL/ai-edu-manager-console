@@ -12,8 +12,7 @@ class ModelBudget(private val context: Context) {
             val key = "model-budget:${Timestamp.now().take(7)}:$category"
             val stored = db.tasks().metadata(key)
             val used = if (stored == null) 0 else requireNotNull(stored.toIntOrNull()) { "调用额度记录损坏，停止新调用" }
-            val cap = when (category) { "research" -> 60; "vision" -> 300; "asr" -> 120; else -> 600 }
-            require(used in 0 until cap) { "本机本月${category}安全调用上限已到；已保存资料仍可读取和导出" }
+            require(used >= 0 && used < Int.MAX_VALUE) { "调用记录异常" }
             val entitlement = LicenseManager(context).status()
             require(entitlement.active) { "授权未生效或已到期；本机历史资料仍可读取导出" }
             db.tasks().metadata(BusinessMetadataEntity(key, (used + 1).toString()))
@@ -24,11 +23,11 @@ class ModelBudget(private val context: Context) {
 
 /** One selection point for all business model calls. */
 object ModelRuntime {
-    fun provider(context: Context, config: AgentConfiguration): ModelProvider = object : ModelProvider {
+    fun provider(context: Context, config: AgentConfiguration, publicResponseStructure: ((String) -> Unit)? = null): ModelProvider = object : ModelProvider {
         override fun generate(request: ModelRequest): ModelResponse {
             request.cancellation.check()
             val category = if (request.webResearch) "research" else if (request.messages.toString().contains("\"image_url\"")) "vision" else "text"
-            val provider = CompatibleModelProvider(config.endpoint, config.apiKey, receipts = RoomModelReceiptSink(context))
+            val provider = CompatibleModelProvider(config.endpoint, config.apiKey, receipts = RoomModelReceiptSink(context), publicResponseStructure = publicResponseStructure)
             val synthetic = BuildConfig.FAULT_HARNESS && context.packageName.endsWith(".faulttest") &&
                 request.model == "synthetic-fault-model" && java.net.URI(config.endpoint).host in setOf("127.0.0.1", "localhost")
             if (!synthetic) ModelBudget(context).reserve(request.studentId, category, UUID.randomUUID().toString())

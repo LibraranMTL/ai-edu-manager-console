@@ -140,14 +140,14 @@ class TaskCenterActivity : Activity() {
             val result = runCatching {
                 StudentIndexRepository(this).requireExact(studentId)
                 val db = BusinessDatabase.get(this); BusinessRestoreRecovery.recover(this, db)
-                val limits = listOf("text" to 600, "vision" to 300, "research" to 60, "asr" to 120).joinToString("\n") { (category, cap) ->
-                    "$category：${db.tasks().metadata("model-budget:${Timestamp.now().take(7)}:$category") ?: "0"} / $cap 次"
+                val limits = listOf("text", "vision", "research", "asr").joinToString("\n") { category ->
+                    "$category：${db.tasks().metadata("model-budget:${Timestamp.now().take(7)}:$category") ?: "0"} 次"
                 }
                 val reserved = db.tasks().metadata("studio-budget:$studentId:${Timestamp.now().take(10)}")?.let { JSONObject(it).optInt("reserved") } ?: 0
                 val calls = db.ledger().calls(studentId).take(50).joinToString("\n\n") { call ->
                     "${call.model} · ${TaskCenterPolicy.label(call.state)} · ${call.elapsedMs} ms\n输入 ${call.inputTokens?.toString() ?: "未知"} / 输出 ${call.outputTokens?.toString() ?: "未知"}${if (call.errorCode.isBlank()) "" else " · ${call.errorCode}"}"
                 }.ifBlank { "暂无模型回执" }
-                "$limits\n学习/规划今日预留：$reserved/${StudioBudget.DAILY_CAP}\n\n最近模型回执：\n$calls\n\n以上为本机诊断和保守安全上限，不是账单；未知用量不计为 0，也不会自动重试。"
+                "$limits\n学习/规划今日预留：$reserved 次\n\n最近模型回执：\n$calls\n\n以上为本机调用记录，不是账单；未知用量不计为 0，也不会自动重试。"
             }
             runOnUiThread { if (currentScope()) AlertDialog.Builder(this).setTitle("高级技术详情").setMessage(result.getOrElse { "读取失败，不能当作零用量" }).setPositiveButton("关闭", null).show() }
         }

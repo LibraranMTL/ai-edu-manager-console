@@ -20,6 +20,24 @@ class ModelProviderTest {
         assertFalse(ModelEndpointPolicy.isOpenAiService(endpoint))
     }
     private val schema = JSONObject("""{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}""")
+    @Test fun deferredSchemaAllowsOnlyJsonForLocalRepair() {
+        val provider = CompatibleModelProvider(endpoint, "x", ModelTransport { _, _, _, _ -> ModelHttpResponse(200, reply("{}"), "") })
+        assertThrows(IllegalArgumentException::class.java) { provider.generate(ModelRequest("qwen3.8-max", messages, jsonSchema = schema)) }
+        assertEquals("{}", provider.generate(ModelRequest("qwen3.8-max", messages, jsonSchema = schema, deferSchemaValidation = true)).text)
+    }
+    @Test fun ezvizPlanningDisablesThinkingWithoutChangingOtherCalls() {
+        val payloads = mutableListOf<JSONObject>()
+        val provider = CompatibleModelProvider("https://openai.ezviz.com/v1", "x", ModelTransport { _, _, payload, _ ->
+            payloads += JSONObject(payload.toString())
+            ModelHttpResponse(200, reply("{\"ok\":true}"), "")
+        })
+        fun studioMessages(module: String) = JSONArray().put(JSONObject().put("role", "system").put("content", "public"))
+            .put(JSONObject().put("role", "user").put("content", JSONObject().put("module", module).toString()))
+        provider.generate(ModelRequest("qwen3.8-max", studioMessages("careers"), schemaVersion = "studio-result-v1", jsonSchema = schema))
+        provider.generate(ModelRequest("qwen3.8-max", studioMessages("cards"), schemaVersion = "studio-result-v1", jsonSchema = schema))
+        assertFalse(payloads[0].getBoolean("enable_thinking"))
+        assertFalse(payloads[1].has("enable_thinking"))
+    }
     private fun reply(text: String = "OK", finish: String = "stop", sources: Boolean = false): String = JSONObject()
         .put("choices", JSONArray().put(JSONObject().put("finish_reason", finish)
             .put("message", JSONObject().put("content", text))))
@@ -109,6 +127,28 @@ class ModelProviderTest {
             ModelHttpResponse(200, reply(sources = true), "r")
         })
         assertEquals("https://example.org/source", good.generate(ModelRequest("qwen3.6-flash", messages, webResearch = true)).sources.single().url)
+    }
+    @Test fun ezvizProbeRequiresStructuredSources() {
+        val url = "https://openai.ezviz.com/v1"
+        val provider = CompatibleModelProvider(url, "x", ModelTransport { _, _, payload, _ ->
+            assertTrue(payload.getBoolean("enable_search")); assertTrue(payload.getJSONObject("search_options").getBoolean("enable_source"))
+            ModelHttpResponse(200, reply("https://example.org/no-proof"), "r")
+        })
+        assertThrows(IllegalArgumentException::class.java) { provider.generate(ModelRequest("qwen3.8-max", messages, webResearch = true)) }
+        val good = CompatibleModelProvider(url, "x", ModelTransport { _, _, _, _ -> ModelHttpResponse(200, reply(sources = true), "r") })
+        assertEquals(1, good.generate(ModelRequest("qwen3.8-max", messages, webResearch = true)).sources.size)
+    }
+    @Test fun publicResponseStructureOmitsValuesAndDoesNotObserveStudentRequests() {
+        val body = JSONObject(reply("private answer", sources = true)).put("extra", JSONObject().put("token", "secret-value")).toString()
+        var observed = ""
+        val provider = CompatibleModelProvider(endpoint, "x", ModelTransport { _, _, _, _ -> ModelHttpResponse(200, body, "r") },
+            publicResponseStructure = { observed = it })
+        provider.generate(ModelRequest("qwen", messages, webResearch = true))
+        assertTrue(observed.contains("response.search_info.search_results:array(1)"))
+        assertFalse(observed.contains("private answer")); assertFalse(observed.contains("secret-value"))
+        observed = ""
+        provider.generate(ModelRequest("qwen", messages, studentId = "student-a", webResearch = true))
+        assertEquals("", observed)
     }
     @Test fun timeoutIsUnknownAndNotRetried() {
         var calls = 0; val sink = Sink()

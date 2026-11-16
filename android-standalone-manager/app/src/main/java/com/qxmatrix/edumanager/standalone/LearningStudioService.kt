@@ -6,6 +6,18 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 object LearningStudioPolicy {
+    fun researchIsSourceLeadOnly(payload: JSONObject): Boolean {
+        val module = payload.optString("module")
+        if (module !in ResearchUpdatePolicy.modules) return false
+        val items = payload.optJSONObject("result")?.optJSONArray("items") ?: return false
+        if (items.length() == 0) return false
+        val keys = fields[module].orEmpty().filter { it != "title" }
+        return (0 until items.length()).any { index ->
+            val item = items.optJSONObject(index) ?: return@any true
+            item.optString("title").contains("待核验") ||
+                keys.all { item.optString(it).isBlank() || item.optString(it).contains("待核验") }
+        }
+    }
     fun readableAttempt(payload: JSONObject): String = buildString {
         val items = payload.optJSONObject("evidenceSnapshot")?.optJSONObject("result")?.optJSONArray("items")
         if (items != null) for (index in 0 until items.length()) {
@@ -53,7 +65,7 @@ object LearningStudioPolicy {
         val item = JSONObject().put("type", "object").put("properties", properties)
             .put("required", JSONArray(keys + "sourceIds" + if (research) listOf("fieldSources") else emptyList())).put("additionalProperties", false)
         return JSONObject().put("type", "object").put("properties", JSONObject().put("items",
-            JSONObject().put("type", "array").put("items", item).put("minItems", count).put("maxItems", count)))
+            JSONObject().put("type", "array").put("items", item).put("minItems", if (research) 1 else count).put("maxItems", count)))
             .put("required", JSONArray(listOf("items"))).put("additionalProperties", false)
     }
     fun validate(module: String, result: JSONObject, count: Int, sources: Set<String>) {
@@ -149,7 +161,8 @@ class LearningStudioService(private val context: Context, private val provider: 
         val payload = JSONObject().put("module", module).put("result", result).put("inputSnapshot", input).put("createdAt", verifiedAt)
             .put("previousVersionId", previousVersionId).put("provenance", JSONObject().put("verifiedAt", verifiedAt)
                 .put("applicabilityConditions", applicability).put("sourceIds", input.optJSONArray("sourceIds") ?: JSONArray()))
-            .put("sources", JSONArray(response.sources.map { JSONObject().put("title", it.title).put("url", it.url).put("retrievedAt", Timestamp.now()).put("verification", "source_recorded") }))
+            .put("sources", JSONArray(response.sources.map { JSONObject().put("title", it.title).put("url", it.url)
+                .put("excerpt", it.excerpt.take(2000)).put("retrievedAt", Timestamp.now()).put("verification", "search_excerpt_unverified") }))
             .put("verification", if (research) "reference_with_sources" else if (module == "cards") "model_checked_reference" else "generated_reference")
         repository.insertVersion(studentId, key, moduleLabels.getValue(module), payload)
     }

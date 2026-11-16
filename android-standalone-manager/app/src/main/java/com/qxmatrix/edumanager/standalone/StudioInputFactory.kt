@@ -17,7 +17,8 @@ class StudioInputFactory(private val context: Context, private val repository: S
             require(row.kind == "search" && row.sourceSha256.isNotBlank()) { "选择已索引的 TXT/Markdown 来源；其他文档先解析或消化" }
             val text = ContentSourceResolver(context).readText(studentId, row)
             if (recent) {
-                val report = GrowthModelService.REPORTS.singleOrNull { row.projectId.isBlank() && row.logicalPath == "${student.paths.summaryPath}/学情报告/${it.fileName}" }
+                val reportRoot = "${student.paths.summaryPath.trimEnd('/')}/学情报告"
+                val report = GrowthModelService.REPORTS.singleOrNull { row.projectId.isBlank() && row.logicalPath == "$reportRoot/${it.fileName}" }
                 require(report != null && LearningStudioPolicy.recentPublished(text)) { "近期学习入口只能使用该学生正式报告目录中的已发布报告" }
                 EducationPublicationPolicy.validatePublishedReport(studentId, report.title, text)
                 val active = GrowthModelService(context).readPublishedReport(studentId, report.id)
@@ -49,6 +50,7 @@ class StudioInputFactory(private val context: Context, private val repository: S
             .put("mode", if (recent) "published_report_practice" else "reference_suggestion")
             .put("count", count).put("strategy", "reference-suggestion-v2")
             .put("refreshPeriod", Timestamp.now().take(7))
+        if (research && ResearchServiceSelection.independent(context)) input.put("searchStrategy", "tavily-source-validation-v3")
         if (includeFeedback) {
             require(module == "cards") { "人工审核回流仅用于练习，不自动用于规划判断" }
             input.put("humanReviewObservations", StudioFeedbackPolicy.observations(repository.list(studentId, listOf("review"), 100), studentId, frozen, student.name))

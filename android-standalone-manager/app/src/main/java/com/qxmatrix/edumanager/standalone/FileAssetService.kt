@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -108,6 +109,75 @@ class FileAssetService(private val context: Context) {
     fun materials(studentId: String): List<JSONObject> {
         val student = students.requireExact(studentId)
         return StudentMaterialRepository(context, student).list()
+    }
+
+    /**
+     * Creates local index records for originals already present in an adopted student archive.
+     * The originals stay in place.  A record is created only when its logical path is not
+     * already registered, so an interrupted scan can be repeated safely.
+     */
+    fun reconcileAdoptedRawMaterials(studentId: String, maximum: Int = ADOPTED_RECONCILE_LIMIT): JSONObject = synchronized(StudentWorkLocks.forStudent(studentId)) {
+        require(maximum in 1..ADOPTED_RECONCILE_LIMIT) { "接管资料单次核对数量超出范围" }
+        val student = students.requireExact(studentId)
+        if (student.knowledgeBaseMode != "adopted") return@synchronized JSONObject()
+            .put("registered", 0).put("alreadyRegistered", 0).put("skipped", 0).put("conflicts", 0)
+            .put("message", "当前学生不是接管档案，无需恢复资料索引")
+        val store = SafWorkspaceStore(context, Uri.parse(student.storageRootUri))
+        val repository = StudentMaterialRepository(context, student)
+        val current = repository.list().associateBy { it.optString("absolutePath") }.toMutableMap()
+        val candidates = store.listFiles(student.paths.rawPath, ADOPTED_RECONCILE_SCAN_LIMIT, maximumDepth = 24)
+            .filterNot { it.relativePath.substringAfterLast('/').startsWith(".") }
+        // Do not repeatedly spend an entire batch on the first already-indexed files.
+        // This makes a large adopted archive advance deterministically over several
+        // safe runs, while never moving or rewriting an original.
+        val unindexed = candidates.filter { current[it.relativePath] == null }
+        val knownById = repository.list().associateBy { it.optString("id") }.toMutableMap()
+        var registered = 0; var alreadyRegistered = 0; var skipped = 0; var conflicts = 0
+        val failures = JSONArray()
+        alreadyRegistered = candidates.size - unindexed.size
+        unindexed.take(maximum).forEach { file ->
+            val logicalPath = file.relativePath
+            if (file.size !in 0L..MAX_FILE_BYTES) { skipped++; failures.put(JSONObject().put("path", logicalPath).put("reason", "文件超过100MB，未自动登记")); return@forEach }
+            runCatching {
+                // Archive takeover must not allocate a 100 MB ByteArray for every
+                // original.  Stream both identities so the UI and automatic worker
+                // remain usable on a large student directory.
+                val (sha256, sha1, byteCount) = store.openInputStream(logicalPath).use(::streamHashes)
+                val eventKey = ScopedContentPolicy.hash("$studentId|$logicalPath|$sha256".toByteArray())
+                val materialId = "material-adopt-$eventKey"
+                val sameId = knownById[materialId]
+                if (sameId != null) {
+                    require(sameId.optString("absolutePath") == logicalPath && sameId.optString("sourceSha256") == sha256) { "接管资料登记冲突，原件未修改" }
+                    alreadyRegistered++; return@runCatching
+                }
+                val now = Timestamp.now()
+                val material = JSONObject()
+                    .put("id", materialId).put("studentId", student.id).put("studentName", student.name)
+                    .put("fileName", logicalPath.substringAfterLast('/')).put("path", logicalPath.removePrefix("${student.paths.rawPath.trimEnd('/')}/"))
+                    .put("absolutePath", logicalPath).put("size", byteCount).put("sha1", sha1).put("uploadedAt", now)
+                    .put("sourceSha256", sha256).put("sourceEventId", eventKey).put("sourceDevice", "接管档案")
+                    .put("sourceDeviceId", "adopted-archive").put("sourcePath", logicalPath).put("sourceName", "接管资料索引恢复")
+                    .put("sourceChannel", "adopted_reindex").put("status", MaterialStatus.PENDING_DIGEST.wireValue)
+                    .put("statusUpdatedAt", now).put("digestedAt", "").put("digestBatchId", "")
+                repository.upsert(material)
+                val reference = JSONObject().put("id", materialId).put("spaceType", "student").put("spaceId", student.id)
+                    .put("spaceName", student.name).put("workspaceId", student.id).put("logicalPath", "@RAW_DIR/${material.optString("path")}")
+                    .put("role", "student_raw").put("path", logicalPath).put("source", "接管资料索引恢复").put("linkedAt", now)
+                assets.upsertBySha1(JSONObject().put("assetId", "asset-${sha1.take(16)}").put("filename", material.optString("fileName"))
+                    .put("sha1", sha1).put("size", byteCount).put("type", materialType(material.optString("fileName"))).put("path", logicalPath)
+                    .put("ownerStudentId", student.id).put("ownerStudentName", student.name).put("linkedStudents", JSONArray().put(student.id))
+                    .put("linkedProjects", JSONArray()).put("references", JSONArray().put(reference)).put("sourcePath", logicalPath)
+                    .put("sourceName", "接管资料索引恢复").put("sourceType", "adopted_local_file").put("uploadedAt", now).put("updatedAt", now).put("status", "active"))
+                IntakeRegistry(context).register(student.id, "adopted_reindex", eventKey, sha256, logicalPath, student.storageRootUri, now)
+                current[logicalPath] = material; knownById[materialId] = material; registered++
+                runCatching { AutomationEventEmitter.imported(context, student.id, material) }
+            }.onFailure { error ->
+                conflicts++; failures.put(JSONObject().put("path", logicalPath).put("reason", error.message ?: "索引登记失败"))
+            }
+        }
+        JSONObject().put("registered", registered).put("alreadyRegistered", alreadyRegistered).put("skipped", skipped)
+            .put("conflicts", conflicts).put("truncated", unindexed.size > maximum).put("failures", failures)
+            .put("message", "已原位登记 $registered 份接管原件；原件未移动或覆盖")
     }
 
     fun assets(studentId: String): List<JSONObject> {
@@ -261,22 +331,8 @@ class FileAssetService(private val context: Context) {
             ?: throw NoSuchElementException("未找到指定资料")
         val path = row.optString("absolutePath")
         require(path.startsWith("${student.paths.rawPath.trimEnd('/')}/")) { "资料路径超出学生原始资料库" }
-        val sha256 = java.security.MessageDigest.getInstance("SHA-256")
-        val sha1 = java.security.MessageDigest.getInstance("SHA-1")
-        var total = 0L
-        SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(path).use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count == 0) continue
-                total += count
-                require(total <= MAX_FILE_BYTES) { "原件超过可核验大小" }
-                sha256.update(buffer, 0, count); sha1.update(buffer, 0, count)
-            }
-        }
-        fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
-        return hex(sha256.digest()) to hex(sha1.digest())
+        val (sha256, sha1) = SafWorkspaceStore(context, Uri.parse(student.storageRootUri)).openInputStream(path).use(::streamHashes)
+        return sha256 to sha1
     }
 
     fun transitionMaterial(studentId: String, materialId: String, next: MaterialStatus): JSONObject {
@@ -336,9 +392,33 @@ class FileAssetService(private val context: Context) {
     private fun digest(algorithm: String, bytes: ByteArray): String = MessageDigest.getInstance(algorithm)
         .digest(bytes).joinToString("") { "%02x".format(it) }
 
+    private fun streamHashes(input: InputStream): Triple<String, String, Long> {
+        val sha256 = MessageDigest.getInstance("SHA-256")
+        val sha1 = MessageDigest.getInstance("SHA-1")
+        var total = 0L
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count == 0) continue
+            total += count
+            require(total <= MAX_FILE_BYTES) { "原件超过可核验大小" }
+            sha256.update(buffer, 0, count); sha1.update(buffer, 0, count)
+        }
+        fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+        return Triple(hex(sha256.digest()), hex(sha1.digest()), total)
+    }
+
     private data class SourceMetadata(val name: String, val size: Long)
 
     private fun child(root: String, path: String) = if (root.isBlank()) path else "$root/$path"
 
-    companion object { private const val MAX_FILE_BYTES = 100L * 1024 * 1024 }
+    companion object {
+        private const val MAX_FILE_BYTES = 100L * 1024 * 1024
+        private const val ADOPTED_RECONCILE_LIMIT = 120
+        // Metadata-only scan bound.  Content is still streamed for at most the
+        // caller's 120 newly discovered files, so a large directory cannot
+        // exhaust memory while subsequent runs make forward progress.
+        private const val ADOPTED_RECONCILE_SCAN_LIMIT = 5_000
+    }
 }

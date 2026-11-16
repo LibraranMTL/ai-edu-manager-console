@@ -36,10 +36,31 @@ class ReportScheduleStore(private val context: Context) {
         StudentIndexRepository(context).requireExact(studentId)
         require(cadence in CADENCES && mode in setOf("off", "reminder", "auto"))
         prefs.edit().putString(key(studentId, cadence), mode).apply()
+        scheduleWork(studentId, cadence, mode)
+    }
+
+    /** Reuses the global digest safety switches and constraints; report cadence remains per student. */
+    fun refreshAutoSchedules() {
+        val digest = AutoDigestSettingsStore(context).load()
+        val ready = digest.enabled && AutomationMode.from(digest.automationMode) == AutomationMode.FULL
+        StudentIndexRepository(context).list().forEach { student ->
+            CADENCES.filter { prefs.getString(key(student.id, it), "reminder") == "auto" }.forEach { cadence ->
+                if (ready) scheduleWork(student.id, cadence, "auto")
+                else WorkManager.getInstance(context).cancelUniqueWork(workName(student.id, cadence))
+            }
+        }
+    }
+
+    private fun scheduleWork(studentId: String, cadence: String, mode: String) {
         val manager = WorkManager.getInstance(context)
         if (mode == "off") { manager.cancelUniqueWork(workName(studentId, cadence)); return }
-        val constraints = if (mode == "auto") BackgroundWorkPolicy.unmeteredChargingConstraints
-            else Constraints.NONE
+        if (mode == "auto") {
+            val digest = AutoDigestSettingsStore(context).load()
+            if (!digest.enabled || AutomationMode.from(digest.automationMode) != AutomationMode.FULL) {
+                manager.cancelUniqueWork(workName(studentId, cadence)); return
+            }
+        }
+        val constraints = if (mode == "auto") AutoDigestSettingsStore.workConstraints(AutoDigestSettingsStore(context).load()) else Constraints.NONE
         val request = PeriodicWorkRequestBuilder<ReportScheduleWorker>(days(cadence), TimeUnit.DAYS)
             .setInputData(workDataOf("studentId" to studentId, "cadence" to cadence, "mode" to mode))
             .setConstraints(constraints).build()
@@ -84,6 +105,11 @@ class ReportScheduleWorker(context: Context, parameters: WorkerParameters) : Wor
         return runCatching {
             StudentIndexRepository(applicationContext).requireExact(studentId)
             if (expectedMode == "auto") {
+                val digestSettings = AutoDigestSettingsStore(applicationContext).load()
+                if (!digestSettings.enabled || AutomationMode.from(digestSettings.automationMode) != AutomationMode.FULL) {
+                    store.record(studentId, cadence, "自动生成已暂停：请先在“自动消化资料”中开启自动消化并选择完整自动模式")
+                    return Result.success()
+                }
                 if (store.autoOutcomeUnknown(studentId, cadence)) {
                     store.record(studentId, cadence, "上次自动生成结果未知；请先在任务中心和报告历史核对，未重复调用模型")
                     return Result.success()

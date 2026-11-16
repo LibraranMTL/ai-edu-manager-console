@@ -20,7 +20,7 @@ class StudioBudget(private val context: Context) {
             val key = "studio-budget:$studentId:${Timestamp.now().take(10)}"
             val previous = db.tasks().metadata(key)?.let(::JSONObject) ?: JSONObject().put("reserved", 0)
             val used = previous.getInt("reserved")
-            require(used >= 0 && used + calls <= DAILY_CAP) { "今日自动更新额度已用完，系统将在下次检查时继续" }
+            require(used >= 0) { "调用记录异常" }
             db.tasks().metadata(BusinessMetadataEntity(key, previous.put("reserved", used + calls).toString()))
         }
     }
@@ -55,13 +55,17 @@ class StudioAutomation(private val context: Context) {
         val repository = ScopedContentRepository(context)
         val outcomes = mutableListOf<String>()
 
-        val indexed = runCatching { StudentContentIndexer(context).rebuild(studentId) }.getOrNull()
+        // A failed scan of an unrelated adopted raw directory must not hide a current, already
+        // indexed report mirror.  The exact source rows below remain individually revalidated
+        // before the model call.
+        runCatching { StudentContentIndexer(context).rebuild(studentId) }
         val student = StudentIndexRepository(context).requireExact(studentId)
-        val reportRows = if (indexed?.complete == true) repository.search(studentId, "published_at:").filter { row ->
-            row.kind == "search" && row.projectId.isBlank() &&
-                row.logicalPath.startsWith("${student.paths.summaryPath.trimEnd('/')}/") &&
-                LearningStudioPolicy.recentPublished(row.bodyText)
-        }.take(2) else emptyList()
+        val reportRoot = "${student.paths.summaryPath.trimEnd('/')}/学情报告"
+        val reportPaths = GrowthModelService.REPORTS.map { "$reportRoot/${it.fileName}" }
+        val reportRows = repository.indexedPersonalSearchAtPaths(studentId, reportPaths)
+            .filter { LearningStudioPolicy.recentPublished(it.bodyText) }
+            .sortedBy { row -> reportPaths.indexOf(row.logicalPath) }
+            .take(2)
 
         if (reportRows.isEmpty()) outcomes += "学习卡片等待学情报告整理完成"
         else outcomes += refreshModule(studentId, "cards", reportRows.map { it.id },
@@ -103,8 +107,8 @@ class StudioAutomation(private val context: Context) {
             val possibleResult = db.ledger().hasPossibleResult(studentId, "studio:$fingerprint")
             val state = if (possibleResult) "waiting_receipt" else "queued"
             db.tasks().metadata(BusinessMetadataEntity(receiptKey, started.put("state", state)
-                .put("message", "等待系统自动更新").put("updatedAt", Timestamp.now()).toString()))
-            "${LearningStudioService.moduleLabels.getValue(module)}等待自动更新"
+                .put("message", error.message ?: "生成未完成").put("updatedAt", Timestamp.now()).toString()))
+            "${LearningStudioService.moduleLabels.getValue(module)}：${error.message ?: "生成未完成"}"
         }
     }
 
@@ -148,13 +152,13 @@ class StudioAutomationWorker(context: Context, parameters: WorkerParameters) : W
             db.tasks().metadata(BusinessMetadataEntity("studio-auto-result:${student.id}", JSONObject()
                 .put("checkedAt", Timestamp.now())
                 .put("state", if (local.isSuccess) "succeeded" else "queued")
-                .put("message", local.getOrElse { "等待自动更新" }).toString()))
+                .put("message", local.getOrElse { it.message ?: "更新未完成" }).toString()))
 
             val research = runCatching { ResearchUpdateService(applicationContext).check(student.id) }
             db.tasks().metadata(BusinessMetadataEntity("research-update-result:${student.id}", JSONObject()
                 .put("checkedAt", Timestamp.now())
                 .put("state", if (research.isSuccess) "succeeded" else "queued")
-                .put("message", research.getOrElse { "等待自动更新" }).toString()))
+                .put("message", research.getOrElse { it.message ?: "更新未完成" }).toString()))
         }
         return Result.success()
     }

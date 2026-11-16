@@ -43,8 +43,8 @@ android {
         applicationId = "com.qxmatrix.edumanager.standalone"
         minSdk = 23
         targetSdk = 34
-        versionCode = 41
-        versionName = "1.3.7"
+        versionCode = 42
+        versionName = "1.3.8"
 
         // Candidate/device builds must bind to their explicit public-content environment.
         // Production remains the default; secrets and runtime student data are never embedded here.

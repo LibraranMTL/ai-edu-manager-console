@@ -76,6 +76,47 @@ class StudentIndexRepository(context: Context) {
         return updated
     }
 
+    /**
+     * Updates only the human-maintained basics of an existing student archive.
+     *
+     * In particular, this deliberately does not re-create paths or identifiers: adopted
+     * archives may contain years of materials whose folder names pre-date a corrected
+     * display name.  Changing a grade must therefore never move materials, rebind a
+     * project, or create a second student identity.
+     */
+    fun updateBasicProfile(
+        studentId: String,
+        name: String,
+        grade: String,
+        school: String,
+        goal: String,
+    ): StudentRecord = index.mutate { current ->
+        val target = current.singleOrNull { it.id == studentId } ?: error("未找到指定学生")
+        val cleanName = StudentNamePolicy.sanitize(name)
+        require(current.none { it.id != studentId && it.name == cleanName }) { "同名学生档案已存在" }
+
+        val original = target.toJson()
+        val history = original.optJSONArray("basicProfileHistory") ?: org.json.JSONArray()
+        history.put(org.json.JSONObject().apply {
+            put("savedAt", Timestamp.now())
+            put("previous", org.json.JSONObject().apply {
+                put("name", target.name)
+                put("grade", target.grade)
+                put("school", target.school)
+                put("goal", target.goal)
+            })
+        })
+        original.put("basicProfileHistory", history)
+        val next = target.copy(
+            name = cleanName,
+            grade = grade.trim(),
+            school = school.trim(),
+            goal = goal.trim(),
+            preservedFields = original.toString(),
+        )
+        current.map { if (it.id == studentId) next else it } to next
+    }
+
     companion object {
         private const val INDEX_PATH = "students.json"
     }

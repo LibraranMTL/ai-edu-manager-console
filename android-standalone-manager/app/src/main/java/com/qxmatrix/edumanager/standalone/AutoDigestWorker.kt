@@ -43,6 +43,7 @@ class AutoDigestSettingsStore(private val context: Context) {
             .putBoolean("charging_only", value.chargingOnly).putInt("maximum", value.maximumPerStudent)
             .putString("automation_mode", AutomationMode.from(value.automationMode).wireValue).apply()
         schedule(context, value)
+        ReportScheduleStore(context).refreshAutoSchedules()
     }
 
     fun summary(): String {
@@ -73,14 +74,16 @@ class AutoDigestSettingsStore(private val context: Context) {
                 set(Calendar.HOUR_OF_DAY, value.hour); set(Calendar.MINUTE, value.minute); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
                 if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
             }
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(if (value.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
-                .setRequiresCharging(value.chargingOnly).setRequiresBatteryNotLow(true).setRequiresStorageNotLow(true).build()
+            val constraints = workConstraints(value)
             val request = PeriodicWorkRequestBuilder<AutoDigestWorker>(24, TimeUnit.HOURS)
                 .setInitialDelay((next.timeInMillis - now.timeInMillis).coerceAtLeast(1_000L), TimeUnit.MILLISECONDS)
                 .setConstraints(constraints).build()
             manager.enqueueUniquePeriodicWork(UNIQUE_WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
         }
+
+        fun workConstraints(value: AutoDigestSettings): Constraints = Constraints.Builder()
+            .setRequiredNetworkType(if (value.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+            .setRequiresCharging(value.chargingOnly).setRequiresBatteryNotLow(true).setRequiresStorageNotLow(true).build()
     }
 }
 

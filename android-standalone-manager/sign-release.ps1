@@ -61,15 +61,42 @@ foreach ($tool in @($apksigner, $aapt, (Join-Path $jdkHome 'bin\java.exe'))) {
 $previousJavaHome = $env:JAVA_HOME
 $previousPath = $env:PATH
 $verificationRoot = $null
+$verificationDrive = $null
+function Get-Sha256Hex {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $stream = [IO.File]::OpenRead($Path)
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '')
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
 try {
-  $env:JAVA_HOME = $jdkHome
-  $env:PATH = "$(Join-Path $jdkHome 'bin');$env:PATH"
+  # Android build tools on this host cannot reliably reopen APKs from a long
+  # Unicode worktree path. Keep the complete post-build verification on a
+  # dedicated ASCII drive, not only the Gradle build itself.
+  $verificationDrive = @('T:', 'U:', 'V:', 'W:', 'X:') |
+    Where-Object { -not (Test-Path -LiteralPath "$_\\") } |
+    Select-Object -First 1
+  if (-not $verificationDrive) { throw 'No free drive letter is available for Unicode-safe Android release verification.' }
+  & subst $verificationDrive $repositoryRoot
+  if ($LASTEXITCODE -ne 0) { throw "Unable to map $verificationDrive for Android release verification." }
+  $mappedRepositoryRoot = "$verificationDrive\\"
+  $mappedProjectRoot = Join-Path $mappedRepositoryRoot 'android-standalone-manager'
+  $mappedJdkHome = Join-Path $mappedRepositoryRoot '.android-tools\jdk\jdk-21.0.11+10'
+  $mappedBuildTools = Join-Path $mappedRepositoryRoot '.android-tools\sdk\build-tools\34.0.0'
+  $mappedApkSigner = Join-Path $mappedBuildTools 'apksigner.bat'
+  $mappedAapt = Join-Path $mappedBuildTools 'aapt.exe'
+  $env:JAVA_HOME = $mappedJdkHome
+  $env:PATH = "$(Join-Path $mappedJdkHome 'bin');$env:PATH"
 
   & (Join-Path $projectRoot 'build.ps1') assembleRelease
   if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITCODE" }
 
-  $builtApk = Join-Path $projectRoot 'app\build\outputs\apk\release\app-release.apk'
-  $unsignedApk = Join-Path $projectRoot 'app\build\outputs\apk\release\app-release-unsigned.apk'
+  $builtApk = Join-Path $mappedProjectRoot 'app\build\outputs\apk\release\app-release.apk'
+  $unsignedApk = Join-Path $mappedProjectRoot 'app\build\outputs\apk\release\app-release-unsigned.apk'
   if (-not (Test-Path -LiteralPath $builtApk -PathType Leaf) -or (Test-Path -LiteralPath $unsignedApk -PathType Leaf)) {
     throw 'A unique signed app-release.apk was not produced; unsigned candidates are rejected.'
   }
@@ -79,7 +106,7 @@ try {
   $verificationApk = Join-Path $verificationRoot 'app-release.apk'
   Copy-Item -LiteralPath $builtApk -Destination $verificationApk
 
-  $signatureOutput = (& $apksigner verify --verbose --print-certs --print-certs-pem $verificationApk 2>&1 | Out-String)
+  $signatureOutput = (& $mappedApkSigner verify --verbose --print-certs --print-certs-pem $verificationApk 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0 -or $signatureOutput -notmatch 'Verifies' -or $signatureOutput -notmatch 'Verified using v1 scheme \(JAR signing\): true' -or $signatureOutput -notmatch 'Verified using v2 scheme \(APK Signature Scheme v2\): true') {
     throw 'APK signature verification failed or APK Signature Scheme v2 is not enabled.'
   }
@@ -120,7 +147,7 @@ try {
     }
   }
 
-  $badging = (& $aapt dump badging $verificationApk 2>&1 | Out-String)
+  $badging = (& $mappedAapt dump badging $verificationApk 2>&1 | Out-String)
   if ($LASTEXITCODE -ne 0) { throw 'Unable to read Release APK package metadata.' }
   $packageMatch = [regex]::Match($badging, "package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'")
   if (-not $packageMatch.Success) { throw 'Release APK package metadata format is not recognized.' }
@@ -149,55 +176,52 @@ try {
   $finalPath = Join-Path $deliveryRoot $finalName
   $stagedPath = Join-Path $deliveryRoot "$finalName.new"
   Copy-Item -LiteralPath $verificationApk -Destination $stagedPath -Force
-  $verifiedSha256 = (Get-FileHash -LiteralPath $verificationApk -Algorithm SHA256).Hash
-  if ((Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256).Hash -ne $verifiedSha256) {
+  $verifiedSha256 = Get-Sha256Hex $verificationApk
+  if ((Get-Sha256Hex $stagedPath) -ne $verifiedSha256) {
     throw 'The staged delivery APK does not match the verified APK.'
   }
   if (Test-Path -LiteralPath $finalPath) {
     throw "正式发布目标已存在，请先提升版本号，避免覆盖既有正式安装包：$finalPath"
   }
-  # A same-directory rename and File.Copy have both failed intermittently on
-  # long Unicode candidate paths. Stream the already-verified staged artifact
-  # into a CreateNew destination, flush it to disk, verify it again, and only
-  # then remove the staging file. A partial destination is removed on failure;
-  # the verified .new file remains available for diagnosis and retry.
-  $sourceStream = $null
-  $destinationStream = $null
-  try {
-    $sourceStream = [IO.FileStream]::new(
-      $stagedPath,
-      [IO.FileMode]::Open,
-      [IO.FileAccess]::Read,
-      [IO.FileShare]::Read
-    )
-    $destinationStream = [IO.FileStream]::new(
-      $finalPath,
-      [IO.FileMode]::CreateNew,
-      [IO.FileAccess]::Write,
-      [IO.FileShare]::None
-    )
-    $sourceStream.CopyTo($destinationStream)
-    $destinationStream.Flush($true)
-  } catch {
-    if ($null -ne $destinationStream) {
-      $destinationStream.Dispose()
-      $destinationStream = $null
+  # Keep the verified staging file until the candidate copy has been reopened
+  # and rehashed.  FileStream.CopyTo was intermittently blocked by this host's
+  # endpoint protection after a release build; Copy-Item completes the same
+  # same-directory promotion without reopening the long worktree path.
+  # Endpoint protection can briefly hold the just-created .new APK while it
+  # scans it.  Retrying only this same-directory, hash-verified promotion is
+  # safe: the final destination was proved absent above and is never replaced
+  # with different content.
+  $promotionComplete = $false
+  $promotionError = $null
+  foreach ($attempt in 1..5) {
+    try {
+      if (Test-Path -LiteralPath $finalPath) {
+        if ((Get-Sha256Hex $finalPath) -ne $verifiedSha256) {
+          throw 'A different APK unexpectedly appeared at the final delivery path.'
+        }
+      } else {
+        Copy-Item -LiteralPath $stagedPath -Destination $finalPath -ErrorAction Stop
+      }
+      if ((Get-Sha256Hex $finalPath) -ne $verifiedSha256) {
+        throw 'The promoted APK hash does not match the verified staging file.'
+      }
+      $promotionComplete = $true
+      break
+    } catch {
+      $promotionError = $_
+      if ($attempt -lt 5) { Start-Sleep -Milliseconds (250 * $attempt) }
     }
-    if (Test-Path -LiteralPath $finalPath -PathType Leaf) {
-      [IO.File]::Delete($finalPath)
-    }
-    throw "Unable to promote the verified staged APK: $($_.Exception.Message)"
-  } finally {
-    if ($null -ne $destinationStream) { $destinationStream.Dispose() }
-    if ($null -ne $sourceStream) { $sourceStream.Dispose() }
   }
-  if ((Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash -ne $verifiedSha256) {
+  if (-not $promotionComplete) {
+    throw "Unable to promote the verified staged APK after 5 attempts: $($promotionError.Exception.Message)"
+  }
+  if ((Get-Sha256Hex $finalPath) -ne $verifiedSha256) {
     throw 'The final delivery APK does not match the verified staged APK.'
   }
   [IO.File]::Delete($stagedPath)
 
   $artifact = Get-Item -LiteralPath $finalPath
-  $artifactSha256 = (Get-FileHash -LiteralPath $finalPath -Algorithm SHA256).Hash
+  $artifactSha256 = Get-Sha256Hex $finalPath
   $metadata = [ordered]@{
     schema = 'edu-manager.android-release.v1'
     packageName = $packageName
@@ -235,6 +259,7 @@ try {
   if ($null -ne $verificationRoot -and (Test-Path -LiteralPath $verificationRoot)) {
     [IO.Directory]::Delete($verificationRoot, $true)
   }
+  if ($null -ne $verificationDrive) { & subst $verificationDrive /D | Out-Null }
   $env:JAVA_HOME = $previousJavaHome
   $env:PATH = $previousPath
 }

@@ -479,6 +479,10 @@ class StudentDigestOrchestrator(private val context: Context) {
                 sourceUri = "edu://student/${student.id}/raw/${material.getString("id")}",
                 content = content,
                 confidence = candidate.optString("confidence", "unknown"),
+                projectId = material.optString("projectId").takeIf { projectId ->
+                    projectId.isNotBlank() && !MaterialProcessingPolicy.attributionConflict(material) &&
+                        ProjectRepository(context).list().any { it.id == projectId && student.id in it.studentIds }
+                }.orEmpty(),
                 generatedBy = "local-agent-student-digest",
             )
         }

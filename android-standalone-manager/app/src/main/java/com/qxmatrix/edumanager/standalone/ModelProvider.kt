@@ -18,6 +18,8 @@ object ModelEndpointPolicy {
         return host == "dashscope.aliyuncs.com" || host == "dashscope-intl.aliyuncs.com" ||
             host.endsWith(".maas.aliyuncs.com")
     }
+    fun supportsResearchProbe(endpoint: String): Boolean = isBailian(endpoint) ||
+        URI(normalize(endpoint)).host.equals("openai.ezviz.com", ignoreCase = true)
     fun isOpenAiService(endpoint: String): Boolean {
         val host = URI(normalize(endpoint)).host.lowercase()
         return host == "openai.com" || host.endsWith(".openai.com") ||
@@ -43,9 +45,10 @@ data class ModelRequest(
     val cancellation: ModelCancellation = ModelCancellation(),
     val maxOutputTokens: Int = 4096,
     val commitValidatedResponse: ((String) -> Unit)? = null,
+    val deferSchemaValidation: Boolean = false,
 )
 data class ModelUsage(val inputTokens: Long?, val outputTokens: Long?, val totalTokens: Long?)
-data class ResearchSource(val title: String, val url: String)
+data class ResearchSource(val title: String, val url: String, val excerpt: String = "")
 data class ModelResponse(val text: String, val requestId: String, val usage: ModelUsage, val sources: List<ResearchSource>)
 data class ModelCallReceipt(
     val callId: String, val studentId: String, val taskId: String, val provider: String, val model: String,
@@ -82,6 +85,7 @@ class CompatibleModelProvider(
     private val endpoint: String, private val apiKey: String,
     private val transport: ModelTransport = UrlConnectionModelTransport(),
     private val receipts: ModelReceiptSink? = null,
+    private val publicResponseStructure: ((String) -> Unit)? = null,
 ) : ModelProvider {
     override fun generate(request: ModelRequest): ModelResponse {
         val normalized = ModelEndpointPolicy.normalize(endpoint)
@@ -89,11 +93,20 @@ class CompatibleModelProvider(
         require(request.model.isNotBlank() && apiKey.isNotBlank()) { "模型和凭据尚未配置" }
         require(request.maxOutputTokens in 1..16384) { "输出额度无效" }
         val bailian = ModelEndpointPolicy.isBailian(normalized)
-        require(!request.webResearch || bailian) { "此供应商未接入真实搜索来源合同" }
+        require(!request.webResearch || ModelEndpointPolicy.supportsResearchProbe(normalized)) { "此供应商未接入真实搜索来源合同" }
         val payload = JSONObject().put("model", request.model).put("temperature", 0.2)
             .put("messages", request.messages).put("max_tokens", request.maxOutputTokens).put("stream", false)
         // A non-streaming, non-thinking baseline is explicit for Qwen hybrid-thinking models.
         if (bailian && (request.model.startsWith("qwen3") || request.jsonSchema != null)) payload.put("enable_thinking", false)
+        // The EZVIZ gateway accepts the Qwen 3.8 non-thinking option; keep it scoped to
+        // structured planning calls so long reasoning does not regularly exceed the timeout.
+        val studioModule = if (request.schemaVersion == "studio-result-v1") runCatching {
+            JSONObject(request.messages.getJSONObject(1).getString("content")).optString("module")
+        }.getOrDefault("") else ""
+        if (URI(normalized).host.equals("openai.ezviz.com", ignoreCase = true) &&
+            request.model.lowercase().startsWith("qwen3.8") && studioModule in ResearchUpdatePolicy.modules) {
+            payload.put("enable_thinking", false)
+        }
         request.jsonSchema?.let { schema ->
             ModelJsonSchema.validateDefinition(schema)
             require(schema.getString("type") == "object") { "结构化结果根节点须为对象" }
@@ -102,8 +115,14 @@ class CompatibleModelProvider(
             messages.put(JSONObject().put("role", "user").put("content", "只返回符合以下结构的 JSON，不要 Markdown：$schema"))
             payload.put("messages", messages)
         }
-        if (request.webResearch) payload.put("enable_search", true).put("search_options",
-            JSONObject().put("enable_source", true).put("forced_search", true))
+        if (request.webResearch) {
+            payload.put("enable_search", true)
+            // Request structured provenance explicitly.  The gateway may reject or strip
+            // provider-specific options; in either case the source gate below remains closed.
+            if (bailian || URI(normalized).host.equals("openai.ezviz.com", ignoreCase = true)) {
+                payload.put("search_options", JSONObject().put("enable_source", true).put("forced_search", true))
+            }
+        }
         val started = System.currentTimeMillis(); val clock = System.nanoTime()
         val host = URI(normalized).host
         val region = when {
@@ -126,6 +145,9 @@ class CompatibleModelProvider(
             receipt = receipt.copy(requestId = safeId(http.requestId))
             require(http.status in 200..299) { "模型服务返回 HTTP ${http.status}，请查看任务诊断；未自动重试。" }
             val json = JSONObject(http.body)
+            if (request.webResearch && request.studentId.isBlank()) {
+                publicResponseStructure?.invoke(PublicSearchResponseStructure.describe(json))
+            }
             val usage = json.optJSONObject("usage")
             fun count(key: String): Long? = usage?.opt(key)?.let { value ->
                 if (value is Number && value.toLong() >= 0) value.toLong() else null
@@ -135,7 +157,7 @@ class CompatibleModelProvider(
             require(choice.optString("finish_reason") !in setOf("length", "content_filter", "tool_calls")) { "模型输出未完整结束，不能采用部分结果" }
             val content = choice.getJSONObject("message").getString("content")
             require(content.isNotBlank()) { "模型没有返回可用内容" }
-            request.jsonSchema?.let { ModelJsonSchema.validate(JSONObject(content), it) }
+            request.jsonSchema?.let { if (request.deferSchemaValidation) JSONObject(content) else ModelJsonSchema.validate(JSONObject(content), it) }
             val sources = mutableListOf<ResearchSource>()
             val search = json.optJSONObject("search_info")?.optJSONArray("search_results")
             if (search != null) for (index in 0 until search.length()) {
@@ -166,6 +188,34 @@ class CompatibleModelProvider(
         }
     }
     private fun safeId(value: String) = value.filter { it.isLetterOrDigit() || it in "-_." }.take(128)
+}
+
+/** Only field names, container types and array lengths from an explicit public test. */
+object PublicSearchResponseStructure {
+    fun describe(root: JSONObject): String {
+        val lines = mutableListOf<String>()
+        val permittedName = Regex("^[A-Za-z_][A-Za-z_0-9]{0,39}$")
+        fun visit(value: Any?, path: String, depth: Int) {
+            if (depth > 5 || lines.size >= 80) return
+            when (value) {
+                is JSONObject -> {
+                    lines += "$path:object"
+                    value.keys().asSequence().filter { permittedName.matches(it) }.sorted().take(25).forEach { key ->
+                        if (key != "content" && key != "reasoning_content") visit(value.opt(key), "$path.$key", depth + 1)
+                        else lines += "$path.$key:content-omitted"
+                    }
+                }
+                is JSONArray -> {
+                    lines += "$path:array(${value.length()})"
+                    if (value.length() > 0) visit(value.opt(0), "$path[]", depth + 1)
+                }
+                null, JSONObject.NULL -> lines += "$path:null"
+                else -> lines += "$path:${if (value is String) "string" else if (value is Number) "number" else if (value is Boolean) "boolean" else "other"}"
+            }
+        }
+        visit(root, "response", 0)
+        return lines.take(80).joinToString("\n")
+    }
 }
 
 /** Deliberately bounded schema subset. Unsupported constraints fail before calling the model. */

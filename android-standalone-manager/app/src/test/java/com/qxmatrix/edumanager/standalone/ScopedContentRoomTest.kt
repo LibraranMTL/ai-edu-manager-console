@@ -103,6 +103,17 @@ class ScopedContentRoomTest {
         repo.replaceSearch("a", emptyList(), true)
         assertTrue(repo.search("a", "").isEmpty())
     }
+    @Test fun publishedReportPathsRemainDiscoverableWhenOtherArchiveScanningIsPartial() = database { repo, _ ->
+        val now = Timestamp.now()
+        val report = ScopedContentEntity("report", "a", "search", "report", "整体画像", "---\nstatus: active\npublication_mode: direct\npublished_at: 2026-11-15\n---", "root", "档案/学情报告/整体画像.md", "hash", "", "indexed", now, now, "{}")
+        val unrelated = ScopedContentEntity("raw", "a", "search", "raw", "原始资料", "body", "root", "档案/原始资料/旧文件.md", "hash2", "", "indexed", now, now, "{}")
+        repo.replaceSearch("a", listOf(report, unrelated), true)
+        // An incomplete later rebuild must retain the report projection it was able to refresh.
+        repo.replaceSearch("a", listOf(report), false)
+        assertEquals(listOf("report"), repo.indexedPersonalSearchAtPaths("a", listOf("档案/学情报告/整体画像.md")).map { it.id })
+        assertTrue(LearningStudioPolicy.recentPublished(repo.exact("a", "report").bodyText))
+        Unit
+    }
     @Test fun contentAndSearchWriteRollbackTogether() = database { repo, _ ->
         assertThrows(IllegalStateException::class.java) { repo.transaction("a") { repo.insertVersion("a", "key", "title", payload()); error("injected") } }
         assertTrue(repo.list("a", listOf("artifact")).isEmpty())

@@ -45,9 +45,9 @@ data class AgentConfigurationSnapshot(
 )
 
 class AgentConfigurationStore(context: Context, namespace: String = "local_agent") {
-    init { require(namespace in setOf("local_agent", "local_asr")) }
+    init { require(namespace in setOf("local_agent", "local_asr", "local_research", "local_websearch")) }
     private val preferences = context.applicationContext.getSharedPreferences(namespace, Context.MODE_PRIVATE)
-    private val keyAlias = if (namespace == "local_agent") KEY_ALIAS else "edu_manager_asr_api_key_v1"
+    private val keyAlias = when (namespace) { "local_agent" -> KEY_ALIAS; "local_asr" -> "edu_manager_asr_api_key_v1"; "local_websearch" -> "edu_manager_websearch_api_key_v1"; else -> "edu_manager_research_api_key_v1" }
 
     fun save(endpoint: String, model: String, apiKey: String) {
         saveOrUpdate(endpoint, model, apiKey)
@@ -148,8 +148,9 @@ class OpenAiCompatibleAgentAdapter(
     context: Context? = null,
     private val studentId: String = "",
     private val taskId: String = "",
+    publicResponseStructure: ((String) -> Unit)? = null,
 ) : AgentAdapter {
-    private val provider: ModelProvider = context?.let { ModelRuntime.provider(it, configuration) }
+    private val provider: ModelProvider = context?.let { ModelRuntime.provider(it, configuration, publicResponseStructure) }
         ?: CompatibleModelProvider(configuration.endpoint, configuration.apiKey)
     override fun execute(systemPrompt: String, userPrompt: String): String {
         return request(JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt)).put(JSONObject().put("role", "user").put("content", userPrompt)), configuration.model)

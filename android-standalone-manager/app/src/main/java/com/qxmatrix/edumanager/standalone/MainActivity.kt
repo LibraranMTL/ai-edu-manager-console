@@ -808,7 +808,7 @@ class MainActivity : ComponentActivity() {
                 ).joinToString("\n") +
                     "\n自述、档案与系统证据分开显示；不作为诊断或自动掌握结论。" +
                     self?.optString("updatedAt").orEmpty().takeIf(String::isNotBlank)?.let { "\n自述更新时间：$it" }.orEmpty()
-                renderWorkbenchChart(chart, snapshot.stats)
+                renderWorkbenchChart(chart, snapshot.stats, student.name)
             }.onFailure {
                 next.text = "当前行动暂不可用，请稍后重试。"
                 activity.text = "行动或项目暂不可用。"
@@ -821,20 +821,20 @@ class MainActivity : ComponentActivity() {
     private data class WorkbenchSnapshot(val actions: List<String>, val projects: List<ProjectRecord>, val state: JSONObject?,
         val dimensions: List<LearningDimensionProjection>, val stats: WorkbenchMaterialStats)
 
-    private fun renderWorkbenchChart(container: LinearLayout, stats: WorkbenchMaterialStats) {
+    private fun renderWorkbenchChart(container: LinearLayout, stats: WorkbenchMaterialStats, studentName: String) {
         container.removeAllViews()
-        container.addView(TextView(this).apply { text = "最近 7 天资料上传 · 累计 ${stats.total} 项"; textSize = 16f; setTextColor(palette.heading) }, matchWrap())
+        val dates = stats.days.let { if (it.isEmpty()) "" else "${it.first().date} 至 ${it.last().date}" }
+        container.addView(TextView(this).apply { text = "$studentName · 最近 7 天资料上传\n$dates · 累计 ${stats.total} 项"; textSize = 16f; setTextColor(palette.heading) }, matchWrap())
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM; setPadding(0, dp(12), 0, 0) }
         val maximum = (stats.days.maxOfOrNull { it.count } ?: 0).coerceAtLeast(1)
         stats.days.forEach { day ->
             val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL }
             column.addView(TextView(this).apply { text = day.count.toString(); setTextColor(palette.heading); gravity = Gravity.CENTER }, matchWrap())
             column.addView(View(this).apply { setBackgroundColor(palette.accent) }, LinearLayout.LayoutParams(dp(22), dp(if (day.count == 0) 2 else (day.count * 72 / maximum).coerceAtLeast(4))))
-            column.addView(TextView(this).apply { text = day.date.toString().substring(5); textSize = 11f; gravity = Gravity.CENTER; setTextColor(palette.muted) }, matchWrap())
+            column.addView(TextView(this).apply { text = day.date.toString().substring(5).replace('-', '/'); textSize = 11f; gravity = Gravity.CENTER; setTextColor(palette.muted) }, matchWrap())
             row.addView(column, LinearLayout.LayoutParams(0, dp(112), 1f))
         }
         container.addView(row, matchWrap())
-        container.addView(TextView(this).apply { text = "按当前学生有效资料首次接收时间计数，含关联项目资料；文件数不代表掌握程度。${if (stats.excludedWithoutDate > 0) " ${stats.excludedWithoutDate} 项缺少有效日期，未纳入逐日统计。" else ""}\n点击图表分享图片"; textSize = 12f; setTextColor(palette.muted); setPadding(0, dp(8), 0, 0) }, matchWrap())
         container.isClickable = true; container.contentDescription = "分享当前学生最近七天资料统计图"
         container.setOnClickListener { shareWorkbenchChart(container) }
     }
@@ -1280,13 +1280,14 @@ class MainActivity : ComponentActivity() {
         ))
         addFold("学情档案", listOf(
             "档案明细" to { withCurrentStudent { openStudentArchive(it) } },
+            "编辑基础档案" to { withCurrentStudent { showBasicStudentProfileEditor(it) } },
             "原始资料" to ::chooseStudentForRawBrowser,
         ))
         addFold("知识点跟踪", listOf("查看知识点跟踪" to {
             openLearningInsights(LearningInsightsActivity.TAB_MASTERY)
         }))
         addFold("成长模型", listOf(
-            "能力画像" to { withCurrentStudent { openArchiveCategory(it, "成长模型") } },
+            "能力画像" to { withCurrentStudent { openLatestGrowthProfile(it) } },
             "项目贡献" to { withCurrentStudent { openArchiveCategory(it, "项目贡献") } },
             "修复成长模型索引" to {
                 withCurrentStudent { student ->
@@ -1297,7 +1298,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             },
-            "观察证据自动核对" to { showMessage("观察证据自动核对", "整理流程会自动核对观察摘录和原件。当证据不足时继续观察，归属冲突可在“归属待确认”处理。") },
+            "观察证据自动核对" to { withCurrentStudent { showObservationReview(it) } },
             "归属待确认" to { withCurrentStudent { showGrowthAttention(it) } },
         ))
         addFold("规划指导", listOf(
@@ -1480,10 +1481,11 @@ class MainActivity : ComponentActivity() {
 
     private fun showAiProcessingServiceMenu() {
         AlertDialog.Builder(this).setTitle("AI 处理服务")
-            .setItems(arrayOf("配置处理服务", "测试连接", "停用处理服务")) { _, which -> when (which) {
+            .setItems(arrayOf("配置处理服务", "测试连接与联网来源", "联网搜索高级设置", "停用处理服务")) { _, which -> when (which) {
                 0 -> showAgentConfigurationDialog()
                 1 -> testAgentConfiguration()
-                2 -> confirmClearAgentConfiguration()
+                2 -> showResearchServiceMenu()
+                3 -> confirmClearAgentConfiguration()
             } }.setNegativeButton("关闭", null).show()
     }
 
@@ -2120,6 +2122,70 @@ class MainActivity : ComponentActivity() {
         dialog.show()
     }
 
+    private fun showBasicStudentProfileEditor(student: StudentRecord) {
+        val current = runCatching { StudentIndexRepository(this).requireExact(student.id) }.getOrElse {
+            showMessage("无法编辑", it.message ?: "未找到当前学生档案")
+            return
+        }
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), 0)
+        }
+        fields.addView(TextView(this).apply {
+            text = "补充或更正姓名、年级、学校和学习目标。保存不会变更学生 ID、原始资料目录、已关联项目或已有报告。年级仅用于匹配课程与公共学习卡，不会从资料自动推断。"
+            setTextColor(palette.muted)
+            setPadding(0, 0, 0, dp(10))
+        }, matchWrap())
+        fun field(label: String, value: String, required: Boolean = false) = EditText(this).apply {
+            hint = label
+            setText(value)
+            setTextColor(palette.text)
+            if (required) contentDescription = "$label（必填）"
+            fields.addView(this, matchWrap())
+        }
+        val name = field("学生姓名", current.name, required = true)
+        val grade = field("年级（用于筛选课程和学习卡）", current.grade)
+        val school = field("学校", current.school)
+        val goal = field("学习目标", current.goal)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("${current.name} · 基础档案")
+            .setView(ScrollView(this).apply { addView(fields) })
+            .setNegativeButton("取消", null)
+            .setPositiveButton("保存", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (name.text.toString().isBlank()) {
+                    name.error = "请填写学生姓名"
+                    return@setOnClickListener
+                }
+                runCatching {
+                    StudentIndexRepository(this).updateBasicProfile(
+                        studentId = current.id,
+                        name = name.text.toString(),
+                        grade = grade.text.toString(),
+                        school = school.text.toString(),
+                        goal = goal.text.toString(),
+                    )
+                }.onSuccess { updated ->
+                    dialog.dismiss()
+                    renderSection(activeSection)
+                    showMessage(
+                        "基础档案已保存",
+                        if (updated.grade.isBlank()) {
+                            "年级尚未填写；有年级要求的公共课程和学习卡不会显示。"
+                        } else {
+                            "年级已更新。可在“学习行动 → 学习卡片”刷新公共学习卡。"
+                        },
+                    )
+                }.onFailure { failure ->
+                    showMessage("未保存", failure.message ?: "档案写入失败；原有档案保持不变。")
+                }
+            }
+        }
+        dialog.show()
+    }
+
     private fun refreshStudents() {
         if (!::studentList.isInitialized || studentList.parent != sectionContent) return
         val target = studentList
@@ -2175,12 +2241,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showStudentManagement(student: StudentRecord) {
-        val actions = mutableListOf("浏览教育档案", "从本机列表移除")
+        val actions = mutableListOf("浏览教育档案", "编辑基础档案", "从本机列表移除")
         actions += "补充规划档案（可选）"
         if (student.knowledgeBaseMode == "standard" && student.paths.rootPath.isNotBlank()) actions += "永久删除本机资料"
         AlertDialog.Builder(this).setTitle("${student.name} · 档案管理").setItems(actions.toTypedArray()) { _, which ->
             when (actions[which]) {
                 "浏览教育档案" -> openStudentArchive(student)
+                "编辑基础档案" -> showBasicStudentProfileEditor(student)
                 "从本机列表移除" -> confirmRemoveStudent(student, deleteFiles = false)
                 "补充规划档案（可选）" -> showPlanningProfileEditor(student)
                 else -> confirmRemoveStudent(student, deleteFiles = true)
@@ -2748,6 +2815,112 @@ class MainActivity : ComponentActivity() {
             .putExtra(ProjectMaterialsActivity.EXTRA_PROJECT_ID, project.id))
     }
 
+    private fun showResearchServiceMenu() {
+        val separate = runCatching { ResearchServiceSelection.separate(this) }.getOrDefault(false)
+        AlertDialog.Builder(this).setTitle("联网搜索高级设置 · ${if (ResearchServiceSelection.independent(this)) "Tavily 来源 + AI 处理" else if (separate) "独立百炼" else "AI 处理服务"}")
+            .setItems(arrayOf("使用 AI 处理服务", "使用独立百炼服务", "配置独立百炼服务", "测试当前联网来源", "清除独立百炼服务", "配置并使用 Tavily 搜索来源", "清除 Tavily 搜索来源")) { _, which ->
+                when (which) {
+                    0 -> { ResearchServiceSelection.select(this, false); showMessage("已选择", "联网规划将使用 AI 处理服务；旧独立配置仍保留。") }
+                    1 -> { ResearchServiceSelection.select(this, true); showMessage("已选择", "联网规划将使用独立搜索服务。") }
+                    2 -> showResearchConfiguration()
+                    3 -> testResearchConfiguration()
+                    4 -> AlertDialog.Builder(this).setTitle("清除独立搜索服务")
+                        .setMessage("将清除本机搜索服务配置及密钥，学生联网授权和已有结果不变。")
+                        .setNegativeButton("取消", null).setPositiveButton("停用") { _, _ ->
+                            runCatching { AgentConfigurationStore(this, "local_research").clear() }
+                                .onSuccess { showMessage("已停用", "联网搜索服务配置已清除。") }
+                                .onFailure { showMessage("停用失败", it.message ?: "未知错误") }
+                        }.show()
+                    5 -> showIndependentSearchConfiguration()
+                    6 -> AlertDialog.Builder(this).setTitle("清除 Tavily 搜索来源")
+                        .setMessage("清除本机搜索密钥；既有规划和学生联网授权保留。")
+                        .setNegativeButton("取消", null).setPositiveButton("清除") { _, _ ->
+                            runCatching { AgentConfigurationStore(this, "local_websearch").clear()
+                                ResearchServiceSelection.setIndependentVerified(this, false)
+                                ResearchServiceSelection.select(this, false) }
+                                .onSuccess { showMessage("已清除", "已切换回 AI 处理服务。") }
+                                .onFailure { showMessage("清除失败", it.message ?: "未知错误") }
+                        }.show()
+                }
+            }.setNegativeButton("返回", null).show()
+    }
+
+    private fun showIndependentSearchConfiguration() {
+        val store = AgentConfigurationStore(this, "local_websearch")
+        val existing = runCatching { store.load() }.getOrNull()
+        val key = EditText(this).apply {
+            hint = if (existing == null) "Tavily API Key" else "新 API Key（留空保留原密钥）"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        AlertDialog.Builder(this).setTitle("Tavily 独立搜索来源")
+            .setMessage("使用公开、非个人化查询发送至 Tavily；搜索摘要和网址交给当前 AI 处理服务。可能产生搜索费用。学生联网授权仍然有效，来源需进一步核验。")
+            .setView(key).setNegativeButton("取消", null).setPositiveButton("保存并使用") { _, _ ->
+                runCatching {
+                    store.saveOrUpdate(IndependentSearchPolicy.ENDPOINT, "tavily-search", key.text.toString())
+                    ResearchServiceSelection.selectIndependent(this)
+                }.onSuccess { key.text?.clear(); showMessage("配置完成", "密钥已加密保存，请测试当前联网来源。") }
+                    .onFailure { key.text?.clear(); showMessage("配置失败", it.message ?: "未知错误") }
+            }.show()
+    }
+
+    private fun showResearchConfiguration() {
+        val store = AgentConfigurationStore(this, "local_research")
+        val existing = runCatching { store.load() }.getOrNull()
+        val fields = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 12, 40, 0) }
+        fun field(hintText: String) = EditText(this).apply { hint = hintText; fields.addView(this, matchWrap()) }
+        val endpoint = field("百炼 HTTPS 接口地址").apply { setText(existing?.endpoint ?: "https://dashscope.aliyuncs.com/compatible-mode/v1") }
+        val model = field("支持联网搜索的模型名称").apply { setText(existing?.model.orEmpty()) }
+        val key = field(if (existing == null) "百炼 API Key" else "新 API Key（留空保持原密钥）").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        AlertDialog.Builder(this).setTitle("配置联网搜索服务").setView(fields).setNegativeButton("取消", null)
+            .setPositiveButton("安全保存") { _, _ ->
+                runCatching {
+                    require(ModelEndpointPolicy.isBailian(endpoint.text.toString())) { "当前仅支持可核验来源的百炼接口" }
+                    store.saveOrUpdate(endpoint.text.toString(), model.text.toString(), key.text.toString())
+                }.onSuccess { key.text?.clear(); showMessage("配置完成", "搜索凭据已使用 Android Keystore 加密保存。请测试联网来源。") }
+                    .onFailure { key.text?.clear(); showMessage("配置失败", it.message ?: "未知错误") }
+            }.show()
+    }
+
+    private fun testResearchConfiguration() {
+        if (ResearchServiceSelection.independent(this)) {
+            val config = runCatching { AgentConfigurationStore(this, "local_websearch").load() }.getOrNull()
+            if (config == null) { showMessage("尚未配置", "请先配置 Tavily 搜索密钥。"); return }
+            val progress = showProgress("正在测试联网来源", "使用公开问题，不读取学生资料；可能产生搜索费用。")
+            Thread {
+                val result = runCatching {
+                    ResearchServiceSelection.setIndependentVerified(this, false)
+                    val sources = TavilySearch(config.apiKey).search("United Nations official website", ModelCancellation())
+                    ResearchServiceSelection.setIndependentVerified(this, true)
+                    sources
+                }
+                runOnUiThread { progress.dismiss()
+                    result.onSuccess { showMessage("联网来源测试通过", "已取得 ${it.size} 条结构化来源。") }
+                        .onFailure { showMessage("联网来源测试未通过", it.message ?: "未取得可核验来源") }
+                }
+            }.start()
+            return
+        }
+        val config = runCatching { ResearchServiceSelection.load(this) }.getOrNull()
+        if (config == null) { showMessage("尚未配置", "请先配置联网搜索服务。") ; return }
+        val progress = showProgress("正在测试联网来源", "使用公开问题测试，不读取学生资料；测试可能产生模型费用。")
+        Thread {
+            val probeKey = "research-probe:${ScopedContentPolicy.hash("${config.endpoint}:${config.model}".toByteArray())}"
+            var structure = ""
+            val result = runCatching {
+                BusinessDatabase.get(this).tasks().metadata(BusinessMetadataEntity(probeKey, "unverified"))
+                val response = OpenAiCompatibleAgentAdapter(config, this, publicResponseStructure = { structure = it }).webResearch("查询联合国官网网址，给出实际检索来源。")
+                require(response.sources.isNotEmpty()) { "服务未返回结构化搜索来源" }
+                BusinessDatabase.get(this).tasks().metadata(BusinessMetadataEntity(probeKey, "verified_sources"))
+                response
+            }
+            runOnUiThread {
+                progress.dismiss()
+                result.onSuccess { showMessage("联网来源测试通过", "已取得 ${it.sources.size} 条来源；实际规划仍需核验适用条件。") }
+                    .onFailure { showMessage("联网来源测试未通过", (it.message ?: "未取得可核验来源") + if (structure.isBlank()) "" else "\n\n响应结构（不含正文或密钥）：\n$structure") }
+            }
+        }.start()
+    }
+
     private fun showAgentConfigurationDialog() {
         val existing = runCatching { AgentConfigurationStore(this).load() }.getOrNull()
         val publicProfile = AgentConfigurationStore(this).publicProfile()
@@ -2786,7 +2959,12 @@ class MainActivity : ComponentActivity() {
                 val response = adapter.executeStructured("只做无个人资料的能力测试。", "返回ok=true。", schema, "capability-v1")
                 require(JSONObject(response.text).getBoolean("ok")); Unit
             }
-            val research = runCatching { require(adapter.webResearch("查询联合国官网网址，给出实际检索来源。").sources.isNotEmpty()); Unit }
+            val probeKey = "research-probe:${ScopedContentPolicy.hash("${config.endpoint}:${config.model}".toByteArray())}"
+            val research = runCatching {
+                BusinessDatabase.get(this).tasks().metadata(BusinessMetadataEntity(probeKey, "unverified"))
+                require(adapter.webResearch("查询联合国官网网址，给出实际检索来源。").sources.isNotEmpty())
+                BusinessDatabase.get(this).tasks().metadata(BusinessMetadataEntity(probeKey, "verified_sources")); Unit
+            }
             val diagnostic = JSONObject().put("testedAt", Timestamp.now()).put("endpoint", URI(config.endpoint).host).put("model", config.model)
                 .put("text", textResult.isSuccess).put("vision", visionResult?.isSuccess ?: JSONObject.NULL)
                 .put("structured", structured.isSuccess).put("research", research.isSuccess)
@@ -3490,6 +3668,13 @@ class MainActivity : ComponentActivity() {
             .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${student.name} · $category"))
     }
 
+    private fun openLatestGrowthProfile(student: StudentRecord) {
+        startActivity(Intent(this, MarkdownBrowserActivity::class.java)
+            .putExtra(MarkdownBrowserActivity.EXTRA_MODE, MarkdownBrowserActivity.MODE_GROWTH_PROFILE)
+            .putExtra(MarkdownBrowserActivity.EXTRA_STUDENT_ID, student.id)
+            .putExtra(MarkdownBrowserActivity.EXTRA_TITLE, "${student.name} · 能力画像"))
+    }
+
     private fun showCloudReportActions(student: StudentRecord) {
         val sync = CloudReportSync(this)
         val status = sync.status(student.id)
@@ -3686,10 +3871,15 @@ class MainActivity : ComponentActivity() {
     private fun showReportScheduleDialog(student: StudentRecord) {
         val store = ReportScheduleStore(this); store.ensureDefaults(student.id)
         val schedules = store.list(student.id)
+        val digest = AutoDigestSettingsStore(this)
+        val digestReady = digest.load().let { it.enabled && AutomationMode.from(it.automationMode) == AutomationMode.FULL }
         val modeLabel = { value: String -> when (value) { "auto" -> "自动生成"; "off" -> "关闭"; else -> "仅提醒" } }
         AlertDialog.Builder(this).setTitle("${student.name} · 周期报告")
-            .setMessage("默认仅提醒，不调用模型。自动生成只在用户明确开启后，且设备连接非计费网络并正在充电时运行；未知结果不立即重试。")
-            .setItems(schedules.map { "${ReportScheduleStore.label(it.cadence)} · ${modeLabel(it.mode)}${if (it.lastMessage.isBlank()) "" else "\n${it.lastMessage}"}" }.toTypedArray()) { _, which ->
+            .setMessage("周期设置决定报告频率；自动生成与“自动消化资料”共用全局开关、自动化模式、网络和充电条件。当前资料自动化设置：${digest.summary()}\n\n只有开启自动消化并选择“完整自动”时，周期报告的自动生成才会执行；未知结果不会立即重试。")
+            .setItems(schedules.map { schedule ->
+                val paused = schedule.mode == "auto" && !digestReady
+                "${ReportScheduleStore.label(schedule.cadence)} · ${modeLabel(schedule.mode)}${if (paused) "（受自动消化设置暂停）" else ""}${if (schedule.lastMessage.isBlank()) "" else "\n${schedule.lastMessage}"}"
+            }.toTypedArray()) { _, which ->
                 val schedule = schedules[which]
                 val modes = buildList {
                     add("reminder" to "仅提醒（默认）"); add("auto" to "满足网络和电量条件时自动生成"); add("off" to "关闭")
@@ -3844,6 +4034,30 @@ class MainActivity : ComponentActivity() {
     private fun generateAndPublishReports(student: StudentRecord, openPublicationAfter: Boolean = false) {
         val progress = showProgress("正在生成并发布报告", "正在读取已确认成长证据；Agent 异常时会自动使用保守内容。")
         Thread {
+            // The automatic digest pipeline serializes writes for a student.  Starting a
+            // second report job while a model-backed digest owns that lane only leaves the
+            // user looking at an indefinite spinner and can duplicate billable work.  Do a
+            // read-only queue check first; Full automation will enqueue reports after the
+            // active material batch completes.
+            val active = TaskRepository(this).list().firstOrNull { task ->
+                task.optString("kind").startsWith("automation_") &&
+                    task.optString("status") in setOf("running", "waiting_result", "reviewing") &&
+                    task.optJSONObject("input")?.optString("studentId") == student.id
+            }
+            if (active != null) {
+                val action = runCatching { AutomationAction.from(active.getJSONObject("input").getString("actionType")).label }
+                    .getOrDefault("资料自动处理")
+                runOnUiThread {
+                    progress.dismiss()
+                    showMessage("资料正在自动整理", "当前正在执行“$action”。为避免重复处理或重复模型调用，本次报告不会另起并发任务。\n\n该批资料完成后，完整自动模式会继续更新学情报告；也可以稍后在“报告历史”查看新版本。")
+                }
+                return@Thread
+            }
+            // Existing folders do not contain this device's private material index. Rebuild that
+            // index in place before deciding whether report evidence is available.
+            val adoptedRecovery = runCatching {
+                if (student.knowledgeBaseMode == "adopted") FileAssetService(this).reconcileAdoptedRawMaterials(student.id) else null
+            }.getOrNull()
             val result = runCatching { GrowthModelService(this).generateAndPublishReports(student.id) }
             runOnUiThread {
                 progress.dismiss()
@@ -3858,7 +4072,23 @@ class MainActivity : ComponentActivity() {
                         .setNeutralButton("查看报告") { _, _ -> showReports(student) }
                         .setPositiveButton(if (openPublicationAfter) "继续导出打印" else "导出打印") { _, _ -> chooseReportForPublication(student) }
                         .show()
-                }.onFailure { showMessage("报告生成失败", it.message ?: "未知错误") }
+                }.onFailure { error ->
+                    val detail = error.message ?: "未知错误"
+                    if (detail.contains("没有已确认的成长证据")) {
+                        val recovered = adoptedRecovery?.optInt("registered") ?: 0
+                        val recoveryMessage = when {
+                            recovered > 0 -> "已从接管目录原位登记 $recovered 份尚未索引的原件，并已加入自动整理队列；原件没有移动或覆盖。整理完成后，低风险且来源可核验的观察会自动进入成长模型。\n\n"
+                            adoptedRecovery != null -> "已核对接管目录中的原件索引，未发现可安全新增的资料记录。\n\n"
+                            else -> ""
+                        }
+                        AlertDialog.Builder(this).setTitle("接管资料尚未形成报告依据")
+                            .setMessage(recoveryMessage + "正式学情报告只读取当前学生已确认、来源可核验的成长证据。接管目录中的文件数量不会自动作为学习结论；更换手机后，旧设备应用内的资料索引和证据审核台账也不会随普通文件夹接管。\n\n请在“收集整理”查看自动整理进度；未核验的旧档案不会被自动改写或发布。")
+                            .setNegativeButton("关闭", null)
+                            .setNeutralButton("去资料整理") { _, _ -> renderSection(AppSection.MATERIALS) }
+                            .setPositiveButton("核对观察证据") { _, _ -> showObservationReview(student) }
+                            .show()
+                    } else showMessage("报告生成失败", detail)
+                }
             }
         }.start()
     }

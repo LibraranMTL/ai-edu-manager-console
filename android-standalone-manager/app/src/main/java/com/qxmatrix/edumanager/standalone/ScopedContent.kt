@@ -24,6 +24,8 @@ data class ScopedContentEntity(@PrimaryKey val id: String, val studentId: String
     @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND kind = :kind AND sourceKey = :key") fun byKey(studentId: String, kind: String, key: String): ScopedContentEntity?
     @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND kind IN (:kinds) AND state != 'removed' ORDER BY updatedAt DESC,id LIMIT :limit OFFSET :offset")
     fun list(studentId: String, kinds: List<String>, limit: Int, offset: Int): List<ScopedContentEntity>
+    @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND kind = 'search' AND state = 'indexed' AND projectId = '' AND logicalPath IN (:paths) ORDER BY logicalPath ASC")
+    fun indexedPersonalSearchAtPaths(studentId: String, paths: List<String>): List<ScopedContentEntity>
     @Query("SELECT * FROM scoped_content WHERE studentId = :studentId AND kind IN ('search','artifact','favorite','draft','action') AND state NOT IN ('removed','stale') AND (title LIKE :query ESCAPE '\\' OR bodyText LIKE :query ESCAPE '\\' OR logicalPath LIKE :query ESCAPE '\\') ORDER BY updatedAt DESC,id LIMIT :limit OFFSET :offset")
     fun search(studentId: String, query: String, limit: Int, offset: Int): List<ScopedContentEntity>
     @Query("UPDATE scoped_content SET state = 'stale' WHERE studentId = :studentId AND kind = 'search'") fun staleProjection(studentId: String)

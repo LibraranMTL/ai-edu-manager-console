@@ -233,6 +233,24 @@ class GrowthModelService(private val context: Context) {
                 .put("rejectedCount", evidence.count { it.optString("status") == "rejected" }).put("abilityCount", abilities.size).put("projectCount", projectRows.size))
             .put("abilities", JSONArray(abilities)).put("projects", JSONArray(projectRows)).put("evidence", JSONArray(evidence))
         val store = store(student); writeJson(store, "${growthRoot(student)}/growth-index.json", index); store.writeBytesSafely("${growthRoot(student)}/growth-index.md", growthIndexMarkdown(student, index).toByteArray(), "text/markdown")
+        val eligible = evidence.filter { publicationEligible(it) || it.optString("status") == "watching" }.map { item ->
+            JSONObject(item.toString()).also { copy ->
+                if (copy.optString("projectId").isNotBlank() && relatedProjects.none { it.id == copy.optString("projectId") }) {
+                    copy.put("projectId", "").put("projectName", "")
+                }
+            }
+        }
+        val projectionIndex = JSONObject(index.toString()).put("evidence", JSONArray(eligible))
+        val (profileProjection, contributionProjection) = GrowthProjectionDocuments.render(projectionIndex)
+        val generatedRoot = "${growthRoot(student)}/系统生成"
+        store.ensureDirectory(generatedRoot)
+        listOf("能力画像.md" to profileProjection, "项目贡献.md" to contributionProjection).forEach { (name, content) ->
+            val path = "$generatedRoot/$name"
+            val managed = !store.exists(path) || runCatching {
+                store.readBytes(path).toString(Charsets.UTF_8).startsWith(GrowthProjectionDocuments.MARKER)
+            }.getOrDefault(false)
+            if (managed) store.writeBytesSafely(path, content.toByteArray(Charsets.UTF_8), "text/markdown")
+        }
         HighGrowthRoomStore(context).mirrorAsync(studentId, HighGrowthRoomStore.GROWTH_SNAPSHOT, listOf(JSONObject(index.toString())
             .put("sourceId", "growth-snapshot:current").put("time", index.getString("updatedAt"))))
         return index
@@ -462,31 +480,106 @@ class GrowthModelService(private val context: Context) {
         if (archived != null) return archived
         val draftPointer = "${reportRoot(student)}/observation-draft.json"
         if (workspace.exists(draftPointer)) {
-            val pointer = JSONObject(workspace.readBytes(draftPointer).toString(Charsets.UTF_8))
-            require(pointer.optString("schema") == "observation-draft-v1" && pointer.optString("studentId") == studentId)
-            val files = FileAssetService(context); val rows = files.materials(studentId).associateBy { it.optString("id") }
-            val currentEvidence = readReview(student).getJSONArray("candidates").toObjects().associateBy { it.optString("id") }
-            val resolver = MaterialDigestSourceResolver(context, files); val sources = pointer.getJSONArray("sources")
-            require(sources.length() > 0)
-            for (i in 0 until sources.length()) {
-                val source = sources.getJSONObject(i); val id = source.getString("sourceId")
-                val row = requireNotNull(rows[id]); val evidence = requireNotNull(currentEvidence[source.getString("id")])
-                val actualHash = ScopedContentPolicy.hash(files.readMaterialBytes(studentId, id))
-                require(actualHash == source.getString("sourceSha256") &&
-                    ObservationDraftPolicy.verifiedExcerpt(studentId, evidence, row, actualHash, resolver.resolve(studentId, row)) == source.getString("excerpt")) {
-                    "观察草稿的来源或证据已变化，请重新检查资料"
-                }
+            val draft = readObservationDraftIfCurrent(student, reportId)
+            draft.getOrNull()?.let { return it }
+            // A normal folder takeover preserves originals, but older app-private material IDs are not
+            // available on the new device.  Rebuild only the local index, then rebind a draft source
+            // when its SHA-256 and quoted excerpt both match exactly.  No original or report is changed.
+            if (recoverAdoptedObservationDraftSources(student)) {
+                readObservationDraftIfCurrent(student, reportId).getOrNull()?.let { return it }
             }
-            val entry = pointer.getJSONObject("reports").getJSONObject(reportId)
-            val path = entry.getString("path")
-            require(path.startsWith("${reportRoot(student)}/观察草稿/${pointer.getString("fingerprint")}/"))
-            val bytes = workspace.readBytes(path)
-            require(ScopedContentPolicy.hash(bytes) == entry.getString("sha256")) { "观察草稿哈希不一致" }
-            return bytes.toString(Charsets.UTF_8)
+            return staleObservationDraftNotice(student, definition)
         }
         ensure(studentId)
         return workspace.readBytes("${reportRoot(student)}/${definition.fileName}").toString(Charsets.UTF_8)
     }
+
+    private fun readObservationDraftIfCurrent(student: StudentRecord, reportId: String): Result<String> = runCatching {
+        val workspace = store(student); val draftPointer = "${reportRoot(student)}/observation-draft.json"
+        val pointer = JSONObject(workspace.readBytes(draftPointer).toString(Charsets.UTF_8))
+        require(pointer.optString("schema") == "observation-draft-v1" && pointer.optString("studentId") == student.id)
+        val files = FileAssetService(context); val rows = files.materials(student.id).associateBy { it.optString("id") }
+        val currentEvidence = readReview(student).getJSONArray("candidates").toObjects().associateBy { it.optString("id") }
+        val resolver = MaterialDigestSourceResolver(context, files); val sources = pointer.getJSONArray("sources")
+        require(sources.length() > 0)
+        for (i in 0 until sources.length()) {
+            val source = sources.getJSONObject(i); val id = source.getString("sourceId")
+            val row = requireNotNull(rows[id]); val evidence = requireNotNull(currentEvidence[source.getString("id")])
+            val actualHash = ScopedContentPolicy.hash(files.readMaterialBytes(student.id, id))
+            require(actualHash == source.getString("sourceSha256") &&
+                ObservationDraftPolicy.verifiedExcerpt(student.id, evidence, row, actualHash, resolver.resolve(student.id, row)) == source.getString("excerpt")) {
+                "观察草稿来源或证据已变化"
+            }
+        }
+        val entry = pointer.getJSONObject("reports").getJSONObject(reportId)
+        val path = entry.getString("path")
+        require(path.startsWith("${reportRoot(student)}/观察草稿/${pointer.getString("fingerprint")}/"))
+        val bytes = workspace.readBytes(path)
+        require(ScopedContentPolicy.hash(bytes) == entry.getString("sha256")) { "观察草稿哈希不一致" }
+        bytes.toString(Charsets.UTF_8)
+    }
+
+    /** Repairs only a uniquely provable adopted-archive reference. Ambiguous sources stay unavailable. */
+    private fun recoverAdoptedObservationDraftSources(student: StudentRecord): Boolean = synchronized(StudentWorkLocks.forStudent(student.id)) {
+        if (student.knowledgeBaseMode != "adopted") return@synchronized false
+        val workspace = store(student); val draftPath = "${reportRoot(student)}/observation-draft.json"
+        if (!workspace.exists(draftPath)) return@synchronized false
+        val pointer = runCatching { JSONObject(workspace.readBytes(draftPath).toString(Charsets.UTF_8)) }.getOrNull() ?: return@synchronized false
+        if (pointer.optString("schema") != "observation-draft-v1" || pointer.optString("studentId") != student.id) return@synchronized false
+        val files = FileAssetService(context)
+        files.reconcileAdoptedRawMaterials(student.id)
+        val byHash = files.materials(student.id).filter { MaterialStatus.normalize(it.optString("status")) != MaterialStatus.REMOVED }
+            .filter { it.optString("sourceSha256").isNotBlank() }.groupBy { it.optString("sourceSha256").lowercase() }
+        val review = readReview(student); val candidates = review.getJSONArray("candidates").toObjects().associateBy { it.optString("id") }
+        val resolver = MaterialDigestSourceResolver(context, files); var rebound = false
+        val sources = pointer.optJSONArray("sources") ?: return@synchronized false
+        for (i in 0 until sources.length()) {
+            val source = sources.optJSONObject(i) ?: continue
+            val candidate = candidates[source.optString("id")] ?: continue
+            val matching = byHash[source.optString("sourceSha256").lowercase()].orEmpty()
+            if (matching.size != 1) continue
+            val material = matching.single(); val materialId = material.optString("id")
+            val expectedUri = "edu://student/${student.id}/raw/$materialId"
+            if (candidate.optString("sourceUri") == expectedUri) continue
+            val updated = JSONObject(candidate.toString()).put("sourceUri", expectedUri).put("sourceMaterialId", materialId)
+                .put("sourceName", material.optString("fileName")).put("sourceVerification", "adopted_raw_sha256_and_excerpt_match")
+                .put("primarySourceStatus", "provided").put("updatedAt", Timestamp.now())
+            val actualHash = ScopedContentPolicy.hash(files.readMaterialBytes(student.id, materialId))
+            if (actualHash != source.optString("sourceSha256") ||
+                ObservationDraftPolicy.verifiedExcerpt(student.id, updated, material, actualHash, resolver.resolve(student.id, material)) != source.optString("excerpt")) continue
+            candidate.keys().asSequence().toList().forEach { key -> candidate.remove(key) }
+            updated.keys().forEach { key -> candidate.put(key, updated.get(key)) }
+            rebound = true
+        }
+        if (rebound) {
+            writeReview(student, review)
+            rebuildIndex(student.id)
+        }
+        rebound
+    }
+
+    private fun staleObservationDraftNotice(student: StudentRecord, definition: LearningReportDefinition): String =
+        """---
+type: ${definition.type}
+target: ${definition.target}
+student_id: ${student.id}
+status: unavailable
+source_layer: growth_model
+presentation_only: true
+---
+
+# ${definition.title}
+
+> 上次观察草稿已失效，因此没有显示旧内容。常见原因是更换手机后应用内资料索引未随档案迁移，或原件/证据发生变化。
+
+## 恢复方式
+
+- 在“收集整理”中重新登记仍需使用的原始资料并完成消化。
+- 在“成长模型 → 归属待确认”中核对来源；只有重新核验的证据才可用于正式报告。
+- 回到“学情报告 → 更多 → 手动重新生成四份报告”。
+
+这条提示不是学情报告，不会覆盖原报告或把观察草稿发布为正式结论。
+""".trimIndent() + "\n"
 
     private fun reconcileActivePublication(student: StudentRecord): Boolean {
         val workspace = store(student)
@@ -552,6 +645,7 @@ class GrowthModelService(private val context: Context) {
     private fun checkedSources(studentId: String, evidence: List<JSONObject>): List<JSONObject> {
         val files = FileAssetService(context)
         val rows = runCatching { files.materials(studentId).associateBy { it.optString("id") } }.getOrDefault(emptyMap())
+        val related = projects.list().filter { studentId in it.studentIds }.associateBy { it.id }
         val checked = mutableMapOf<String, String?>()
         val prefix = "edu://student/$studentId/raw/"
         return evidence.map { original ->
@@ -567,7 +661,20 @@ class GrowthModelService(private val context: Context) {
                 }
                 checked[id]
             }
-            if (reason == null) original else JSONObject(original.toString())
+            if (reason == null) {
+                val material = rows[id]
+                val projectId = material?.optString("projectId").orEmpty()
+                val project = related[projectId]
+                if (original.optString("projectId").isNotBlank() &&
+                    (original.optString("projectId") != projectId || material == null || MaterialProcessingPolicy.attributionConflict(material) || project == null)) {
+                    JSONObject(original.toString()).put("projectId", "").put("projectName", "")
+                        .put("projectAssociation", "source_binding_changed")
+                } else if (original.optString("projectId").isBlank() && project != null && material != null &&
+                    !MaterialProcessingPolicy.attributionConflict(material)) {
+                    JSONObject(original.toString()).put("projectId", project.id).put("projectName", project.name)
+                        .put("projectAssociation", "source_material_current_binding")
+                } else original
+            } else JSONObject(original.toString())
                 .put("originalEvidenceStatus", original.optString("status"))
                 .put("status", "needs_attention").put("sourceIntegrityReason", reason)
         }

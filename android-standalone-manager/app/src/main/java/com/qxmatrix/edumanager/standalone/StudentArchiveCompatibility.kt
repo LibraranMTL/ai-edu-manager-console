@@ -23,6 +23,7 @@ object StudentArchiveCompatibility {
     val growthDocumentNames = setOf(
         "index.md", "能力画像.md", "项目贡献.md", "成长证据.md", "成长证据草稿.md", "growth-index.md",
     )
+    val growthProfileDocumentNames = setOf("能力画像.md", "成长画像.md", "学生能力画像.md")
 
     fun archiveRoots(student: StudentRecord, category: String): List<String> = when (category) {
         "成长模型" -> growthRoots(student) + growthDocumentNames.flatMap { growthDocumentPaths(student, it) }
@@ -107,6 +108,9 @@ object StudentArchiveCompatibility {
         val fileName = normalized.substringAfterLast('/')
         return fileName in growthDocumentNames || normalized.contains("/成长模型/") || normalized.startsWith("成长模型/")
     }
+
+    fun isGrowthProfileDocumentPath(relativePath: String): Boolean =
+        relativePath.replace('\\', '/').substringAfterLast('/') in growthProfileDocumentNames
 
     private fun reportDocumentPathsForAlias(student: StudentRecord, fileName: String): List<String> {
         val summary = student.paths.summaryPath

@@ -55,3 +55,21 @@ test('task without an external result contract is rejected before changing its s
   assert.equal(f.task.status, 'pending');
   assert.equal(f.calls.length, 0);
 });
+
+
+test('manual topic results settle through the topic service only for the active batch', async () => {
+  const task = { id:'topic', kind:'topic_suggestion_refresh', executionMode:'manual', status:'waiting_result', executionId:'e1', sourceId:'s1', input:{manualTopicFingerprint:'fp'} };
+  const stored = structuredClone(task); let calls = 0;
+  const context = vm.createContext({ RESEARCH_KINDS:new Set(), readTaskStore:()=>({tasks:[stored]}), taskNow:()=> 'now',
+    planningGuidanceService:()=>({acceptManualTopic:(student, fingerprint, value, execution)=>{
+      calls++; assert.equal(student,'s1'); assert.equal(fingerprint,'fp'); assert.equal(execution,'e1'); assert.equal(value.candidates.length,2);
+      return {message:'saved',current:{id:'v1'}};
+    }}) });
+  const a=source.indexOf('async function validateImportedTaskCompletion('), b=source.indexOf('\n}',a)+2;
+  vm.runInContext(source.slice(a,b),context);
+  const payload={status:'completed',data:{candidates:[{},{}]}};
+  const ok=await context.validateImportedTaskCompletion(task,payload);
+  assert.equal(ok.valid,true); assert.equal(ok.structuredOutput.versionId,'v1');
+  stored.executionId='e2'; const stale=await context.validateImportedTaskCompletion(task,payload);
+  assert.equal(stale.valid,false); assert.equal(calls,1);
+});

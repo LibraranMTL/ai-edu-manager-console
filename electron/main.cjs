@@ -27414,6 +27414,17 @@ async function validateImportedTaskCompletion(task, payload) {
       return { valid: true, checkedAt: taskNow(), artifacts: [], message: '项目资料逐项校验并受控提交完成。', structuredOutput: result };
     } catch (error) { return { valid: false, checkedAt: taskNow(), artifacts: [], message: `资料消化未完成：${error.message}` }; }
   }
+  if (task.kind === 'topic_suggestion_refresh' && task.executionMode === 'manual') {
+    try {
+      if (!payload || payload.status === 'failed') throw Error('未收到成功的选题结果。');
+      const current = readTaskStore().tasks.find(item => item.id === task.id);
+      if (!current || current.executionId !== task.executionId || !['running', 'waiting_result'].includes(current.status)
+        || current.sourceId !== task.sourceId || current.input?.manualTopicFingerprint !== task.input?.manualTopicFingerprint) throw Error('任务或执行批次已变化。');
+      const value = payload.data || payload.structuredOutput || (typeof payload.output === 'string' ? parseJsonText(payload.output) : payload.output);
+      const result = planningGuidanceService().acceptManualTopic(task.sourceId, task.input?.manualTopicFingerprint, value, task.executionId);
+      return { valid: true, checkedAt: taskNow(), artifacts: [], message: result.message, structuredOutput: { versionId: result.current.id } };
+    } catch (error) { return { valid: false, checkedAt: taskNow(), artifacts: [], message: `选题结果未保存：${error.message}` }; }
+  }
   if (RESEARCH_KINDS.has(task.kind) && task.executionMode === 'manual') {
     try {
       if (!payload || payload.status === 'failed') throw Error('未收到成功的研究结果。');

@@ -122,6 +122,16 @@ function reconcileInterruptedExecutions(store, liveExecutions = new Set(), now =
       repairs.push({ taskId: task.id, type: 'confirmed_stop_provenance_restored' });
       continue;
     }
+    // Intake classification may already have finished while individual items
+    // await review or an external receipt. A host restart cannot decide those
+    // item outcomes from the absence of an internal worker. Keep the original
+    // batch and let the inbox's item-level reconciliation settle it; do not
+    // turn an unknown receipt into a confirmed stop or dispatch a second run.
+    const intakeClosure = task.result?.structuredOutput?.closure;
+    if (executionClass === 'internal' && task.kind === 'smart_material_intake'
+      && ['reviewing', 'waiting_result'].includes(task.status)
+      && Array.isArray(task.input?.itemIds) && task.input.itemIds.length > 0
+      && ['automatic_pending', 'receipt_pending', 'needs_user_action'].includes(intakeClosure?.phase)) continue;
     if (executionClass === 'internal' && !live && (unresolved
       || ['running', 'waiting_result', 'reviewing'].includes(task.status))) {
       Object.assign(task, internalStoppedPatch(task, now));

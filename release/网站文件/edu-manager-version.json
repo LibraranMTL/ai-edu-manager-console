@@ -1,10 +1,10 @@
 {
   "versionCode": 104,
   "versionName": "0.6.34",
-  "windowsVersionCode": 277,
-  "windowsVersionName": "0.23.8",
+  "windowsVersionCode": 278,
+  "windowsVersionName": "0.23.9",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.8.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.9.zip",
   "windowsTerminalVersionCode": 241,
   "windowsTerminalVersionName": "0.19.1",
   "windowsTerminalReleaseStatus": "stable",
@@ -31,8 +31,8 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.34.apk",
-  "notes": "Windows 主机 0.23.8 完善普通自动调度与历史积压恢复的隔离、执行未知保护，以及 WorkBuddy 联网研究执行前复核；Windows 学生端 0.19.1 在固定绑定学生的个人终端提供受控 Agent 会话采集授权，Codex 和 WorkBuddy 已完成本机真实轮次送达验收；Android 学生端 0.6.34 新增分享收件箱与断网恢复。Windows 包尚未进行 Authenticode 签名，升级前请退出旧版并创建状态备份。",
-  "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.8-Setup.exe",
-  "windowsNotes": "完善新任务与确认安全未完成任务的自动执行边界；历史积压恢复独立控制，执行未知先核对不重试；WorkBuddy 联网研究执行前自动复核，Codex 连接检查不恢复历史积压。安装包未签名。",
+  "notes": "Windows 主机 0.23.9 支持任务中心手工执行与结果回传，完善中断任务恢复；其他终端保持原有发布版本。Windows 包未签名。",
+  "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.9-Setup.exe",
+  "windowsNotes": "支持任务中心手工执行及结果回传，完善中断任务恢复。安装包未签名。",
   "standalonePerformanceStatus": "pending_verification"
 }

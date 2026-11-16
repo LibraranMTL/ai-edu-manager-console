@@ -9,6 +9,12 @@ function planTaskRecovery(task,evidence={}){
  const matching=value=>value?.executionId===task.executionId&&value?.workKey===task.workKey&&value?.sourceVersion===task.sourceVersion;
  if(evidence.receipt?.verified&&matching(evidence.receipt))return result('settle_existing','verified_original_receipt');
  if(task.status==='running'||evidence.processAlive)return result('no_change','active_execution_owned_by_runtime');
+ // A confirmed stopped in-process execution has no external process to query.
+ // Do not make the backlog loop reopen it as an unknown external execution.
+ if(task.recoveryState==='host_confirmed_stopped'&&task.adapterId==='internal')return result('no_change','internal_stop_requires_business_reconciliation');
+ if(task.kind==='smart_material_intake'&&['reviewing','waiting_result'].includes(task.status)
+  &&['automatic_pending','receipt_pending','needs_user_action'].includes(task.result?.structuredOutput?.closure?.phase))
+  return result('no_change','intake_items_owned_by_inbox');
  if(task.kind==='smart_material_intake'&&Array.isArray(evidence.items)){
   const closure=classifyBatchClosure(evidence.items);
   if(closure.safeItemIds.length)return result('resume_safe_items','source_owned_resume',{itemIds:closure.safeItemIds,receiptPending:closure.receiptPending});

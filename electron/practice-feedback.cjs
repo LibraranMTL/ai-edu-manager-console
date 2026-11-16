@@ -167,8 +167,57 @@ function createPracticeFeedback({ load, change, generate, now, publicCard, enque
       throw error;
     }
   }
+  async function prepareManualReview(id, attemptId) {
+    const { root, value } = await load(id);
+    const attempt = structuredClone(find(value, attemptId));
+    if (!attempt.snapshotRef || attempt.reviewRef) throw Error('作答缺少固定题目版本或已有评阅，请先查看已有结果。');
+    const snapshot = await readSnapshot(root, attempt.snapshotRef);
+    const extracted = await extract(root, attempt, snapshot);
+    if (extracted.quality !== 'complete' || !extracted.text?.trim()) throw Error('作答识别不完整，请先查看原件或补充文字。');
+    const input = { question: snapshot.content.prompt, referenceAnswer: snapshot.content.answer,
+      rubric: snapshot.content.rubric || snapshot.content.explanation, studentAnswer: extracted.text,
+      languagePolicy: snapshot.languagePolicy, assistance: attempt.assistance };
+    const fingerprint = hash([id, attempt.attemptId, attempt.reviewVersion, attempt.bodyRef, attempt.attachment?.sha256,
+      attempt.snapshotRef, attempt.assistance, extracted, REVIEWER_VERSION]);
+    return { input, schema: ASSESSMENT_SCHEMA, fingerprint };
+  }
+  async function acceptManualReview(id, attemptId, fingerprint, executionId, output, authorize = () => true) {
+    if (!executionId) throw Error('缺少评阅执行批次。');
+    if (!authorize()) throw Error('任务批次已变化，结果未采用。');
+    const current = await load(id), attempt = structuredClone(find(current.value, attemptId));
+    if (attempt.reviewRef) {
+      const existing = await readObject(current.root, 'reviews', attempt.reviewRef);
+      if (existing.manualExecutionId !== String(executionId)) throw Error('该作答已有其他评阅，不能覆盖。');
+      if (attempt.reviewPolicy === 'agent_auto' && existing.qualityPassed) await apply(id, attemptId, attempt.reviewRef);
+      return { status: existing.qualityPassed ? 'reviewed' : 'needs_attention', resultRef: attempt.reviewRef, duplicate: true };
+    }
+    const prepared = await prepareManualReview(id, attemptId);
+    if (prepared.fingerprint !== String(fingerprint || '')) throw Error('题目、作答或评阅版本已变化，结果未保存。');
+    const snapshot = await readSnapshot(current.root, attempt.snapshotRef);
+    const extracted = await extract(current.root, attempt, snapshot);
+    const checked = checkReview(output, extracted);
+    const extractionRef = await putObject(current.root, 'extractions', extracted);
+    const review = { ...checked, source: 'agent', agentId: 'manual', modelId: null, manualExecutionId: String(executionId), reviewerVersion: REVIEWER_VERSION,
+      reviewedAt: time(), reviewVersion: attempt.reviewVersion, inputHash: prepared.fingerprint, extractionRef };
+    const resultRef = await putObject(current.root, 'reviews', review);
+    await change(id, value => {
+      const currentAttempt = find(value, attemptId);
+      if (!authorize() || currentAttempt.reviewRef || currentAttempt.reviewVersion !== attempt.reviewVersion || currentAttempt.bodyRef !== attempt.bodyRef
+        || currentAttempt.snapshotRef !== attempt.snapshotRef || currentAttempt.attachment?.sha256 !== attempt.attachment?.sha256
+        || JSON.stringify(currentAttempt.assistance || null) !== JSON.stringify(attempt.assistance || null)) throw Error('作答或评阅版本已变化，结果未采用。');
+      currentAttempt.extractionRef = extractionRef;
+      currentAttempt.reviewRef = resultRef;
+      currentAttempt.reviewHistory = [...(currentAttempt.reviewHistory || []), resultRef];
+      currentAttempt.feedbackSummary = { judgement: review.judgement, summary: review.summary, issues: review.issues.slice(0, 2), suggestions: review.suggestions.slice(0, 2), source: review.source };
+      currentAttempt.processingStatus = !review.qualityPassed ? 'needs_attention' : currentAttempt.reviewPolicy === 'human_confirm' ? 'awaiting_confirmation' : 'completed';
+      currentAttempt.error = null;
+    });
+    if (attempt.reviewPolicy === 'agent_auto' && checked.qualityPassed) await apply(id, attemptId, resultRef);
+    return { status: checked.qualityPassed ? 'reviewed' : 'needs_attention', resultRef };
+  }
+
   return {
-    readBody, prepareAttempt, reviewAttempt,
+    readBody, prepareAttempt, reviewAttempt, prepareManualReview, acceptManualReview,
     teachingCard: async (id, cardId) => { const { value } = await load(id); const card = value.cards.find(c => c.id === cardId); if (!card) throw Error('卡片不属于当前学生'); return { content: card.content, languagePolicy: card.languagePolicy, resourceRef: card.resourceRef, purpose: card.purpose, template: card.template }; },
     markCancelled: (id, attemptId) => change(id, value => { const a = find(value, attemptId); a.processingStatus = 'cancelled'; a.error = '用户取消了本次处理，原作答仍然保留。'; }),
     cardChoices: async id => {const {value}=await load(id);return value.cards.map(c=>({id:c.id,title:c.content?.title||'历史卡片',status:c.status,purpose:c.purpose,createdAt:c.createdAt}));},

@@ -39,7 +39,7 @@ test('download page presents four product families and five client builds', () =
   }
 
   assert.doesNotMatch(html, /iOS|即将开放/u);
-  assert.match(html, /正式签名版/u);
+  assert.match(html, /签名与正式版一致/u);
   assert.match(html, /下载正式 APK/u);
   assert.doesNotMatch(html, /正式包待签名/u);
   assert.doesNotMatch(html, /app-debug\.apk|device-test-candidate\.apk/u);
@@ -163,7 +163,8 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(androidStandalone, /不依赖 Windows 主机的完整教育管家/u);
   assert.match(androidStandalone, /新建或接管学生学情档案/u);
   assert.match(androidStandalone, /智能混合（推荐）/u);
-  assert.match(androidStandalone, /PalmClaw、豆包、MobileClaw 或 ChatGPT\/Codex/u);
+  assert.match(androidStandalone, /PalmClaw、豆包或其他 Agent/u);
+  assert.match(androidStandalone, /本版本不接入 OpenAI 服务/u);
   assert.match(androidStandalone, /加密备份与恢复/u);
   assert.match(androidStandalone, /不会自动读取其他应用的私有聊天数据库/u);
 });

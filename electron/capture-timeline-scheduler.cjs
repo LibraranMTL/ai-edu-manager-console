@@ -27,6 +27,7 @@ class CaptureTimelineScheduler {
     this.reportQueue = new Map();
     this.reportRunning = new Map();
     this.timer = null;
+    this.timerDueAt = 0;
     this.started = false;
   }
 
@@ -34,15 +35,15 @@ class CaptureTimelineScheduler {
     if (this.started) return;
     this.started = true;
     this.restorePendingJobs();
-    this.timer = setInterval(() => this.tick(), 2_000);
-    this.timer.unref?.();
     this.tick();
+    this.armTimer();
   }
 
   stop() {
     this.started = false;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.timerDueAt = 0;
     for (const item of this.running.values()) { item.worker.terminate(); item.releasePermit?.(); }
     for (const item of this.reportRunning.values()) { item.worker.terminate(); item.releasePermit?.(); }
     this.running.clear();
@@ -73,6 +74,7 @@ class CaptureTimelineScheduler {
       blockingReason: '',
     });
     this.tick();
+    this.armTimer();
     return { ok: true, sessionId: key, dueAt: new Date(dueAt).toISOString() };
   }
 
@@ -119,7 +121,35 @@ class CaptureTimelineScheduler {
     this.reportQueue.set(key, item);
     if (options.persist !== false) writeReportRepairJob(this.rootPath, { ...item, state: 'retry_scheduled', nextRetryAt: new Date(dueAt).toISOString(), requiresUserAction: false });
     this.tick();
+    this.armTimer();
     return { ok: true, dueAt: new Date(dueAt).toISOString() };
+  }
+
+  armTimer() {
+    if (!this.started) return;
+    const active = this.running.size || this.reportRunning.size;
+    if (!active && !this.queue.size && !this.reportQueue.size) {
+      if (this.timer) clearTimeout(this.timer);
+      this.timer = null;
+      this.timerDueAt = 0;
+      return;
+    }
+    let earliestDue = Infinity;
+    for (const item of this.queue.values()) earliestDue = Math.min(earliestDue, item.dueAt);
+    for (const item of this.reportQueue.values()) earliestDue = Math.min(earliestDue, item.dueAt);
+    const delay = active || earliestDue <= Date.now()
+      ? 2_000 : Math.max(1, Math.min(2_147_483_647, earliestDue - Date.now()));
+    const dueAt = Date.now() + delay;
+    if (this.timer && this.timerDueAt <= dueAt) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timerDueAt = dueAt;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.timerDueAt = 0;
+      this.tick();
+      this.armTimer();
+    }, delay);
+    this.timer.unref?.();
   }
 
   currentConcurrency() {
@@ -148,6 +178,13 @@ class CaptureTimelineScheduler {
 
   tick() {
     if (!this.started) return;
+    if (!this.running.size && !this.reportRunning.size) {
+      const now = Date.now();
+      let ready = false;
+      for (const item of this.queue.values()) { if (item.dueAt <= now) { ready = true; break; } }
+      if (!ready) for (const item of this.reportQueue.values()) { if (item.dueAt <= now) { ready = true; break; } }
+      if (!ready) return;
+    }
     const concurrency = this.currentConcurrency();
     if (concurrency === 0 && (this.running.size || this.reportRunning.size)) {
       this.yieldForCapture();
@@ -192,6 +229,7 @@ class CaptureTimelineScheduler {
       if (result?.ok) writeReportRepairJob(this.rootPath, { ...item, state: 'completed', completedAt: new Date().toISOString(), nextRetryAt: '', requiresUserAction: false });
       else this.enqueueReportRepair({ ...item, attempt: item.attempt + 1, nextRetryAt: new Date(Date.now() + RECOVERY_DELAY).toISOString() });
       this.tick();
+      this.armTimer();
     };
     worker.on('message', (message) => {
       if (message?.type === 'completed') settle(message.result);
@@ -242,6 +280,7 @@ class CaptureTimelineScheduler {
           this.enqueue(item.session, { dueAt: Date.now() + RECOVERY_DELAY, attempt: item.attempt + 1, state: 'recovery_scheduled', recoveryTrigger: 'timer_or_dependency_available' });
         }
         this.tick();
+        this.armTimer();
       }
       if (message?.type === 'failed') this.fail(item, message.error?.message || 'Timeline worker failed.');
     });
@@ -276,6 +315,7 @@ class CaptureTimelineScheduler {
     this.queue.set(sessionId, { session: item.session, dueAt: Date.now() + delay, attempt: attempt + 1, enqueuedAt: item.enqueuedAt || Date.now() });
     this.onProgress({ type: 'failed', sessionId, state, message });
     this.tick();
+    this.armTimer();
   }
 }
 

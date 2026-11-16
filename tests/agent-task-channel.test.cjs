@@ -36,6 +36,7 @@ function fixture(t) {
       Object.assign(task, patch, { status }); return { ok: true, task };
     },
     validateTaskCompletion: (_task, _startedAt, payload) => ({ valid: payload.verified === true, message: 'validated by host' }),
+    validateImportedTaskCompletion: async (_task, payload) => ({ valid: payload.verified === true, message: 'validated by host' }),
     normalizeTaskResult: (_task, payload, validation) => ({ ...payload, validation }),
     commitValidatedTaskResult(_store, task, result, validation, options) {
       Object.assign(task, { result, status: options.successful ? 'succeeded' : 'failed' }); return { ok: true, task };
@@ -65,7 +66,7 @@ test('one sync imports WorkBuddy, Codex, generic agents and legacy QClaw; replay
     const task = f.task(id, id); f.write(task, {}, { legacy: id === 'qclaw' });
   }
   const first = JSON.parse(await f.context.syncAgentTaskResults());
-  assert.equal(first.imported, 5); assert.equal(first.rejected, 0);
+  assert.equal(first.imported, 5, JSON.stringify(first)); assert.equal(first.rejected, 0);
   assert(f.store.tasks.every(task => task.status === 'succeeded'));
   assert(f.store.tasks.every(task => fs.existsSync(task.result.resultFile)));
   assert.equal(JSON.parse(await f.context.syncAgentTaskResults()).imported, 0);

@@ -405,6 +405,32 @@ test('persistent scheduler restores unfinished work and falls back to recovery w
   }
 });
 
+test('idle capture scheduler does not probe resources and still wakes a due retry', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-semantic-idle-scheduler-'));
+  let probes = 0;
+  const scheduler = new CaptureTimelineScheduler({
+    rootPath: root,
+    getResourceSnapshot: () => { probes += 1; return { captureActive: true }; },
+  });
+  try {
+    scheduler.start();
+    assert.equal(scheduler.timer, null);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(probes, 0);
+    const session = { id: 'due-retry', studentId: 'synthetic-student', items: [] };
+    scheduler.enqueue(session, { delayMs: 50, state: 'retry_scheduled' });
+    assert.equal(probes, 0);
+    assert.ok(scheduler.timer);
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.ok(probes >= 1, 'a due retry must check the resource gate');
+    assert.equal(scheduler.queue.size, 1, 'resource pressure retains the original retry');
+  } finally {
+    scheduler.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  assert.equal(scheduler.timer, null);
+});
+
 test('PowerShell OCR worker contract is non-interactive and returns structured fallback', () => {
   const script = fs.readFileSync(path.join(__dirname, '..', 'electron', 'capture-timeline-ocr.ps1'), 'utf8');
   assert.match(script, /ConvertTo-Json/);

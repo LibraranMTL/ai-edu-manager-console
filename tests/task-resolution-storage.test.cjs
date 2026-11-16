@@ -58,7 +58,7 @@ test('disk failure latches dispatch protection; disappearance never initializes 
 test('failed validation returns failure, not a successful transition or the Agent success claim', async () => {
   const task = { id: 't', executionId: 'e', startedAt: 'now', sourceId: 's' };
   const context = { readTaskStore: () => ({ tasks: [task] }), validateExternalTaskResultIdentity: () => ({ ok: true }),
-    validateTaskCompletion: () => ({ valid: false, message: '观察项不能写成正式定论：evidence-1' }),
+    validateImportedTaskCompletion: async () => ({ valid: false, message: '观察项不能写成正式定论：evidence-1' }),
     normalizeTaskResult: (_task, result) => result,
     commitValidatedTaskResult: (_store, _task, _result, _validation, options) => {
       assert.match(options.error.message, /观察项/); return { ok: true, task: { status: 'failed' } };

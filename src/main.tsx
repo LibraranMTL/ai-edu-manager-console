@@ -3004,7 +3004,7 @@ const agentToolProfiles: Record<AgentToolId, AgentToolProfile> = {
     memoryLocations: ['%USERPROFILE%\\.workbuddy', '%APPDATA%\\WorkBuddy', '%LOCALAPPDATA%\\WorkBuddy'],
     personaLocations: ['%USERPROFILE%\\.workbuddy', '%APPDATA%\\WorkBuddy', '%LOCALAPPDATA%\\WorkBuddy'],
     conversationLocations: ['%USERPROFILE%\\.workbuddy'],
-    installUrls: { windows: 'https://www.workbuddy.ai/', web: 'https://www.workbuddy.ai/' },
+    installUrls: { windows: 'https://www.workbuddy.cn/events/invite?inviteCode=q6277pw01', web: 'https://www.workbuddy.ai/' },
     openLabel: '打开 WorkBuddy',
     copyTargetLabel: '复制到 WorkBuddy 对话、Agent 设置或工作区说明中',
     digestTargetLabel: '可粘贴到 WorkBuddy 执行，并直接读写本机知识库',
@@ -7148,7 +7148,10 @@ function App() {
     if (!isWindows || !courseBrowser.open) return;
     void bridge()?.setCourseViewLayout?.(JSON.stringify({ sidebarCollapsed, fullscreen: courseFullscreen }));
   }, [courseBrowser.open, courseFullscreen, isWindows, sidebarCollapsed]);
-  const activeAgentAdapter = activeSection === 'init' ? selectedToolAdapter : selectedStudentAdapter;
+  const isDefaultAgentToolView = activeSection === 'settings' && settingsSubmenu === 'agent-qa'
+    && agentSettingsTab === 'tools' && agentControlSubtab === 'tool-control';
+  const activeAgentAdapter = activeSection === 'init' ? selectedToolAdapter
+    : isDefaultAgentToolView ? getAgentToolAdapter(draft.agentTool) : selectedStudentAdapter;
   const activeAgentTool = activeAgentAdapter.profile;
   const toolOpenState: Record<AgentToolId, boolean> = {
     qclaw: qclawOpened,
@@ -15405,7 +15408,7 @@ ${JSON.stringify(items, null, 2)}
       hohu: 'https://hohu.ai/',
       openclaw: 'https://openclaw.ai/',
       'ima.copilot': 'https://ima.qq.com/download/',
-      workbuddy: 'https://www.workbuddy.ai/',
+      workbuddy: 'https://www.workbuddy.cn/events/invite?inviteCode=q6277pw01',
       codex: 'https://chatgpt.com/codex',
       'claude-code': 'https://www.anthropic.com/claude-code',
       hermes: 'https://hermes-agent.nousresearch.com/',
@@ -22356,6 +22359,21 @@ ${JSON.stringify(items, null, 2)}
                     <span>{selectedTask.phaseLabel || selectedTask.status}</span>
                   </div>
                   <details className="task-detail-data">
+                    <summary>手工执行</summary>
+                    {['weekly_action', 'learning_profile', 'learning_changes', 'learning_stage', 'maintenance_lint', 'topic_suggestion_refresh', 'practice_attempt_review', 'competition_research_check', 'guidance_research_check', 'guidance_plan_refresh', 'student_digest', 'project_digest'].includes(selectedTask.kind) ? <>
+                      <p>生成当前任务的手工执行批次并复制指令；在本机 Agent 执行后，可在下方导入结果，系统会核对批次和产物。</p>
+                      <button className="secondary compact" disabled={Boolean(taskExecutionBusyId) || !['pending', 'approved', 'queued', 'failed', 'blocked', 'timed_out'].includes(selectedTask.status) || Boolean(selectedTask.approval?.required && selectedTask.approval.status !== 'approved')} onClick={async () => {
+                        setTaskExecutionBusyId(selectedTask.id);
+                        setTaskOperationFeedback({ taskId: selectedTask.id, tone: 'working', message: '正在检查任务并准备手工指令…' });
+                        try { applyTaskOperationResult(await bridge()?.executeTask?.(selectedTask.id, 'manual_copy'), '手工任务正在准备。', selectedTask); }
+                        catch (error) { setTaskOperationFeedback({ taskId: selectedTask.id, tone: 'error', message: `准备失败：${String(error)}` }); }
+                        finally { setTaskExecutionBusyId(''); }
+                      }}>准备并复制手工指令</button>
+                      <p>执行中或结果待核对的任务不能重复派发；已结束的任务保留原结果。</p>
+                    </> : <><p>此类任务需在来源页面按对应流程人工处理；当前尚无可校验的手工任务包。</p>
+                      <button className="secondary compact" onClick={() => handleTaskCenterAction(selectedTask)}>打开任务来源</button></>}
+                  </details>
+                  <details className="task-detail-data">
                   <summary>技术详情（供排障使用）</summary>
                   <p>{selectedTask.id} · 协议 {selectedTask.protocolVersion || '1.0'}</p>
                   <div className="task-detail-grid">
@@ -22412,6 +22430,12 @@ ${JSON.stringify(items, null, 2)}
                          if (raw) applyTaskOperationResult(raw, '交接请求已处理。', selectedTask);
                        } catch (error) { setScheduleMessage(`交接失败：${String(error)}`); }
                      }}>{action === 'open' ? '重新打开原任务' : '复制本次指令'}</button>)}
+                   </div>}
+                   {selectedTask.status === 'waiting_result' && selectedTask.executionMode === 'manual' && <div className="task-center-row-actions">
+                     <button className="secondary compact" onClick={async () => {
+                       try { applyTaskOperationResult(await bridge()?.reopenTaskHandoff?.(selectedTask.id, selectedTask.executionId || '', 'copy'), '已复制本次指令。', selectedTask); }
+                       catch (error) { setScheduleMessage(`复制失败：${String(error)}`); }
+                     }}>重新复制本次指令</button>
                    </div>}
                    {selectedTask.error?.message && !selectedTask.resolution && <div className={selectedTask.status === 'cancelled' ? 'notice muted' : 'notice error'}>{selectedTask.status === 'cancelled' ? '处理说明：' : '任务未完成：'}{selectedTask.error.message}</div>}
                    {selectedTask.result?.validation && <div className={selectedTask.result.validation.valid ? 'notice success' : 'notice error'}>{selectedTask.result.validation.message || '结果校验已完成。'}</div>}

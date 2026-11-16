@@ -33,9 +33,9 @@ test('candidate builds preserve the stable manifest, while a formal build aligns
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.23.7');
-  assert.equal(packageJson.version, releaseManifest.windowsVersionName,
-    'restored Windows source must identify the current published host line');
+  assert.equal(packageJson.version, '0.23.9');
+  assert.equal(releaseManifest.windowsVersionName, '0.23.8',
+    'the candidate must preserve the current published host version');
   assert.ok(releaseManifest.windowsVersionName, 'published host version must be recorded independently of source version');
   assert.ok(Number.isInteger(releaseManifest.windowsVersionCode));
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');

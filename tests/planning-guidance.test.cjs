@@ -31,9 +31,33 @@ function fixture(options = {}) {
     resolveStudentDir: (student) => path.join(root, student.id, '.ai-manager'),
     evidenceProvider: (student) => student.id === 'student-cn' ? { sourceIds: ['growth:student-cn:evidence-1', 'report:student-cn:stage'], confirmedGrowthSignals: ['数据记录：2 条已确认依据'], learningSignals: ['正式学情报告显示持续记录行为'], reportIds: ['stage'] } : {},
     researchProviders: () => provider ? [provider] : [{ id: 'codex', label: 'Codex', available: true, authorized: false, webResearch: false, structuredResult: false, healthMessage: 'Not logged in' }],
+    manualFetchSource: options.manualFetchSource,
   });
   return { root, clock, students, service, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
+
+test('manual research verifies sources and saves guidance and competition in isolated student store', async () => {
+  let fail = false; const opened = [];
+  const { service, students, cleanup } = fixture({ manualFetchSource: async url => { if (fail) throw Error('unreachable'); opened.push(url); return url; } });
+  const section = fields => Object.fromEntries([...require('../electron/research-content.cjs').COMMON, ...fields].map(name => [name, name === 'missing' ? ['待核实'] : []]));
+  const source = { url: 'https://example.edu/rules', title: '规则', publisher: '主办方', official: true, region: '', publishedAt: '', summary: '公开规则' };
+  try {
+    const guidance = service.prepareManualResearch('student-cn','guidance');
+    const raw = { query:'规划',sources:[source],findings:['需核实'],limitations:[],sections:{ pathways:section(['routeOptions','milestones']), schools:section(['schoolOptions','eligibility']), majors:section(['majorOptions','trialCourses']), careers:section(['roleOptions','practiceTasks']) } };
+    const context = { taskId:'task-g',executionId:'run-g',researchRunId:'run-g' };
+    fail=true; await assert.rejects(service.acceptManualResearch('student-cn','guidance',guidance.inputFingerprint,context,raw),/unreachable/);
+    assert.equal(service.getGuidancePlan('student-cn').current,null);
+    fail=false; const saved=await service.acceptManualResearch('student-cn','guidance',guidance.inputFingerprint,context,raw);
+    assert.equal(saved.ok,true);assert.equal(saved.receipt.executionId,'run-g');assert.equal(service.getGuidancePlan('student-cn').current.id,saved.current.id);
+    assert.equal((await service.acceptManualResearch('student-cn','guidance',guidance.inputFingerprint,context,raw)).duplicate,true);
+    const competition=service.prepareManualResearch('student-cn','competition');
+    const item={name:'合成比赛',category:'science_innovation',scope:'domestic',organizer:'主办方',officialUrl:source.url,eligibility:'需核对',deadline:'',season:'',fees:'',matchReasons:['兴趣'],preparation:['调研'],risks:[],missing:[],sourceUrls:[source.url]};
+    const result=await service.acceptManualResearch('student-cn','competition',competition.inputFingerprint,{taskId:'task-c',executionId:'run-c'}, {query:'比赛',sources:[source],findings:['候选'],limitations:[],competitions:[item]});
+    assert.equal(result.ok,true);assert.equal(service.getCompetitionRecommendations('student-cn').current.candidates.length,1);assert.equal(opened.length,2);
+    students[0].interests=['生态'];
+    await assert.rejects(service.acceptManualResearch('student-cn','competition',competition.inputFingerprint,{taskId:'task-c2',executionId:'run-c2'}, {query:'比赛',sources:[source],findings:['候选'],limitations:[],competitions:[item]}),/已变化/);
+  } finally { cleanup(); }
+});
 
 test('age is derived from birth date and never inferred from grade', () => {
   assert.equal(computeAge('2012-10-01', new Date('2026-09-30T08:00:00Z')), 13);

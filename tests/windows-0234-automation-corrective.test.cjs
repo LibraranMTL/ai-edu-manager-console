@@ -12,7 +12,7 @@ test('0.23.7 keeps the public-course baseline and integrates the five automation
   const packageJson = JSON.parse(read('package.json'));
   const main = read('electron', 'main.cjs');
   const projectAutomation = read('electron', 'project-material-automation.cjs');
-  assert.equal(packageJson.version, '0.23.7');
+  assert.equal(packageJson.version, '0.23.9');
   for (const file of [
     'workbuddy-runtime-status.cjs',
     'automation-feature-flags.cjs',

@@ -6,6 +6,25 @@ const { EventEmitter } = require('node:events');
 const { createWorkBuddyRuntimeStatusProbe, probeWindowsProcessImages,
   validCachedQualification } = require('../electron/workbuddy-runtime-status.cjs');
 
+test('background status checks stay bounded and can stop without scheduling another poll', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), ts = require('typescript');
+  const source = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
+  const file = ts.createSourceFile('main.cjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let fn;
+  function visit(node) { if (ts.isFunctionDeclaration(node) && node.name?.text === 'startWorkBuddyStatusMonitor') fn = node; else ts.forEachChild(node, visit); }
+  visit(file); assert.ok(fn);
+  const timers = [], calls = [];
+  const ctx = vm.createContext({ AUTOMATION_FEATURES: { workBuddyRuntimeStatusV2: true }, workBuddyStatusMonitor: null,
+    workBuddyStatusMonitorStopped: false, refreshWorkBuddyRuntimeStatus: async value => calls.push(value),
+    setTimeout: (callback, delay) => { const timer = { callback, delay, unref() {} }; timers.push(timer); return timer; } });
+  vm.runInContext(source.slice(fn.getStart(file), fn.end), ctx);
+  ctx.startWorkBuddyStatusMonitor();
+  assert.equal(calls.length, 1); assert.equal(timers[0].delay, 60000);
+  ctx.workBuddyStatusMonitorStopped = true;
+  await timers[0].callback();
+  assert.equal(calls.length, 2); assert.equal(timers.length, 1);
+});
+
 test('externally started WorkBuddy is open even when manager did not launch it', async () => {
   const status = createWorkBuddyRuntimeStatusProbe({
     now: () => Date.parse('2026-11-04T00:00:00.000Z'),

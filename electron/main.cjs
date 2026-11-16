@@ -25,17 +25,12 @@ const { hasUntrackedExternalHeavyWork } = require('./task-heavy-work-state.cjs')
 // Portable acceptance runs must never share live students or encrypted credentials.
 const isolatedUserData = app.commandLine.getSwitchValue('user-data-dir');
 const qaIsolated = process.argv.includes('--qa-isolated');
-const qaMainEventLoop = qaIsolated ? require('node:perf_hooks').monitorEventLoopDelay({ resolution: 10 }) : null;
-qaMainEventLoop?.enable();
+const qaMainPerformance = require('./qa-main-performance.cjs').createQaMainPerformance({
+  isolated: qaIsolated,
+  createMonitor: options => require('node:perf_hooks').monitorEventLoopDelay(options),
+});
 nativeIpcMain.handle('bridge:qaMainPerformance', (_event, action) => {
-  if (!qaMainEventLoop) throw Object.assign(new Error('qa_performance_unavailable'), { code: 'QA_ONLY' });
-  if (action === 'reset') { qaMainEventLoop.reset(); return { reset: true }; }
-  return {
-    schema: 'edu.qa.main-event-loop.v1',
-    maximumMs: Number(qaMainEventLoop.max || 0) / 1e6,
-    p95Ms: Number(qaMainEventLoop.percentile(95) || 0) / 1e6,
-    meanMs: Number(qaMainEventLoop.mean || 0) / 1e6,
-  };
+  return qaMainPerformance(action);
 });
 if (isolatedUserData) {
   if (!path.isAbsolute(isolatedUserData) || path.resolve(isolatedUserData) === path.parse(path.resolve(isolatedUserData)).root) throw new Error('隔离用户目录必须为非根目录的绝对路径');
@@ -1110,10 +1105,36 @@ function getSmartInbox() {
         try { await smartInboxHostRuntime.engine.resumeAgent(String(student.id), `startup-fallback-${crypto.randomUUID()}`); }
         catch (error) { console.warn('备用 Agent 启动恢复未完成：', error.message); }
       }
+      await recoverStoppedIntakeBatches(smartInboxHostRuntime.engine);
       await smartInboxHostRuntime.engine.tick();
     });
   }
   return smartInboxReady.then(() => smartInboxHostRuntime.engine);
+}
+async function recoverStoppedIntakeBatches(engine) {
+  if (!taskStoreGuard.ready() || taskStoreGuard.status()) return;
+  const { intakeRecoveryPatch } = require('./task-intake-recovery.cjs');
+  const candidates = readTaskStore().tasks.filter(task => task.kind === 'smart_material_intake'
+    && task.status === 'failed' && task.recoveryState === 'host_confirmed_stopped'
+    && task.error?.code === 'INTERNAL_EXECUTION_INTERRUPTED')
+    .map(task => ({ id: task.id, executionId: task.executionId, itemIds: [...(task.input?.itemIds || [])] }));
+  for (const candidate of candidates) {
+    try {
+      const items = await Promise.all(candidate.itemIds.map(id => engine.detail(id).catch(() => null)));
+      const store = readTaskStore({ taskIds: [candidate.id] }), task = store.tasks[0];
+      if (!task || task.executionId !== candidate.executionId
+        || JSON.stringify(task.input?.itemIds || []) !== JSON.stringify(candidate.itemIds)) continue;
+      const patch = intakeRecoveryPatch(task, items, taskNow());
+      if (!patch) continue;
+      Object.assign(task, patch);
+      appendTaskEvent(task.id, 'intake_original_items_reconciled', { itemCount: items.length,
+        receiptPending: patch.result.structuredOutput.closure.receiptPending }, task.executionId);
+      await writeTaskStoreDurably(store);
+    } catch (error) {
+      console.warn('资料批次原状态核对未完成：', error.message);
+    }
+    await new Promise(resolve => setImmediate(resolve));
+  }
 }
 let customOptionsRuntime;
 function getCustomOptions() {
@@ -12610,6 +12631,10 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show(); });
   }
   mainWindow.webContents.on('before-input-event', handleCourseFullscreenEscape);
+  mainWindow.on('focus', () => {
+    if (AUTOMATION_FEATURES.workBuddyRuntimeStatusV2 && !workBuddyStatusMonitorStopped)
+      void refreshWorkBuddyRuntimeStatus();
+  });
   mainWindow.on('resize', () => {
     if (courseView) courseView.setBounds(courseViewBounds());
   });
@@ -23420,12 +23445,11 @@ function startWorkBuddyStatusMonitor() {
   workBuddyStatusMonitorStopped = false;
   void refreshWorkBuddyRuntimeStatus({ force: true });
   const schedule = () => {
-    const foreground = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
     workBuddyStatusMonitor = setTimeout(async () => {
       workBuddyStatusMonitor = null;
       await refreshWorkBuddyRuntimeStatus({ force: true });
       if (!workBuddyStatusMonitorStopped) schedule();
-    }, foreground ? 5_000 : 60_000);
+    }, 60_000);
     workBuddyStatusMonitor.unref?.();
   };
   schedule();

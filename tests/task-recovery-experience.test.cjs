@@ -58,6 +58,23 @@ test('orphaned active internal execution becomes a safe failure and keeps its ex
   assert.equal(task.autoRetry, false);
 });
 
+test('restart keeps intake review and unknown receipts without redispatching', () => {
+  for (const [status, phase] of [['reviewing', 'needs_user_action'], ['waiting_result', 'receipt_pending']]) {
+    const task = { id: `intake-${status}`, kind: 'smart_material_intake', status, adapterId: 'internal',
+      executionMode: 'internal', executionId: 'old-batch', input: { itemIds: ['item-1'] },
+      settlementState: phase, autoRetry: false, result: { structuredOutput: { closure: { phase } } } };
+    const before = structuredClone(task);
+    assert.deepEqual(reconcileInterruptedExecutions({ tasks: [task] }, new Set()), []);
+    assert.deepEqual(task, before);
+  }
+  const running = { id: 'intake-running', kind: 'smart_material_intake', status: 'running',
+    adapterId: 'internal', executionMode: 'internal', executionId: 'old-batch', input: { itemIds: ['item-1'] },
+    result: { structuredOutput: { closure: { phase: 'needs_user_action' } } } };
+  reconcileInterruptedExecutions({ tasks: [running] }, new Set());
+  assert.equal(running.status, 'failed');
+  assert.equal(running.autoRetry, false);
+});
+
 test('startup restores a confirmed internal stop that candidate refresh reset before dispatch', () => {
   const store = {
     tasks: [{

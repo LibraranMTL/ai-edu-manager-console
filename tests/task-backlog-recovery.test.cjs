@@ -1,6 +1,14 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const task={id:'t',workKey:'w',sourceVersion:'s',status:'failed',executionId:'old'};
+test('confirmed internal stops are not reopened as external unknown executions',()=>{
+ const {planTaskRecovery}=require('../electron/task-backlog-recovery.cjs');
+ for(const kind of ['smart_material_intake','project_overall_report']) {
+  const plan=planTaskRecovery({...task,kind,adapterId:'internal',recoveryState:'host_confirmed_stopped'},{});
+  assert.equal(plan.action,'no_change');
+  assert.equal(plan.reason,'internal_stop_requires_business_reconciliation');
+ }
+});
 test('missing claim and stopped process never prove no external effects',()=>{
  const {planTaskRecovery}=require('../electron/task-backlog-recovery.cjs');
  for(const evidence of [{},{processAlive:false},{claimedAt:null},{packetCopied:true},{distributionComplete:false}])assert.notEqual(planTaskRecovery(task,evidence).action,'requeue_proven_not_sent');

@@ -84,6 +84,43 @@ test('manual frozen batch validates sources and commits isolated project knowled
   assert.equal(index.knowledge.length, 5);
   assert.match(await fs.readFile(path.join(f.project.workspacePath, 'a.txt'), 'utf8'), /SYNTHETIC/);
 });
+test('manual batch hands an unsupported archive to the agent as a verified frozen attachment', windowsOnly, async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.project.workspacePath, 'synthetic.zip'), 'synthetic archive bytes');
+  const added = await f.store.registerFiles([{ location: { rootId: 'workspace', kind: 'workspace', relativePath: 'synthetic.zip' } }]);
+  const index = await f.store.read();
+  const item = index.materials.find(record => record.location.relativePath === 'synthetic.zip');
+  assert.ok(item);
+  const manual = createManualMaterialBatch({ project: f.project, authorize: async () => true, scopeFingerprint: 'scope-1' });
+  const packet = await manual.prepare([item.materialId]);
+  const source = packet.sources[0];
+  assert.equal(source.attachment.name, 'synthetic.zip');
+  assert.equal(source.attachment.originalPath, path.join(f.project.workspacePath, 'synthetic.zip'));
+  assert.equal(source.sha256, item.sha256);
+  assert.match(source.attachment.path, /snapshots/);
+  assert.equal(await fs.readFile(source.attachment.path, 'utf8'), 'synthetic archive bytes');
+  assert.equal(source.text, undefined);
+  assert.equal((await f.store.read()).materials.find(record => record.materialId === item.materialId).processing.state === 'completed', false);
+  await assert.rejects(manual.accept(packet.batchId, { schema: RESULT_SCHEMA, projectId: f.project.id, batchId: packet.batchId,
+    scopeFingerprint: 'scope-1', status: 'failed', message: 'cannot read attachment', artifacts: [] }), { code: 'agent_failed' });
+  assert.equal(((await f.store.read()).knowledge || []).length, 0);
+  const response = { schema: RESULT_SCHEMA, projectId: f.project.id, batchId: packet.batchId, scopeFingerprint: 'scope-1', status: 'completed', message: 'synthetic',
+    artifacts: packet.baselines.map(target => ({ relativePath: target.relativePath, content: '# Verified synthetic attachment',
+      sources: [{ materialId: source.materialId, version: source.version, sha256: source.sha256 }] })) };
+  const committed = await manual.accept(packet.batchId, response);
+  assert.equal(committed.fullyCommitted, true);
+  assert.equal((await f.store.read()).knowledge.length, 5);
+});
+test('manual batch retains an empty extracted source as an attachment for user inspection', windowsOnly, async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.project.workspacePath, 'empty.txt'), '');
+  const registered = await f.store.registerFiles([{ location: { rootId: 'workspace', kind: 'workspace', relativePath: 'empty.txt' } }]);
+  const manual = createManualMaterialBatch({ project: f.project, authorize: async () => true, scopeFingerprint: 'scope-1' });
+  const packet = await manual.prepare([registered.result[0].materialId]);
+  assert.equal(packet.sources[0].attachment.name, 'empty.txt');
+  assert.equal(packet.sources[0].attachment.size, 0);
+  assert.equal(((await f.store.read()).knowledge || []).length, 0);
+});
 test('manual batch cannot commit after source mutation or authority revocation', windowsOnly, async t => {
   const f = await fixture(t); let allowed = true;
   const manual = createManualMaterialBatch({ project: f.project, authorize: async () => allowed, scopeFingerprint: 'scope-1' });

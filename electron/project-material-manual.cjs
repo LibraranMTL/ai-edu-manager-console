@@ -1,5 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
+const path = require('node:path');
 const { createProjectMaterialHost } = require('./project-material-host.cjs');
 const { createProjectDigestWorkspace } = require('./project-material-digest.cjs');
 const { createProjectKnowledgeCommitter } = require('./project-knowledge-commit.cjs');
@@ -26,16 +27,26 @@ function createManualMaterialBatch({ project, authorize, scopeFingerprint = '' }
       if (record.processing?.state === 'completed' && record.processing?.processedVersion === record.version) throw Error('资料版本已经完成消化。');
       await store.snapshot(id, record.version);
       const input = await store.resolve(id, record.version);
-      const text = await extractor.extractText(input);
+      let text = '', attachment = null;
+      try { text = await extractor.extractText(input); }
+      catch (error) {
+        if (!['unsupported', 'ocr_failed', 'empty_source'].includes(error.code)) throw error;
+        // Both paths are resolved by the store, not supplied by the caller.
+        // The original keeps its extension for a user attaching it in an Agent UI;
+        // the frozen snapshot is the authoritative version for settlement.
+        const original = await store.resolve(id);
+        if (original.version !== input.version || original.sha256 !== input.sha256) throw Error('原文件与固定资料版本不一致。');
+        attachment = { path: input.path, originalPath: original.path, name: path.basename(input.location?.relativePath || 'source'), size: input.size };
+      }
       const bytes = Buffer.byteLength(text || '');
-      if (!text?.trim()) throw Error('资料正文为空，请先检查该资料。');
+      if (!attachment && !text?.trim()) throw Error('资料正文为空，请先检查该资料。');
       if (size + bytes > 256 * 1024) {
         if (allowPrefix && selected.length) break;
         throw Error('单份资料正文超过手工交接容量，请先精简该资料。');
       }
       size += bytes;
       selected.push(record);
-      texts.push({ materialId: id, version: input.version, sha256: input.sha256, text });
+      texts.push({ materialId: id, version: input.version, sha256: input.sha256, ...(attachment ? { attachment } : { text }) });
     }
     await check();
     const ruleVersion = crypto.createHash('sha256').update('manual-material-v1').digest('hex');

@@ -20,11 +20,11 @@
   "teacherTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-teacher-terminal-0.1.5.apk",
   "teacherTerminalSha256": "7654B196990F089175581D1F0FE7E7348283160C7144B2FB70DB47C6003A586A",
   "teacherTerminalNotes": "教师端支持导入对话、学生学习状态谈话代填、项目综合报告和每周知识增长图；项目知识、学情档案、成长模型和报告均以主机只读 Markdown 弹窗呈现。",
-  "standaloneVersionCode": 41,
-  "standaloneVersionName": "1.3.7",
-  "standaloneApkUrl": "https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.3.7-workbench-r2.apk",
-  "standaloneSha256": "E48359341A8FCD1082AD6965C2638C0E5771D2C0CC4CD49B8DCA93F5BEFBAEF8",
-  "standaloneNotes": "工作台修订版新增自动投递文件夹与分享收件箱，优化折叠菜单、详情弹窗和页面切换。已安装上一批 1.3.7 的用户可从官网下载后手动覆盖安装。",
+  "standaloneVersionCode": 42,
+  "standaloneVersionName": "1.3.8",
+  "standaloneApkUrl": "https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.3.8.apk",
+  "standaloneSha256": "AF6398AE4A2D33D7709F5E4EDBCC9838D87B2CCC7813FCA39BBAE0C3AC11730C",
+  "standaloneNotes": "优化最近七天统计图日期展示及学情、成长和规划依据处理；联网规划结果及来源仍需核验。 九项性能对比待验证。",
   "managerApkUrl": "",
   "managerApkVersionCode": 23,
   "managerApkVersionName": "0.2.3",
@@ -33,5 +33,6 @@
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.34.apk",
   "notes": "Windows 主机 0.23.8 完善普通自动调度与历史积压恢复的隔离、执行未知保护，以及 WorkBuddy 联网研究执行前复核；Windows 学生端 0.19.1 在固定绑定学生的个人终端提供受控 Agent 会话采集授权，Codex 和 WorkBuddy 已完成本机真实轮次送达验收；Android 学生端 0.6.34 新增分享收件箱与断网恢复。Windows 包尚未进行 Authenticode 签名，升级前请退出旧版并创建状态备份。",
   "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.8-Setup.exe",
-  "windowsNotes": "完善新任务与确认安全未完成任务的自动执行边界；历史积压恢复独立控制，执行未知先核对不重试；WorkBuddy 联网研究执行前自动复核，Codex 连接检查不恢复历史积压。安装包未签名。"
+  "windowsNotes": "完善新任务与确认安全未完成任务的自动执行边界；历史积压恢复独立控制，执行未知先核对不重试；WorkBuddy 联网研究执行前自动复核，Codex 连接检查不恢复历史积压。安装包未签名。",
+  "standalonePerformanceStatus": "pending_verification"
 }

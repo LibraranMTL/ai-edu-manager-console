@@ -29136,7 +29136,7 @@ async function executeTaskByAdapterCore(taskId, requestedExecutor = '', executio
         current.input = { ...current.input, manualResearchFingerprint: prepared.inputFingerprint, manualResearchKind: researchKind };
         await writeTaskStoreDurably(currentStore);
         refreshed = current;
-        command = `请联网研究以下去标识资料，实际打开公开 HTTPS 官方来源，严格区分已核实事实、推断和待核实内容；不自动报名或申请。只返回符合 JSON Schema 的对象；教育管家会重新访问来源并校验。\n输入：${JSON.stringify(prepared.input)}\nJSON Schema：${JSON.stringify(prepared.schema)}\n将对象放在回执 data 字段，或直接粘贴该对象供教育管家导入。`;
+        command = `请联网研究以下去标识资料，实际打开公开 HTTPS 官方来源，严格区分已核实事实、推断和待核实内容；不自动报名或申请。比赛 deadline 必须是 YYYY-MM-DD；未核实或未公布时使用空字符串，在 missing 中说明，不得填写“待核实”或推测日期。只返回符合 JSON Schema 的对象；教育管家会重新访问来源并校验。\n输入：${JSON.stringify(prepared.input)}\nJSON Schema：${JSON.stringify(prepared.schema)}\n将对象放在回执 data 字段，或直接粘贴该对象供教育管家导入。`;
       } else if (refreshed.kind === 'practice_attempt_review') {
         const prepared = await getPracticeCards().prepareManualReview(refreshed.sourceId, refreshed.input?.attemptId);
         const currentStore = readTaskStore();

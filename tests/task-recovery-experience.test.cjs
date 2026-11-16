@@ -156,6 +156,13 @@ test('recovery guidance trusts the actual built-in adapter and gives manual and 
   assert.equal(manual.userSteps.length, 4);
   assert.match(manual.nextAction, /packet-1/);
 
+  const copied = recoveryPlan({ status: 'waiting_result', adapterId: 'manual', executionMode: 'manual',
+    executionId: 'manual-1', result: { packet: { promptPath: 'fixture-prompt.md' } },
+    executionProvenance: { providerId: 'manual', providerLabel: 'WorkBuddy' } });
+  assert.equal(copied.providerLabel, '手工执行');
+  assert.equal(copied.canOpen, false);
+  assert.match(copied.nextAction, /导入任务中心/);
+
   const pending = recoveryPlan({ status: 'pending', adapterId: '', executor: 'workbuddy', executionMode: 'adapter' });
   assert.equal(pending.action, 'start');
   assert.match(pending.nextAction, /开始处理/);

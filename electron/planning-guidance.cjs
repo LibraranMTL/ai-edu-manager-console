@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { validateTopicOutput, redact } = require('./structured-generation.cjs');
+const { validateTopicOutput, redact, TOPIC_OUTPUT_SCHEMA } = require('./structured-generation.cjs');
 const researchContent = require('./research-content.cjs');
 const { createPlanningFavorites } = require('./planning-favorites.cjs');
 
@@ -378,6 +378,41 @@ function createPlanningGuidanceService(options) {
     return { ok: true, unchanged: false, current: set, message: candidates.length ? `已根据当前学生资料生成 ${candidates.length} 个待选主题。` : '个性化资料不足，暂不生成通用模板题目。' };
   }
 
+  function prepareManualTopic(studentId) {
+    const student = requireStudent(studentId), snapshot = evidenceSnapshot(student);
+    const local = personalizedTopicSuggestions(student, snapshot);
+    if (!local.length) throw Error('缺少个人兴趣、职业方向或可追溯学生依据，暂不生成通用选题');
+    const evidence = local[0].studentEvidence.filter(item => item.kind === 'fact').map((item, index) => ({ ref: `E${index}`, text: redact(item.text, student), sourceId: item.sourceId }));
+    snapshot.learningSignals.forEach((text, index) => evidence.push({ ref: `L${index}`, text: redact(text, student), sourceId: snapshot.sourceIds.filter(id => id.startsWith('report:'))[index] || snapshot.sourceIds[0] }));
+    const input = { profile: JSON.parse(redact(deidentifyResearchInput(student, snapshot), student)), evidence: evidence.map(({ sourceId, ...item }) => item),
+      projects: snapshot.projects.map(item => ({ type: item.type, objective: redact(item.objective, student), status: item.status })) };
+    return { inputFingerprint: snapshot.inputFingerprint, input, schema: TOPIC_OUTPUT_SCHEMA };
+  }
+
+  function acceptManualTopic(studentId, inputFingerprint, result, executionId) {
+    const student = requireStudent(studentId), snapshot = evidenceSnapshot(student);
+    if (!executionId || snapshot.inputFingerprint !== String(inputFingerprint || '')) throw Error('学生资料或执行批次已变化，结果未保存。');
+    const store = readStore(student);
+    const previous = (store.topicSets || []).find(item => item.manualExecutionId === String(executionId));
+    if (previous) return { ok: true, duplicate: true, current: previous, message: '该批次已保存，未重复生成。' };
+    const prepared = prepareManualTopic(studentId);
+    const generated = validateTopicOutput(result, prepared.input);
+    const local = personalizedTopicSuggestions(student, snapshot);
+    const evidence = local[0].studentEvidence.filter(item => item.kind === 'fact').map((item, index) => ({ ref: `E${index}`, text: redact(item.text, student), sourceId: item.sourceId }));
+    snapshot.learningSignals.forEach((text, index) => evidence.push({ ref: `L${index}`, text: redact(text, student), sourceId: snapshot.sourceIds.filter(id => id.startsWith('report:'))[index] || snapshot.sourceIds[0] }));
+    const createdAt = iso(now());
+    const set = { schema: TOPIC_SCHEMA, id: `topic-agent-${crypto.randomUUID()}`, version: Number(store.topicSets?.[0]?.version || 0) + 1,
+      studentId: String(student.id), inputFingerprint: snapshot.inputFingerprint, manualExecutionId: String(executionId), generatorVersion: 'agent-personalized-v1', generationMode: 'agent_evidence_based', evidenceSnapshot: snapshot, createdAt,
+      candidates: generated.map((value, index) => ({ ...value, id: `topic-${hash(`${student.id}:${executionId}:${value.title}:${index}`).slice(0, 24)}`, regionScope: snapshot.profile.currentRegion || '待补充',
+        studentEvidence: [...value.evidenceRefs.map(ref => { const item = evidence.find(item => item.ref === ref); return { kind: 'fact', text: item.text, sourceId: item.sourceId }; }), { kind: 'inference', text: value.inference, sourceId: '' }],
+        freshness: { generatedAt: createdAt, evidenceUpdatedAt: snapshot.updatedAt, internetVerified: false } })),
+      notice: '手工 Agent 结果已通过结构与依据范围校验；未联网核验具体政策，采用只准备草稿。' };
+    store.topicSets = [set, ...(store.topicSets || [])].slice(0, 50);
+    store.checks = [{ id: `topic-agent-${crypto.randomUUID()}`, taskType: 'topic_suggestion_refresh', studentId: String(student.id), inputFingerprint: snapshot.inputFingerprint, executionId: String(executionId), at: createdAt, status: 'succeeded' }, ...(store.checks || [])].slice(0, 200);
+    writeStore(student, store);
+    return { ok: true, current: set, message: '手工选题结果已校验并保存。' };
+  }
+
   function refreshAgentTopicSuggestions(studentId, request = {}) {
     if (!options.topicGenerator) return Promise.resolve(refreshTopicSuggestions(studentId, request));
     const student = requireStudent(studentId), snapshot = evidenceSnapshot(student);
@@ -488,6 +523,36 @@ function createPlanningGuidanceService(options) {
     const task = pendingGuidance.get(String(studentId)); task?.controller.abort();
     return { ok: true, message: task ? '已请求取消规划研究；历史版本不受影响。' : '当前没有执行中的规划研究。' };
   }
+  function prepareManualResearch(studentId, kind) {
+    if (!['guidance', 'competition'].includes(kind)) throw Error('不支持的研究类型。');
+    const student = requireStudent(studentId), snapshot = evidenceSnapshot(student), store = readStore(student);
+    const preferences = kind === 'guidance' ? effectivePreferences(student, store.preferences) : (store.competitionPreferences || {});
+    const inputFingerprint = fingerprint({ evidence: snapshot.inputFingerprint, preferences: kind === 'guidance' ? researchPreferencesFingerprint(preferences) : fingerprint(preferences), kind });
+    const input = deidentifyResearchInput(student, snapshot);
+    if (kind === 'guidance') { input.routes = Object.keys(preferences.routes).filter(route => preferences.routes[route]); input.targetRegions = preferences.targetRegions; input.focusAreas = preferences.focusAreas; }
+    input.purpose = kind === 'guidance' ? 'guidance' : 'competition_recommendation';
+    return { inputFingerprint, input: JSON.parse(redact(input, student)), schema: require('./planning-research.cjs').outputSchema(input.purpose) };
+  }
+  async function acceptManualResearch(studentId, kind, inputFingerprint, executionContext, output, authorize = () => true) {
+    if (!executionContext?.taskId || !executionContext?.executionId || !authorize()) throw Error('研究任务批次已失效。');
+    if (prepareManualResearch(studentId, kind).inputFingerprint !== inputFingerprint) throw Error('学生资料或研究设置已变化。');
+    const student = requireStudent(studentId), store = readStore(student);
+    const previous = (store.checks || []).find(item => item.taskId === executionContext.taskId && item.executionId === executionContext.executionId && ['succeeded', 'unchanged', 'no_results'].includes(item.status));
+    if (previous) return { ok: true, duplicate: true, receipt: previous, current: kind === 'guidance' ? store.guidanceVersions?.find(x => x.id === previous.guidanceVersionId) : store.competitionSets?.find(x => x.id === previous.versionId), message: '该研究批次已保存。' };
+    const schema = require('./planning-research.cjs').outputSchema(kind === 'guidance' ? 'guidance' : 'competition_recommendation');
+    const checked = require('./structured-contract-check.cjs').check(output, schema);
+    if (!Array.isArray(checked.sources) || checked.sources.length < 1 || checked.sources.length > 6) throw Error('联网来源数量无效。');
+    const fetchSource = options.manualFetchSource || require('./workbuddy-research.cjs').fetchPublicSource;
+    const fetched = [];
+    for (const source of checked.sources) { if (!authorize()) throw Error('研究任务批次已失效。'); fetched.push(await fetchSource(source.url)); }
+    if (!authorize() || prepareManualResearch(studentId, kind).inputFingerprint !== inputFingerprint) throw Error('研究期间任务、学生资料或设置已变化。');
+    const events = fetched.map(url => ({ type: 'item.completed', item: { type: 'web_search', status: 'completed', action: { type: 'open_page', url } } }));
+    const verified = require('./planning-research.cjs').verifiedOutput(checked, events, iso(now()));
+    const manualProvider = { id: 'manual', search: async () => verified };
+    const request = { trigger: 'manual', executionContext, manualProvider, manualAuthorize: authorize };
+    return kind === 'guidance' ? performGuidanceRefresh(studentId, request) : performCompetitionRefresh(studentId, request);
+  }
+
   async function performGuidanceRefresh(studentId, request = {}) {
     const student = requireStudent(studentId);
     const snapshot = evidenceSnapshot(student);
@@ -498,7 +563,7 @@ function createPlanningGuidanceService(options) {
     const capabilities = getResearchCapabilityStatus();
     const checkedAt = iso(now());
     const baseReceipt = { ...researchExecutionContext(request), id: `guidance-check-${Date.now()}-${snapshot.inputFingerprint.slice(0, 8)}`, taskType: 'guidance_research_check', studentId: String(student.id), trigger: cleanText(request.trigger || 'manual', 40), checkedAt, inputFingerprint: guidanceInputFingerprint };
-    const provider = researchProviders().find((item) => (!request.providerId||item.id===request.providerId)&&capabilities.usableProviderIds.includes(item.id) && typeof item.search === 'function');
+    const provider = request.manualProvider || researchProviders().find((item) => (!request.providerId||item.id===request.providerId)&&capabilities.usableProviderIds.includes(item.id) && typeof item.search === 'function');
     if (!provider) {
       const receipt = { ...baseReceipt, status: 'unavailable', code: 'RESEARCH_CAPABILITY_UNAVAILABLE', message: capabilities.message };
       store.checks = [receipt, ...(store.checks || [])].slice(0, 200);
@@ -513,6 +578,7 @@ function createPlanningGuidanceService(options) {
       queryInput.purpose = 'guidance';
       authorizeResearch(studentId);
       const raw = await provider.search({ schema: 'research.search.request.v1', queryInput: JSON.parse(redact(queryInput, student)), timeoutMs: 300_000, signal: request.signal,beforeExecute:request.beforeExecute,onStarted:request.onStarted,onStage:request.onStage,executionContext:request.executionContext });
+      if (request.manualAuthorize && !request.manualAuthorize()) throw Error('研究任务批次已失效。');
       authorizeResearch(studentId);
       if (request.signal?.aborted) throw Object.assign(new Error('研究已取消，历史版本不受影响。'), { code: 'RESEARCH_CANCELLED' });
       const currentStudent = requireStudent(studentId);
@@ -558,13 +624,14 @@ function createPlanningGuidanceService(options) {
         nearTermActions: ['补齐档案中的目标地区与规划路径', '核对官方来源的适用届别和截止时间', '选择一项可在四周内积累新证据的学习或项目行动'],
         reviewAt: new Date(now().getFullYear(), now().getMonth() + 1, 1).toISOString(),
         changesFromPrevious: current ? ['学生输入或官方来源发生实质变化，已生成新版本'] : ['首次生成经联网核验的规划版本'],
-        status: 'verified',
+        status: request.manualProvider ? 'manual_sources_pending_review' : 'verified',
       };
+      if (request.manualProvider) version.limitations.push('主机已访问来源链接；来源是否官方及研究结论是否与网页一致仍需人工核对。');
       const receipt = { ...baseReceipt, status: 'succeeded', providerId: provider.id, sourceFingerprint, guidanceVersionId: version.id };
       store.guidanceVersions = [version, ...(store.guidanceVersions || [])].slice(0, 100);
       store.checks = [receipt, ...(store.checks || [])].slice(0, 200);
       writeStore(student, store);
-      return { ok: true, unchanged: false, current: version, receipt, capability: capabilities, message: '已生成新的联网核验规划版本。' };
+      return { ok: true, unchanged: false, current: version, receipt, capability: capabilities, message: request.manualProvider ? '已保存手工研究候选；来源身份与结论仍需人工核对。' : '已生成新的联网核验规划版本。' };
     } catch (error) {
       store = readStore(requireStudent(studentId));
       const receipt = { ...baseReceipt, status: 'failed', stage:error.stage,code: cleanText(error.code || 'RESEARCH_FAILED', 80), message: cleanText(error.message, 500) };
@@ -607,11 +674,12 @@ function createPlanningGuidanceService(options) {
     const base = { ...researchExecutionContext(request), id: `competition-check-${crypto.randomUUID()}`, taskType: 'competition_research_check', studentId: String(student.id), checkedAt, inputFingerprint: snapshot.inputFingerprint, trigger: cleanText(request.trigger || 'manual', 40) };
     try {
       const capability = getResearchCapabilityStatus();
-      const provider = researchProviders().find(x => (!request.providerId||x.id===request.providerId)&&capability.usableProviderIds.includes(x.id));
+      const provider = request.manualProvider || researchProviders().find(x => (!request.providerId||x.id===request.providerId)&&capability.usableProviderIds.includes(x.id));
       if (!provider) throw new Error(capability.message);
       const queryInput = JSON.parse(redact({ ...deidentifyResearchInput(student, snapshot), purpose: 'competition_recommendation' }, student));
       authorizeResearch(studentId);
       const raw = await provider.search({ schema: 'research.search.request.v1', queryInput, timeoutMs: 180000, signal: request.signal,beforeExecute:request.beforeExecute,onStarted:request.onStarted,onStage:request.onStage,executionContext:request.executionContext });
+      if (request.manualAuthorize && !request.manualAuthorize()) throw Error('研究任务批次已失效。');
       authorizeResearch(studentId);
       if (request.signal?.aborted) throw new Error('比赛研究已取消');
       const latestStudent = requireStudent(studentId);
@@ -627,8 +695,9 @@ function createPlanningGuidanceService(options) {
       else if (current?.inputFingerprint === snapshot.inputFingerprint && current.sourceFingerprint === sourceFingerprint) receipt = { ...base, status: 'unchanged', message: '学生资料与官方来源未变，只保存检查回执。' };
       else {
         version = { schema: 'edu-manager.competition-recommendation-set.v1', id: `competitions-${crypto.randomUUID()}`, version: Number(current?.version || 0) + 1, studentId: String(student.id), inputFingerprint: snapshot.inputFingerprint, sourceFingerprint, createdAt: checkedAt, verifiedAt: research.fetchedAt, candidates, sources: research.sources, limitations: research.limitations, providerId: provider.id };
+        if (request.manualProvider) { version.sourceReview = 'pending_manual_review'; version.limitations = [...version.limitations, '主机已访问来源链接；主办方身份、比赛规则和结论仍需人工核对。']; }
         store.competitionSets = [version, ...(store.competitionSets || [])];
-        receipt = { ...base, status: 'succeeded', versionId: version.id, message: '已保存个性化比赛推荐版本；不自动报名。' };
+        receipt = { ...base, status: 'succeeded', versionId: version.id, message: request.manualProvider ? '已保存手工比赛候选；主办方和规则仍需人工核对。' : '已保存个性化比赛推荐版本；不自动报名。' };
       }
       store.checks = [receipt, ...(store.checks || [])].slice(0, 200); writeStore(latestStudent, store);
       return { ...getCompetitionRecommendations(studentId), current: version, receipt, message: receipt.message };
@@ -709,7 +778,7 @@ function createPlanningGuidanceService(options) {
     })) };
   }
 
-  return { evidenceSnapshot, getTopicSuggestions, refreshTopicSuggestions, refreshAgentTopicSuggestions, prepareProjectDraftFromSuggestion, getGuidancePlan, refreshGuidancePlan, getGuidanceHistory, saveGuidancePreferences, getResearchCapabilityStatus, getStudentOverview, taskCandidates,
+  return { evidenceSnapshot, getTopicSuggestions, refreshTopicSuggestions, refreshAgentTopicSuggestions, prepareManualTopic, acceptManualTopic, prepareManualResearch, acceptManualResearch, prepareProjectDraftFromSuggestion, getGuidancePlan, refreshGuidancePlan, getGuidanceHistory, saveGuidancePreferences, getResearchCapabilityStatus, getStudentOverview, taskCandidates,
     getCompetitionRecommendations, refreshCompetitionRecommendations, cancelCompetitionResearch, cancelGuidanceResearch, saveCompetitionPreferences, competitionTaskCandidates, preparePlanningShare, ...favorites };
 }
 

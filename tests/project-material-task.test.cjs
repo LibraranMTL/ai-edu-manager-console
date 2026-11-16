@@ -9,6 +9,7 @@ const { createProjectMaterialAccess } = require('../electron/project-material-ac
 const { createProjectMaterialTask, materialTaskCheckpointForCandidate } = require('../electron/project-material-task.cjs');
 const { stageMaterialResponse } = require('../electron/project-material-agent.cjs');
 const { RESULT_SCHEMA } = require('../electron/project-material-digest.cjs');
+const { createManualMaterialBatch } = require('../electron/project-material-manual.cjs');
 const windowsOnly = { skip: process.platform !== 'win32' };
 
 async function fixture(t) {
@@ -60,6 +61,97 @@ test('task execution fixes rules and sources, commits five knowledge categories,
     assert.equal(source.bytes.toString(), 'SYNTHETIC temperature 20 25 30');
   }
   assert.match(await fs.readFile(path.join(f.project.workspacePath, 'a.txt'), 'utf8'), /SYNTHETIC/);
+});
+
+test('manual frozen batch validates sources and commits isolated project knowledge', windowsOnly, async t => {
+  const f = await fixture(t);
+  const manual = createManualMaterialBatch({ project: f.project, authorize: async () => true, scopeFingerprint: 'scope-1' });
+  const packet = await manual.prepare([f.item.materialId]);
+  assert.match(packet.sources[0].text, /SYNTHETIC/);
+  const source = packet.sources[0];
+  const response = { schema: RESULT_SCHEMA, projectId: f.project.id, batchId: packet.batchId, scopeFingerprint: 'scope-1', status: 'completed', message: 'synthetic',
+    artifacts: packet.baselines.map(target => ({ relativePath: target.relativePath, content: '# Synthetic\n20 25 30', sources: [{ materialId: source.materialId, version: source.version, sha256: source.sha256 }] })) };
+  const incomplete = structuredClone(response); incomplete.artifacts.pop();
+  await assert.rejects(manual.accept(packet.batchId, incomplete), { code: 'incomplete_artifacts' });
+  assert.equal(((await f.store.read()).knowledge || []).length, 0);
+  const invalid = structuredClone(response); invalid.artifacts[0].sources[0].sha256 = '0'.repeat(64);
+  await assert.rejects(manual.accept(packet.batchId, invalid), { code: 'source_mismatch' });
+  assert.equal(((await f.store.read()).knowledge || []).length, 0);
+  const result = await manual.accept(packet.batchId, response);
+  assert.equal(result.fullyCommitted, true);
+  const index = await f.store.read();
+  assert.equal(index.materials[0].processing.processedVersion, 1);
+  assert.equal(index.knowledge.length, 5);
+  assert.match(await fs.readFile(path.join(f.project.workspacePath, 'a.txt'), 'utf8'), /SYNTHETIC/);
+});
+test('manual batch cannot commit after source mutation or authority revocation', windowsOnly, async t => {
+  const f = await fixture(t); let allowed = true;
+  const manual = createManualMaterialBatch({ project: f.project, authorize: async () => allowed, scopeFingerprint: 'scope-1' });
+  const packet = await manual.prepare([f.item.materialId]), ref = packet.sources[0];
+  const response = { schema: RESULT_SCHEMA, projectId: f.project.id, batchId: packet.batchId, scopeFingerprint: 'scope-1', status: 'completed', message: 'synthetic',
+    artifacts: packet.baselines.map(target => ({ relativePath: target.relativePath, content: '# Candidate', sources: [{ materialId: ref.materialId, version: ref.version, sha256: ref.sha256 }] })) };
+  allowed = false; await assert.rejects(manual.accept(packet.batchId, response), { code: 'project_scope_changed' });
+  allowed = true; await fs.writeFile(path.join(f.project.workspacePath, 'a.txt'), 'changed source');
+  const result = await manual.accept(packet.batchId, response);
+  assert.equal(result.fullyCommitted, false);
+  assert.equal(((await f.store.read()).knowledge || []).length, 0);
+});
+
+test('manual project work retains 21 frozen sources across two validated batches', windowsOnly, async t => {
+  const f = await fixture(t);
+  const entries = [];
+  for (let i = 0; i < 20; i++) {
+    const relativePath = `extra-${i}.txt`;
+    await fs.writeFile(path.join(f.project.workspacePath, relativePath), `synthetic source ${i}`);
+    entries.push({ location: { rootId: 'workspace', kind: 'workspace', relativePath } });
+  }
+  await f.store.registerFiles(entries);
+  const task = { id:'task-project', kind:'project_digest', sourceType:'project', sourceId:f.project.id, status:'approved', executionId:'', input:{},
+    permissions:{read:[f.project.workspacePath,f.project.rawPath],write:[f.project.knowledgeRootPath,f.project.managerPath],operations:['read','write_project_knowledge']} };
+  const store={tasks:[task]}, main=await fs.readFile(path.join(__dirname,'../electron/main.cjs'),'utf8');
+  const context=vm.createContext({crypto:require('node:crypto'),path,require:require('node:module').createRequire(path.join(__dirname,'../electron/main.cjs')),
+    mutableProject:()=>({project:f.project}),isWorkspaceMaterialProject:()=>true,createProjectMaterialHost,readTaskStore:()=>store,
+    agentControlStore:()=>({read:()=>({global:{enabled:true}})}),licenseRequiredJson:()=>null,validateTaskPermissionDeclaration:()=>({ok:true}),
+    taskPathAllowed:(candidate,roots)=>roots.some(root=>candidate===root||candidate.startsWith(`${root}${path.sep}`)),
+    RESEARCH_KINDS:new Set(),PROJECT_SCOPE_CONTRACT_VERSION:'v2',taskNow:()=>new Date().toISOString(),parseJsonText:JSON.parse });
+  for(const name of ['manualDigestContext','manualDigestPermissionAllowed','prepareManualDigest','validateImportedTaskCompletion']) { let start=main.indexOf(`function ${name}(`);if(main.slice(start-6,start)==='async ')start-=6;vm.runInContext(main.slice(start,main.indexOf('\n}',start)+2),context); }
+  for (let part=0;part<2;part++) {
+    task.status='approved'; const prepared=await context.prepareManualDigest(task);
+    assert.equal(prepared.queue.length,21); assert.equal(prepared.packet.sources.length,part===0?20:1);
+    task.input.manualMaterial={batchId:prepared.packet.batchId,fingerprint:prepared.fingerprint,registered:[],studentBatchId:'',queue:prepared.queue};
+    task.executionId=`manual-${part}`;task.status='waiting_result';task.executionMode='manual';
+    const data={schema:RESULT_SCHEMA,projectId:f.project.id,batchId:prepared.packet.batchId,scopeFingerprint:prepared.fingerprint,status:'completed',message:'synthetic',
+      artifacts:prepared.packet.baselines.map(target=>({relativePath:target.relativePath,content:'# Synthetic',sources:prepared.packet.sources.filter(ref=>target.materialIds.includes(ref.materialId)).map(({materialId,version,sha256})=>({materialId,version,sha256}))}))};
+    const result=await context.validateImportedTaskCompletion(task,{status:'completed',data});
+    assert.equal(result.valid,true,result.message); assert.equal(Boolean(result.partial),part===0);
+  }
+  const index=await f.store.read();assert.equal(index.materials.filter(x=>x.processing.state==='completed').length,21);assert.equal(index.knowledge.length,105);
+});
+
+test('task-center manual project batch prepares and settles through the real knowledge committer', windowsOnly, async t => {
+  const f = await fixture(t);
+  const task = { id: 'task-project', kind: 'project_digest', sourceType: 'project', sourceId: f.project.id, status: 'approved', executionId: '', input: {},
+    permissions: { read: [f.project.workspacePath, f.project.rawPath], write: [f.project.knowledgeRootPath, f.project.managerPath], operations: ['read','write_project_knowledge'] } };
+  const store = { tasks: [task] }, main = await fs.readFile(path.join(__dirname, '../electron/main.cjs'), 'utf8');
+  const context = vm.createContext({ crypto: require('node:crypto'), path, require: require('node:module').createRequire(path.join(__dirname, '../electron/main.cjs')),
+    mutableProject: () => ({ project: f.project }), isWorkspaceMaterialProject: () => true, createProjectMaterialHost,
+    readTaskStore: () => store, agentControlStore: () => ({ read: () => ({ global: { enabled: true } }) }), licenseRequiredJson: () => null,
+    validateTaskPermissionDeclaration: () => ({ ok: true }), taskPathAllowed: (candidate, roots) => roots.some(root => candidate === root || candidate.startsWith(`${root}${path.sep}`)),
+    RESEARCH_KINDS: new Set(), PROJECT_SCOPE_CONTRACT_VERSION: 'edu-manager.agent-capabilities.v2', taskNow: () => new Date().toISOString(), parseJsonText: JSON.parse });
+  for (const name of ['manualDigestContext','manualDigestPermissionAllowed','prepareManualDigest','validateImportedTaskCompletion']) {
+    let start = main.indexOf(`function ${name}(`); if (main.slice(start-6,start)==='async ') start-=6;
+    vm.runInContext(main.slice(start,main.indexOf('\n}',start)+2),context);
+  }
+  const prepared = await context.prepareManualDigest(task);
+  task.input.manualMaterial = { batchId: prepared.packet.batchId, fingerprint: prepared.fingerprint, registered: [], studentBatchId: '' };
+  task.executionId = 'manual-1'; task.status = 'waiting_result'; task.executionMode = 'manual';
+  const ref = prepared.packet.sources[0];
+  const data = { schema: RESULT_SCHEMA, projectId: f.project.id, batchId: prepared.packet.batchId, scopeFingerprint: prepared.fingerprint, status:'completed', message:'synthetic',
+    artifacts: prepared.packet.baselines.map(target => ({ relativePath: target.relativePath, content:'# Synthetic\n20 25 30', sources:[{ materialId:ref.materialId, version:ref.version, sha256:ref.sha256 }] })) };
+  const result = await context.validateImportedTaskCompletion(task, { status:'completed', data });
+  assert.equal(result.valid, true, result.message);
+  assert.equal((await f.store.read()).materials[0].processing.state, 'completed');
+  assert.equal((await f.store.read()).knowledge.length, 5);
 });
 
 test('scope revoked after Agent output prevents official knowledge writes and leaves source incomplete', windowsOnly, async (t) => {

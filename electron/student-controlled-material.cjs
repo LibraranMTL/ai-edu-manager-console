@@ -49,7 +49,9 @@ async function writeAtomic(file, content) {
 }
 
 async function finalizeStudentControlledDigest({ student, batch, receiptPath, summaryPath, output,
-  registry = null, registered = [], now = () => new Date().toISOString() }) {
+  registry = null, registered = [], now = () => new Date().toISOString(), authorize = async () => true }) {
+  const requireAuthorization = async () => { if (!await authorize()) throw Object.assign(new Error('学生范围或授权已变化，未继续结算当前批次'), { code: 'SCOPE_CHANGED' }); };
+  await requireAuthorization();
   const byStudentMaterial = new Map((registered || []).map(item => [String(item.studentMaterialId), String(item.projectMaterialId)]));
   const byProjectMaterial = new Map((registry?.materials || []).map(item => [String(item.materialId), item]));
   const batchOutcomes = (batch.files || []).map(file => {
@@ -79,8 +81,10 @@ async function finalizeStudentControlledDigest({ student, batch, receiptPath, su
   }
   let currentIndex = ''; try { currentIndex = await fs.readFile(indexPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const marker = `<!-- controlled-digest:${batch.batchId} -->`;
+  await requireAuthorization();
   if (!currentIndex.includes(marker)) await writeAtomic(indexPath, `${currentIndex.trim()}${currentIndex.trim() ? '\n\n' : ''}${marker}\n## 受控资料消化 ${batch.batchId}\n\n${links.join('\n') || '- 本批没有可提交的知识文件'}\n`);
   let currentLog = ''; try { currentLog = await fs.readFile(logPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  await requireAuthorization();
   if (!currentLog.includes(marker)) await writeAtomic(logPath, `${currentLog.trim()}${currentLog.trim() ? '\n' : ''}\n${marker} ${now()}：宿主校验并提交 ${(batch.files || []).length} 份资料的受控知识候选。\n`);
   const completedCount = exactBatchKnown ? batchOutcomes.filter(item => item.state === 'completed').length : (batch.files || []).length;
   const skippedCount = exactBatchKnown ? batchOutcomes.length - completedCount : 0;
@@ -97,6 +101,7 @@ async function finalizeStudentControlledDigest({ student, batch, receiptPath, su
     }),
     artifacts: [indexPath, logPath], completedAt: now(),
   };
+  await requireAuthorization();
   await writeAtomic(path.resolve(receiptPath), `${JSON.stringify(receipt, null, 2)}\n`);
   return receipt;
 }

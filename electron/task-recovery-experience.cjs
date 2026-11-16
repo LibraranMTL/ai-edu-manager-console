@@ -152,6 +152,16 @@ function recoveryPlan(task = {}, now = new Date().toISOString()) {
       canRetry: false, budget,
     };
   }
+  if (task.executionMode === 'manual' && task.result?.packet?.promptPath && ['running', 'waiting_result'].includes(String(task.status || ''))) {
+    return {
+      version: VERSION, state: 'needs_user', owner: 'user', cause,
+      action: 'complete_manual_handoff', summary: '手工指令已准备，等待导入结果。',
+      nextAction: '复制本次指令并在所选工具中执行，然后将结果粘贴或导入任务中心。',
+      lastCheckedAt: String(task.recoveryCheckedAt || now), nextWakeAt: '',
+      providerLabel: '手工执行', userSteps: ['复制本次指令', '在所选工具中执行', '将结果粘贴或导入任务中心'],
+      canOpen: false, canConfirmStopped: false, canRetry: false, budget,
+    };
+  }
   if (provenance.executionClass === 'manual' && ['running', 'waiting_result'].includes(String(task.status || ''))) {
     const runHint = provenance.externalRunRef || task.executionId || '当前任务包';
     return {

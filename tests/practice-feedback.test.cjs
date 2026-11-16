@@ -55,6 +55,42 @@ test('AI auto feedback writes correctness only, replay does not duplicate learni
   assert.notEqual(result.states[0].state,'mastered');assert.notEqual(result.states[0].state,'mostly_mastered');
   assert.equal(env.calls(),3);assert.equal((await env.api.attemptDetail('a','first-answer')).learningStatus,'applied');
 });
+test('manual assessment persists isolated review and applies a learning event once', async t => {
+  const env=await setup(t), card=await env.card();
+  await env.api.submit('a',card.id,{attemptId:'manual-answer',answer:'x=2'});
+  const prepared=await env.api.prepareManualReview('a','manual-answer');
+  const output={judgement:'correct',summary:'答案正确',correctParts:['正确'],issues:[],suggestions:['独立复核'],limitations:[],answerQuotes:['x=2'],readable:true,consistent:true,imageTranscript:'',printedOnly:false};
+  await assert.rejects(env.api.acceptManualReview('b','manual-answer',prepared.fingerprint,'run-1',output));
+  await assert.rejects(env.api.acceptManualReview('a','manual-answer','stale','run-1',output),/已变化/);
+  await assert.rejects(env.api.acceptManualReview('a','manual-answer',prepared.fingerprint,'run-1',{...output,judgement:'invented'}),/格式无效/);
+  const result=await env.api.acceptManualReview('a','manual-answer',prepared.fingerprint,'run-1',output);
+  assert.equal(result.status,'reviewed');
+  assert.equal((await env.api.attemptDetail('a','manual-answer')).learningStatus,'applied');
+  assert.equal((await env.api.acceptManualReview('a','manual-answer',prepared.fingerprint,'run-1',output)).duplicate,true);
+  await assert.rejects(env.api.acceptManualReview('a','manual-answer',prepared.fingerprint,'run-2',output),/已有其他评阅/);
+  assert.equal(queryLearningTrajectory(path.join(env.root,'a'),{studentId:'a'}).events.length,1);
+});
+test('manual task result reaches practice store only for the current batch', async t => {
+  const env=await setup(t), card=await env.card();
+  await env.api.submit('a',card.id,{attemptId:'manual-task',answer:'x=2'});
+  const prepared=await env.api.prepareManualReview('a','manual-task');
+  const task={id:'task-1',sourceId:'a',kind:'practice_attempt_review',executionMode:'manual',executionId:'run-1',status:'waiting_result',input:{attemptId:'manual-task',manualPracticeFingerprint:prepared.fingerprint}};
+  const store={tasks:[task]}; const main=await fs.readFile(path.join(__dirname,'../electron/main.cjs'),'utf8');
+  const context=require('node:vm').createContext({readTaskStore:()=>store,getPracticeCards:()=>env.api,taskNow:()=>new Date().toISOString(),parseJsonText:JSON.parse,RESEARCH_KINDS:new Set(),
+    validateExternalTaskResultIdentity:require('../electron/task-protocol.cjs').validateExternalTaskResultIdentity,
+    appendTaskEvent(){},resultIdentityFeedback:(_t,_p,identity)=>identity,normalizeTaskResult:(_t,p,v)=>({...p,validation:v}),
+    commitValidatedTaskResult:(_s,item,result,_v,options)=>{item.status=options.successful?'succeeded':'failed';item.result=result;return {ok:true,task:item};},
+    writeTaskStoreDurably:async()=>{},publishCompletedRemoteCollaborationTask(){},isDigestTask:()=>false});
+  for(const name of ['validateImportedTaskCompletion','acceptImportedTaskResult']) {let start=main.indexOf(`function ${name}(`);if(main.slice(start-6,start)==='async ')start-=6;require('node:vm').runInContext(main.slice(start,main.indexOf('\n}',start)+2),context);}
+  const data={judgement:'correct',summary:'答案正确',correctParts:['正确'],issues:[],suggestions:['复核'],limitations:[],answerQuotes:['x=2'],readable:true,consistent:true,imageTranscript:'',printedOnly:false};
+  const payload={protocolVersion:'1.2',taskId:task.id,executionId:'old',status:'completed',data};
+  assert.equal((await context.acceptImportedTaskResult(task.id,payload)).ok,false);
+  assert.equal((await env.api.attemptDetail('a','manual-task')).reviews.length,0);
+  payload.executionId='run-1';assert.equal((await context.acceptImportedTaskResult(task.id,payload)).ok,true);
+  assert.equal((await env.api.attemptDetail('a','manual-task')).learningStatus,'applied');
+  assert.equal(queryLearningTrajectory(path.join(env.root,'a'),{studentId:'a'}).events.length,1);
+  assert.equal((await context.acceptImportedTaskResult(task.id,payload)).ok,false);
+});
 test('manual policy is snapshotted, corrections preserve AI result and replace effective episode',async t=>{
   const env=await setup(t);await env.api.savePlan('a',{...template,reviewPolicy:'human_confirm'});const card=await env.card();
   await env.api.submit('a',card.id,{attemptId:'first-answer',answer:'x=2'});

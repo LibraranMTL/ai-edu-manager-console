@@ -22,7 +22,8 @@ function taskPresentation(task) {
   const unknown = taskExecutionUnresolved(task);
   const futureScheduled = ['pending', 'approved', 'queued'].includes(task.status)
     && ['schedule', 'scheduled'].includes(task.trigger) && scheduledAtTime(task.scheduledAt) > Date.now();
-  const awaiting = handoff && task.status === 'waiting_result' && !task.result?.claimedAt;
+  const awaitingManual = task.executionMode === 'manual' && task.status === 'waiting_result';
+  const awaiting = handoff && !awaitingManual && task.status === 'waiting_result' && !task.result?.claimedAt;
   const awaitingReceipt = String(task.businessOutcome || '') === 'awaiting_receipt';
   const businessManual = ['needs_user_action', 'manual_required'].includes(String(task.businessOutcome || ''));
   const retryWait = taskRetryEligible(task, Infinity);
@@ -63,7 +64,7 @@ function taskPresentation(task) {
     : ACTIVE.has(task.status) ? 'running' : 'scheduled';
   const userGroup = automationState === 'completed' ? 'history' : requiresUserAction ? 'needs_help' : 'automatic';
   const phaseLabel = reconcileExhausted?'需要核对原批次':unknown ? (plan.owner === 'system' ? '自动核对中' : '需要你帮助')
-    : awaitingReceipt ? '正在核对已提交批次' : capabilityWait ? (task.capabilityWait.exhausted?'需要检查执行器连接':'正在复核执行器连接') : businessManual ? '等待批量核对' : awaiting ? '等待发送确认'
+    : awaitingReceipt ? '正在核对已提交批次' : capabilityWait ? (task.capabilityWait.exhausted?'需要检查执行器连接':'正在复核执行器连接') : businessManual ? '等待批量核对' : awaitingManual ? '等待手工结果' : awaiting ? '等待发送确认'
     : approvalRequired ? '等待批准' : dependencyWait ? '正在核对关联执行' : resourceWait ? '等待后台资源' : retryWait ? '稍后继续' : futureScheduled ? '按计划开始' : task.status === 'reviewing' ? '校验中'
       : task.status === 'succeeded' ? (task.businessOutcome === 'no_work' ? '无需处理' : task.result?.structuredOutput?.failures?.length ? '部分完成' : '已完成')
         : task.status === 'running' ? (task.result?.claimedAt ? '已领取' : '执行中')
@@ -76,7 +77,7 @@ function taskPresentation(task) {
     : futureScheduled ? String(task.scheduledAt || '') : automationState === 'waiting_dispatch' ? '即将自动开始' : '';
   const automationReason = reconcileExhausted?'自动核对已达本轮上限；请核对原批次回执，未知结果不会重新发送给 Agent':capabilityWait ? (task.capabilityWait.exhausted?'连接自动复核已达本轮上限，请检查登录或连接；任务未发送，也未创建手工包':'正在复核已授权执行器，完成后自动继续，不消耗任务执行次数') : awaitingReceipt ? '正在核对已提交批次；不会重复调用 Agent'
     : businessManual ? String(task.result?.summary || '自动步骤已完成，剩余异常项等待批量核对')
-    : awaiting ? '等待桌面 Agent 的发送确认' : approvalRequired ? '高风险任务等待用户批准'
+    : awaitingManual ? '手工指令已准备，请执行后导入结果' : awaiting ? '等待桌面 Agent 的发送确认' : approvalRequired ? '高风险任务等待用户批准'
     : dependencyWait ? `正在核对关联任务 ${String(task.dispatchBlock?.blockerTaskId || '')} 的外部执行结果；不会重复调用 Agent`
     : resourceWait ? String(task.resourceBlock?.message || task.resourceBlock?.reason || '等待磁盘、CPU或同一资料范围的后台资源') : retryWait ? '已安排安全重试'
       : automationState === 'suspended' ? (projectMaterialPaused
@@ -88,7 +89,7 @@ function taskPresentation(task) {
     awaitingSend: awaiting, hasResult, resolution: taskResolution(task),
     recoveryPlan: plan, executionProvenance: executionProvenance(task), recoveryBudget: recoveryBudget(task),
     occupiesExecutionSlot: ACTIVE.has(task.status) && !handoff && !unknown,
-    nextAction: unknown ? plan.nextAction : awaiting ? '请在桌面工具检查任务内容并发送；未收到领取确认。'
+    nextAction: unknown ? plan.nextAction : awaitingManual ? '请执行本次指令并导入结果，系统将核对后处理。' : awaiting ? '请在桌面工具检查任务内容并发送；未收到领取确认。'
       : retryWait ? '已保存安全重试计划，自动整理开启且授权有效时将按计划继续；无需重复点击。' : task.error?.message || '' };
 }
 const SUMMARY_FIELDS = ['id', 'title', 'kind', 'sourceType', 'sourceId', 'sourceName', 'status', 'trigger', 'executor', 'adapterId',

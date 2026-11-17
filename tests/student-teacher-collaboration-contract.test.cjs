@@ -80,10 +80,10 @@ test('current client sources and formal manifest remain aligned', () => {
   const formal = JSON.parse(read('release/edu-manager-version.json'));
   assert.deepEqual(terminalVersion, { versionCode: 241, versionName: '0.19.1', releaseStatus: 'stable' });
   assert.equal(candidate.version, '0.23.9');
-  assert.equal(formal.windowsVersionName, '0.23.8');
+  assert.equal(formal.windowsVersionName, candidate.version);
   assert.equal(formal.tabletTerminalVersionName, '0.6.34');
   assert.equal(formal.teacherTerminalVersionName, '0.1.5');
-  assert.equal(formal.standaloneVersionName, '1.3.7');
+  assert.equal(formal.standaloneVersionName, '1.3.8');
 });
 
 test('teacher project knowledge is a read-only file dialog and collaboration 404 is explained', () => {

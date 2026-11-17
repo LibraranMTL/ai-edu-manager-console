@@ -39,7 +39,7 @@ test('download page presents four product families and five client builds', () =
   }
 
   assert.doesNotMatch(html, /iOS|即将开放/u);
-  assert.match(html, /签名与正式版一致/u);
+  assert.match(html, /程序仍未进行 Authenticode 签名/u);
   assert.match(html, /下载正式 APK/u);
   assert.doesNotMatch(html, /正式包待签名/u);
   assert.doesNotMatch(html, /app-debug\.apk|device-test-candidate\.apk/u);

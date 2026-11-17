@@ -10,11 +10,12 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('isolated Windows desktop shows first run and resumes a paused guide', { skip: process.platform !== 'win32', timeout: 120000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-onboarding-desktop-'));
-  const electron = require('electron');
+  const installedExe = process.env.EDU_FIRST_RUN_INSTALLED_EXE;
+  const electron = installedExe || require('electron');
   const port = 19473 + Math.floor(Math.random() * 1000);
   const env = { ...process.env, EDU_DISABLE_TASK_SCHEDULER: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(electron, [root, `--user-data-dir=${dir}`, '--qa-isolated', `--remote-debugging-port=${port}`], { windowsHide: true, stdio: 'ignore', env });
+  const child = spawn(electron, [...(installedExe ? [] : [root]), `--user-data-dir=${dir}`, '--qa-isolated', `--remote-debugging-port=${port}`], { windowsHide: true, stdio: 'ignore', env });
   t.after(() => {
     if (child.pid) spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
   });

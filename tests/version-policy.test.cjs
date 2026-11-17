@@ -33,7 +33,7 @@ test('published Windows manifests stay stable while the next package is a candid
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.23.10');
+  assert.equal(packageJson.version, '0.24.1');
   assert.ok([releaseManifest.windowsVersionName, nextWindowsVersion(releaseManifest.windowsVersionName)].includes(packageJson.version),
     'the source must match the published host or its next candidate version');
   assert.ok(releaseManifest.windowsVersionName, 'published host version must be recorded independently of source version');

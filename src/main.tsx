@@ -17382,6 +17382,12 @@ ${JSON.stringify(items, null, 2)}
           </section>
         )}
 
+        {!shouldBlockForAgentInstall && activeSection === 'home' && isWindows && <FirstRunGuide api={bridge() || {}} licenseActive={windowsLicenseActive} studentCount={students.length}
+          onDownloadWorkBuddy={() => void openToolDownload('workbuddy')} onAgentSettings={openAgentControl}
+          onConnectorSettings={() => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setActiveSection('settings'); }}
+          onStudent={() => setActiveSection('init')} onInbox={() => setActiveSection('inbox')}
+          onTasks={() => setActiveSection('tasks')}
+          onHostSettings={() => setActiveSection('settings')} />}
         {!shouldBlockForAgentInstall && activeSection === 'home' && isWindows && learningWorkbenchAvailable && (
           <React.Suspense fallback={<section className="panel">正在加载学情工作台…</section>}>
             <LearningWorkbenchPanel api={bridge() || {}} studentId={String(selectedStudent?.id || '')} studentName={selectedStudent?.name || ''}
@@ -17473,12 +17479,6 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </section>
             )}
-            {isWindows && <FirstRunGuide api={bridge() || {}} licenseActive={windowsLicenseActive} studentCount={students.length}
-              onDownloadWorkBuddy={() => void openToolDownload('workbuddy')} onAgentSettings={openAgentControl}
-              onConnectorSettings={() => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setActiveSection('settings'); }}
-              onStudent={() => setActiveSection('init')} onInbox={() => setActiveSection('inbox')}
-              onTasks={() => setActiveSection('tasks')}
-              onHostSettings={() => setActiveSection('settings')} />}
             {isWindows && (
               <section className="panel tool-home-panel">
                 <div className="panel-heading">

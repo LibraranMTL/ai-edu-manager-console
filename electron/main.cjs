@@ -43711,8 +43711,8 @@ ipcMain.handle('bridge:firstRun', async (_event, action, input = {}) => {
   const current = firstRun.inspectFirstRun(options);
   if (current.status === 'waiting' || current.status === 'error') return JSON.stringify({ ok: false, message: current.message || '业务数据尚未就绪' });
   if (action === 'progress') {
-    if (!['new', 'resume', 'complete'].includes(current.status) && input.manual !== true) return JSON.stringify({ ok: false, message: '已有用户设置保持原样' });
-    const state = await firstRun.saveFirstRun(stateFile, { step: input.step, provider: input.provider });
+    if (!['new', 'resume', 'paused', 'complete'].includes(current.status) && input.manual !== true) return JSON.stringify({ ok: false, message: '已有用户设置保持原样' });
+    const state = await firstRun.saveFirstRun(stateFile, { step: input.step, provider: input.provider, paused: input.paused });
     return JSON.stringify({ ok: true, state });
   }
   return JSON.stringify({ ok: false, message: '不支持的引导操作' });

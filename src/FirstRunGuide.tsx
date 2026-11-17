@@ -61,14 +61,15 @@ export function FirstRunGuide({ api, licenseActive, studentCount, onDownloadWork
   }
   if (!api.firstRun) return null;
   if (['existing', 'complete'].includes(state.status)) return <button className="secondary compact" onClick={() => void run(async () => { await call('progress', { step: 'welcome', provider, manual: true }); await refresh(); })}>重新打开首次引导</button>;
+  if (state.status === 'paused') return <button className="secondary compact" onClick={() => void run(async () => { await call('progress', { step, provider }); await refresh(); })}>继续首次引导</button>;
   if (state.status === 'waiting') return <section className="panel first-run-guide"><h2>正在检查首次使用状态…</h2></section>;
   if (state.status === 'error') return <section className="panel first-run-guide"><h2>首次引导暂不可用</h2><p>{state.message}</p><button onClick={() => void refresh()}>重新检查</button></section>;
   const connected = provider === 'workbuddy' ? installed?.workbuddy : installed?.codex;
   return <section className="panel first-run-guide" aria-label="首次使用引导">
-    <div className="panel-heading"><div><h2>开始使用 AI教育管家</h2><p>第 {Math.max(1, steps.indexOf(step) + 1)} 步，共 6 步。中断后可从这里继续。</p></div><button className="secondary compact" disabled={busy} onClick={() => void advance('complete')}>稍后设置</button></div>
+    <div className="panel-heading"><div><h2>开始使用 AI教育管家</h2><p>第 {Math.max(1, steps.indexOf(step) + 1)} 步，共 6 步。中断后可从这里继续。</p></div><button className="secondary compact" disabled={busy} onClick={() => void run(async () => { await call('progress', { step, provider, paused: true }); setState(current => ({ ...current, status: 'paused' })); })}>稍后设置</button></div>
     {step === 'welcome' && <><p>先确认资料保存位置和使用方式。默认在本机管理资料；需要学生终端时，可随后开启主机服务。</p><p>保存位置可在系统设置中查看或修改，创建学生前请确认。</p><button className="secondary" onClick={onHostSettings}>查看保存位置与使用方式</button><button className="primary" disabled={busy || !licenseActive} onClick={() => void run(() => advance('agent'))}>继续检测 Agent</button>{!licenseActive && <p>请先激活 Windows 主机许可，然后继续。</p>}</>}
     {step === 'agent' && <><p>{installed?.probing ? '正在检测本机 Agent…' : `WorkBuddy：${installed?.workbuddy ? '已安装' : '未检测到'}；Codex：${installed?.codex ? '已安装' : '未检测到'}`}</p><label>使用的 Agent <select value={provider} onChange={e => setProvider(e.target.value as 'workbuddy' | 'codex')}><option value="workbuddy">WorkBuddy</option><option value="codex">Codex</option></select></label><div className="actions"><button onClick={onDownloadWorkBuddy}>下载 WorkBuddy</button><button className="secondary" onClick={onAgentSettings}>选择其他 Agent</button><button className="secondary" onClick={() => void run(refresh)}>重新检测</button><button className="primary" disabled={busy || !connected} onClick={() => void run(() => advance('consent'))}>已安装，继续</button><button className="secondary" disabled={busy} onClick={() => void run(() => advance('student'))}>暂不安装，先建档</button></div></>}
-    {step === 'consent' && <><p>以下设置在你点击“启用并继续”后生效，可在 AI 接入与调度中心调整。</p><label><input type="checkbox" checked={dispatch} onChange={e => setDispatch(e.target.checked)} />启用管家调用 Agent 的任务与原有会话采集</label><label><input type="checkbox" checked={capture} disabled={!dispatch} onChange={e => setCapture(e.target.checked)} />自动采集会话完成后进入资料收件箱；高可信资料自动投递</label><label><input type="checkbox" checked={external} onChange={e => setExternal(e.target.checked)} />启用外部 Agent 连接器，每个会话绑定一名学生</label><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(async () => {
+    {step === 'consent' && <><p>以下设置在你点击“启用并继续”后生效，可在 AI 接入与调度中心调整。</p><label><input type="checkbox" checked={dispatch} onChange={e => setDispatch(e.target.checked)} />启用管家调用 Agent 的任务与原有会话采集</label><label><input type="checkbox" checked={capture} disabled={!dispatch} onChange={e => setCapture(e.target.checked)} />自动采集会话完成后进入资料收件箱；高可信资料自动投递</label><label><input type="checkbox" checked={external} onChange={e => setExternal(e.target.checked)} />启用外部 Agent 连接器，一个会话访问所有授权学生</label><div className="actions"><button className="primary" disabled={busy} onClick={() => void run(async () => {
       const snapshot = await agent('snapshot');
       if (snapshot.global.version === 0 && !snapshot.global.enabled) {
         await agent('saveGlobal', { settings: { ...snapshot.global, enabled: dispatch, capturedConversationRouting: { ...snapshot.global.capturedConversationRouting, enabled: dispatch && capture } } });
@@ -76,8 +77,8 @@ export function FirstRunGuide({ api, licenseActive, studentCount, onDownloadWork
         throw Error('全局授权已变化，请在 AI 接入与调度中心核对');
       }
       if (external) { const connection = await agent('external:snapshot');
-        if (connection.policy.status === 'unconfigured') await agent('external:savePolicy', { ...connection.policy, preset: 'read_memory', accessMode: 'session_bound', confirmed: true });
-        else if (connection.policy.status !== 'active' || connection.policy.accessMode !== 'session_bound') throw Error('外部连接授权已变化，请在连接管理中核对');
+        if (connection.policy.status === 'unconfigured') await agent('external:savePolicy', { ...connection.policy, preset: 'read_memory', accessMode: 'all_authorized_students', confirmed: true });
+        else if (connection.policy.status !== 'active' || connection.policy.accessMode !== 'all_authorized_students') throw Error('外部连接授权已变化，请在连接管理中核对');
       }
       await advance('connection');
     })}>启用并继续</button><button className="secondary" disabled={busy} onClick={() => void run(() => advance('student'))}>暂不授权，先建档</button></div></>}

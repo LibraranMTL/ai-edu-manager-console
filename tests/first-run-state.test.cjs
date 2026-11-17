@@ -23,6 +23,10 @@ test('首次判断区分初始化、旧数据、损坏和可恢复进度', async
   await saveFirstRun(input.stateFile, { step: 'connection', provider: 'codex' });
   assert.equal(inspectFirstRun(input).state.step, 'connection');
   assert.equal(inspectFirstRun(input).state.provider, 'codex');
+  await saveFirstRun(input.stateFile, { step: 'connection', provider: 'codex', paused: true });
+  assert.equal(inspectFirstRun(input).status, 'paused');
+  await saveFirstRun(input.stateFile, { step: 'connection', provider: 'codex' });
+  assert.equal(inspectFirstRun(input).status, 'resume');
   await assert.rejects(saveFirstRun(input.stateFile, { step: 'arbitrary' }));
   await assert.rejects(saveFirstRun(input.stateFile, { step: 'agent', provider: 'unknown' }));
   fs.writeFileSync(input.stateFile, '{broken');

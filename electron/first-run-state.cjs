@@ -29,7 +29,7 @@ function inspectFirstRun({ studentIndex, policyFiles, stateFile, ready }) {
   } catch (error) {
     if (error.code !== 'ENOENT') return { status: 'error', message: '首次引导状态读取失败，请检查本机数据。' };
   }
-  if (state) return { status: state.step === 'complete' ? 'complete' : 'resume', state, students };
+  if (state) return { status: state.step === 'complete' ? 'complete' : state.paused ? 'paused' : 'resume', state, students };
   if (students.count || policyFiles.some(file => fs.existsSync(file))) return { status: 'existing', students };
   return { status: 'new', students };
 }
@@ -38,7 +38,7 @@ async function saveFirstRun(stateFile, input) {
   if (!STEPS.includes(input.step)) throw Error('无效的引导步骤');
   if (input.provider !== undefined && !['workbuddy', 'codex'].includes(input.provider)) throw Error('无效的 Agent');
   const state = { schema: SCHEMA, step: input.step,
-    ...(input.provider ? { provider: input.provider } : {}), updatedAt: new Date().toISOString() };
+    ...(input.provider ? { provider: input.provider } : {}), paused: input.paused === true, updatedAt: new Date().toISOString() };
   fs.mkdirSync(path.dirname(stateFile), { recursive: true });
   await writeJsonAtomic(stateFile, state);
   return state;

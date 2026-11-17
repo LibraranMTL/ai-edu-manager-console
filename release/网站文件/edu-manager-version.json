@@ -1,10 +1,10 @@
 {
   "versionCode": 104,
   "versionName": "0.6.34",
-  "windowsVersionCode": 279,
-  "windowsVersionName": "0.23.10",
+  "windowsVersionCode": 280,
+  "windowsVersionName": "0.24.1",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.10.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.1.zip",
   "windowsTerminalVersionCode": 241,
   "windowsTerminalVersionName": "0.19.1",
   "windowsTerminalReleaseStatus": "stable",
@@ -31,8 +31,8 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.34.apk",
-  "notes": "Windows 主机 0.23.10 新增首次使用引导与建议默认授权；其他终端保持原有发布版本。Windows 包未签名。",
-  "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.23.10-Setup.exe",
-  "windowsNotes": "首次使用引导可检测 Agent、协助授权并引导建档与资料导入。安装包未签名。",
+  "notes": "Windows 主机 0.24.1 修复 Agent 伴侣工具条置顶状态丢失；其他终端保持原有发布版本。Windows 包未签名。",
+  "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.1-Setup.exe",
+  "windowsNotes": "Agent 伴侣工具条在切换应用后可恢复丢失的置顶状态。安装包未签名。",
   "standalonePerformanceStatus": "pending_verification"
 }

@@ -34,12 +34,14 @@ export function FirstRunGuide({ api, licenseActive, studentCount, onDownloadWork
     setState(raw);
     if (raw.state?.step) setStep(raw.state.step);
     if (raw.state?.provider) setProvider(raw.state.provider);
-    const status = await api.getAgentToolInstallStatus?.();
-    if (status) {
-      const value = JSON.parse(status);
-      setInstalled({ workbuddy: Boolean(value.workbuddy?.installed), codex: Boolean(value.codex?.installed), probing: Boolean(value.probing) });
-      if (!raw.state?.provider && !value.workbuddy?.installed && value.codex?.installed) setProvider('codex');
-    }
+    try {
+      const status = await api.getAgentToolInstallStatus?.();
+      if (status) {
+        const value = JSON.parse(status);
+        setInstalled({ workbuddy: Boolean(value.workbuddy?.installed), codex: Boolean(value.codex?.installed), probing: Boolean(value.probing) });
+        if (!raw.state?.provider && !value.workbuddy?.installed && value.codex?.installed) setProvider('codex');
+      }
+    } catch { setMessage('Agent 安装检测暂不可用，可稍后重新检测。'); }
     return raw;
   }
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout>;

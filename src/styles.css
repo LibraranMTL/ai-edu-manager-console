@@ -8023,3 +8023,8 @@ textarea:focus {
   .learning-method-report { grid-template-columns: auto 1fr; }
   .learning-method-report > input:not([type="checkbox"]) { grid-column: 1 / -1; width: 100%; }
 }
+.first-run-guide { display: grid; gap: 16px; border: 1px solid #cdbaff; background: linear-gradient(135deg, #fbf9ff, #f4f7ff); }
+.first-run-guide .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.first-run-guide label { display: flex; align-items: center; gap: 9px; }
+.first-run-guide label:has(select) { align-items: flex-start; flex-direction: column; }
+.first-run-guide p[role='status'] { padding: 12px 16px; border-radius: 12px; background: #eee8ff; overflow-wrap: anywhere; }

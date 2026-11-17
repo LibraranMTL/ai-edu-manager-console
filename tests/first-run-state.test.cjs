@@ -1,0 +1,30 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { inspectFirstRun, saveFirstRun } = require('../electron/first-run-state.cjs');
+
+test('首次判断区分初始化、旧数据、损坏和可恢复进度', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edu-first-run-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const input = { studentIndex: path.join(dir, 'students.json'), policyFiles: [path.join(dir, 'policy.json')], stateFile: path.join(dir, 'onboarding.json'), ready: false };
+  assert.equal(inspectFirstRun(input).status, 'waiting');
+  input.ready = true;
+  assert.equal(inspectFirstRun(input).status, 'new');
+  fs.writeFileSync(input.studentIndex, '{broken');
+  assert.equal(inspectFirstRun(input).status, 'error');
+  fs.writeFileSync(input.studentIndex, JSON.stringify([{ id: 'existing' }]));
+  assert.equal(inspectFirstRun(input).status, 'existing');
+  fs.writeFileSync(input.studentIndex, '[]');
+  fs.writeFileSync(input.policyFiles[0], '{}');
+  assert.equal(inspectFirstRun(input).status, 'existing');
+  await saveFirstRun(input.stateFile, { step: 'connection', provider: 'codex' });
+  assert.equal(inspectFirstRun(input).state.step, 'connection');
+  assert.equal(inspectFirstRun(input).state.provider, 'codex');
+  await assert.rejects(saveFirstRun(input.stateFile, { step: 'arbitrary' }));
+  await assert.rejects(saveFirstRun(input.stateFile, { step: 'agent', provider: 'unknown' }));
+  fs.writeFileSync(input.stateFile, '{broken');
+  assert.equal(inspectFirstRun(input).status, 'error');
+});

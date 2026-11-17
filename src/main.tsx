@@ -9,6 +9,7 @@ import { CustomSubjectsEditor, customResult, type CustomOptionsApi, type CustomS
 import type { CaptureApi } from './CaptureInboxPanel';
 import type { DownloadInboxApi } from './DownloadInboxPanel';
 import type { AgentControlApi } from './AgentControlCenter';
+import { FirstRunGuide } from './FirstRunGuide';
 import { AgentHandoffChoice } from './AgentHandoffChoice';
 import { ExpertConsultationCard, type ExpertConsultationSource } from './ExpertConsultationCard';
 const AgentControlCenter = React.lazy(() => import('./AgentControlCenter').then(module => ({ default: module.AgentControlCenter })));
@@ -1213,6 +1214,7 @@ type StudentOfflineMigrationPlan = {
 };
 
 type AndroidBridge = {
+  firstRun?: (action: string, input?: Record<string, unknown>) => Promise<string>;
   getAppBootstrap?: () => Promise<string>;
   getSubsystemStatus?: () => Promise<string>;
   retrySubsystemInitialization?: (name: string) => Promise<string>;
@@ -17471,6 +17473,12 @@ ${JSON.stringify(items, null, 2)}
                 </div>
               </section>
             )}
+            {isWindows && <FirstRunGuide api={bridge() || {}} licenseActive={windowsLicenseActive} studentCount={students.length}
+              onDownloadWorkBuddy={() => void openToolDownload('workbuddy')} onAgentSettings={openAgentControl}
+              onConnectorSettings={() => { setNavigationGroup('settings'); setSettingsSubmenu('agent-qa'); setAgentSettingsTab('connection'); setActiveSection('settings'); }}
+              onStudent={() => setActiveSection('init')} onInbox={() => setActiveSection('inbox')}
+              onTasks={() => setActiveSection('tasks')}
+              onHostSettings={() => setActiveSection('settings')} />}
             {isWindows && (
               <section className="panel tool-home-panel">
                 <div className="panel-heading">

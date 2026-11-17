@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   qaMainPerformance(action) { return ipcRenderer.invoke('bridge:qaMainPerformance', action); },
   noteUserActivity() { return ipcRenderer.invoke('bridge:noteUserActivity'); },
   getAppBootstrap() { return ipcRenderer.invoke('bridge:getAppBootstrap'); },
+  firstRun(action, input) { return ipcRenderer.invoke('bridge:firstRun', action, input || {}); },
   getSubsystemStatus() { return ipcRenderer.invoke('bridge:getSubsystemStatus'); },
   retrySubsystemInitialization(name) { return ipcRenderer.invoke('bridge:retrySubsystemInitialization', name); },
   onSubsystemProgress(callback) {

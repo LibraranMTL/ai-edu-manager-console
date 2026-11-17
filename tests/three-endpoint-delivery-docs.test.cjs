@@ -121,7 +121,7 @@ test('manual sources describe target selection and terminal-specific workflows',
   assert.match(host, /Android 学生端/u);
   assert.match(host, /课程学习/u);
   assert.match(host, /课程管理/u);
-  assert.match(host, /Windows 主机 0\.23\.7（版本码 276）公开稳定版/u);
+  assert.match(host, /Windows 主机 0\.23\.10（版本码 279）公开稳定版/u);
   assert.doesNotMatch(host, /Windows 主机 0\.21\.6 公开稳定版/u);
   assert.match(host, /单门课程 · 直接上传/u);
   assert.match(host, /上传课程图片/u);

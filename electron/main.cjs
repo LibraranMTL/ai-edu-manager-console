@@ -12635,6 +12635,7 @@ function createWindow() {
     if (AUTOMATION_FEATURES.workBuddyRuntimeStatusV2 && !workBuddyStatusMonitorStopped)
       void refreshWorkBuddyRuntimeStatus();
   });
+  mainWindow.on('blur', () => setTimeout(() => maintainQuickCaptureTopmost(quickCaptureWindow), 250));
   mainWindow.on('resize', () => {
     if (courseView) courseView.setBounds(courseViewBounds());
   });
@@ -14357,6 +14358,11 @@ function createCaptureTray() {
   updateCaptureTray();
 }
 
+function maintainQuickCaptureTopmost(window) {
+  if (!window || quickCaptureWindow !== window || window.isDestroyed() || !window.isVisible()) return;
+  if (!window.isAlwaysOnTop()) window.setAlwaysOnTop(true, 'floating');
+}
+
 function updateCaptureControlWindow() {
   const active = activeCaptureRuntime?.session;
   if (active) quickCaptureSetupOpen = false;
@@ -14381,6 +14387,10 @@ function updateCaptureControlWindow() {
     });
     const window = quickCaptureWindow;
     window.setAlwaysOnTop(true, 'floating');
+    // Windows can drop the native topmost flag while this independent toolbar stays visible.
+    const topmostTimer = setInterval(() => maintainQuickCaptureTopmost(window), 10000);
+    window.on('show', () => setImmediate(() => maintainQuickCaptureTopmost(window)));
+    window.on('blur', () => setTimeout(() => maintainQuickCaptureTopmost(window), 250));
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', event => event.preventDefault());
     window.webContents.on('did-finish-load', () => {
@@ -14398,7 +14408,7 @@ function updateCaptureControlWindow() {
       quickCapturePosition = { x: current.x, y: current.y };
       saveQuickCaptureSettings();
     });
-    window.on('closed', () => { if (quickCaptureWindow === window) quickCaptureWindow = null; quickCaptureLoaded = false; });
+    window.on('closed', () => { clearInterval(topmostTimer); if (quickCaptureWindow === window) quickCaptureWindow = null; quickCaptureLoaded = false; });
     void window.loadFile(path.join(__dirname, 'quick-capture.html')).catch(error => console.warn('快捷采集工具条加载失败：', error));
   } else {
     const [currentWidth, currentHeight] = quickCaptureWindow.getSize();
@@ -14851,6 +14861,7 @@ async function showQuickCaptureNearMainWindow() {
   window.setAlwaysOnTop(true, 'floating');
   window.setOpacity(1);
   window.show();
+  maintainQuickCaptureTopmost(window);
   window.moveTop();
   window.focus();
   sendQuickCaptureState();

@@ -17,7 +17,7 @@ const audit = JSON.parse(fs.readFileSync(path.join(directory, `${artifactStem}-b
 const qaRoot = path.join(root, '.codex_tmp');
 fs.mkdirSync(qaRoot, { recursive: true });
 const qa = fs.mkdtempSync(path.join(qaRoot, 'quick-capture-package-'));
-const userData = path.join(qa, 'user-data'), studentBaseDir = path.join(qa, 'students');
+const userData = path.join(qa, 'user-data'), studentBaseDir = path.join(userData, 'student-data');
 fs.mkdirSync(userData); fs.mkdirSync(studentBaseDir);
 fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({ studentBaseDir, archiveRoot: studentBaseDir, taskAutomationEnabled: false }));
 const fixtures = [{ id: '17894430145-demo-a', name: '示例学生甲', loginId: 'S-DEMO-A', rootPath: path.join(studentBaseDir, 'a') },
@@ -155,9 +155,9 @@ async function main() {
       hasTargetAgent: document.body.innerText.includes('目标Agent') || document.body.innerText.includes('目标 Agent')
     };
   })()`);
-  assert.deepEqual(toolbarContract.idleActions, ['collect-menu', 'organize-menu', 'learning']);
+  assert.deepEqual(toolbarContract.idleActions, ['collect-menu', 'organize-menu', 'learning', 'project-mentor']);
   assert.deepEqual(toolbarContract.labels, [
-    { text: '采集', visible: true }, { text: '整理', visible: true }, { text: '学习', visible: true }, { text: 'AI设置', visible: true },
+    { text: '采集', visible: true }, { text: '整理', visible: true }, { text: '学习', visible: true }, { text: '项目', visible: true }, { text: 'AI设置', visible: true },
   ]);
   assert.equal(toolbarContract.fitsWidth, true);
   assert.equal(toolbarContract.aiBeforeClose, true);

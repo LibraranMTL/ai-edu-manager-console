@@ -27,15 +27,15 @@ test('Windows release policy rejects zero and patch numbers above 10', () => {
   assert.throws(() => validateWindowsVersion('0.8'), /无效版本号/);
 });
 
-test('published Windows manifests align with the current package version', () => {
+test('published Windows manifests stay stable while the next package is a candidate', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const releaseManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'edu-manager-version.json'), 'utf8'));
   const windowsManifest = JSON.parse(fs.readFileSync(path.join(root, 'release', 'windows', 'edu-manager-version.json'), 'utf8'));
   const terminalVersion = JSON.parse(fs.readFileSync(path.join(root, 'windows-terminal-version.json'), 'utf8'));
   const downloadPage = fs.readFileSync(path.join(root, 'release', '网站文件', 'download.html'), 'utf8');
-  assert.equal(packageJson.version, '0.23.9');
-  assert.equal(releaseManifest.windowsVersionName, packageJson.version,
-    'the published host version must match the current package version');
+  assert.equal(packageJson.version, '0.23.10');
+  assert.ok([releaseManifest.windowsVersionName, nextWindowsVersion(releaseManifest.windowsVersionName)].includes(packageJson.version),
+    'the source must match the published host or its next candidate version');
   assert.ok(releaseManifest.windowsVersionName, 'published host version must be recorded independently of source version');
   assert.ok(Number.isInteger(releaseManifest.windowsVersionCode));
   assert.equal(releaseManifest.windowsReleaseStatus, 'stable');

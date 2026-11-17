@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { nextWindowsVersion } = require('../scripts/version-policy.cjs');
 const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
@@ -79,8 +80,7 @@ test('current client sources and formal manifest remain aligned', () => {
   const candidate = JSON.parse(read('package.json'));
   const formal = JSON.parse(read('release/edu-manager-version.json'));
   assert.deepEqual(terminalVersion, { versionCode: 241, versionName: '0.19.1', releaseStatus: 'stable' });
-  assert.equal(candidate.version, '0.23.9');
-  assert.equal(formal.windowsVersionName, candidate.version);
+  assert.ok([formal.windowsVersionName, nextWindowsVersion(formal.windowsVersionName)].includes(candidate.version));
   assert.equal(formal.tabletTerminalVersionName, '0.6.34');
   assert.equal(formal.teacherTerminalVersionName, '0.1.5');
   assert.equal(formal.standaloneVersionName, '1.3.8');

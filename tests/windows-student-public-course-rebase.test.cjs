@@ -44,7 +44,7 @@ test('Windows student keeps verified offline leases but fails closed on authoriz
 test('Windows student release packages trust resources with source audit', () => {
   const version = JSON.parse(read('windows-terminal-version.json'));
   const build = read('scripts/build-windows-terminal-release.cjs');
-  assert.deepEqual([version.versionName, version.versionCode, version.releaseStatus], ['0.19.2', 242, 'candidate']);
+  assert.deepEqual([version.versionName, version.versionCode, version.releaseStatus], ['0.19.2', 242, 'stable']);
   for (const marker of [
     'electron/course-trust-policy.cjs',
     'electron/student-course-trust.cjs',

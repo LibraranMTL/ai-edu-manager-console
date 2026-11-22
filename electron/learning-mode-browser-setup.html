@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src file:">
+  <title>接入 AI教育管家专注模式</title>
+  <style>
+    body { margin: 0; font: 16px/1.55 "Microsoft YaHei", system-ui, sans-serif; color: #18332e; background: #f4f9f7 }
+    main { max-width: 680px; padding: 28px; margin: 4vh auto }
+    h1 { margin-top: 0; font-size: 27px }
+    h2 { font-size: 18px; margin-top: 0 }
+    section { background: white; border: 1px solid #dbe6e1; border-radius: 10px; padding: 16px; margin: 14px 0 }
+    p { margin: 8px 0 }
+    input, button { font: inherit; color: inherit; padding: 7px 10px; border: 1px solid #9fb9b0; border-radius: 6px; background: white }
+    input { display: block; width: 100%; box-sizing: border-box; margin: 8px 0 }
+    button { cursor: pointer }
+    button:focus-visible, input:focus-visible { outline: 2px solid #237e68; outline-offset: 2px }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>接入 AI教育管家专注模式</h1>
+    <section>
+      <h2>打开扩展管理页</h2>
+      <p>复制地址，在本窗口的新标签页地址栏粘贴并打开。</p>
+      <input id="manager-address" aria-label="扩展管理页地址" readonly spellcheck="false">
+      <button type="button" id="copy-address">复制管理页地址</button>
+    </section>
+    <section>
+      <h2>加载专注模式扩展</h2>
+      <p id="folder-instructions">开启开发人员模式，点「加载已解压扩展」。从本页复制目录，粘贴到文件夹选择窗口并确认。</p>
+      <input id="extension-folder" aria-label="扩展目录" readonly spellcheck="false">
+      <button type="button" id="copy-folder">复制扩展目录</button>
+    </section>
+    <p id="copy-status" role="status"></p>
+    <p>加载后，回到教育管家的「专注模式」查看浏览器是否已连接。</p>
+  </main>
+  <script src="learning-mode-browser-setup.js"></script>
+</body>
+</html>

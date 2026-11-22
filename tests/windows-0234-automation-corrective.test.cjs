@@ -8,11 +8,9 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
 
-test('0.23.7 keeps the public-course baseline and integrates the five automation modules', () => {
-  const packageJson = JSON.parse(read('package.json'));
+test('host keeps the public-course baseline and integrates the five automation modules', () => {
   const main = read('electron', 'main.cjs');
   const projectAutomation = read('electron', 'project-material-automation.cjs');
-  assert.equal(packageJson.version, '0.24.1');
   for (const file of [
     'workbuddy-runtime-status.cjs',
     'automation-feature-flags.cjs',

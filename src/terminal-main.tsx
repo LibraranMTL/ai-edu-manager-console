@@ -143,6 +143,7 @@ const CAPTURE_MODE_COPY: Record<CaptureMode, { label: string; description: strin
 };
 
 type TerminalBridge = {
+  openLearningMode?: () => Promise<boolean>;
   getConfig: () => Promise<TerminalConfig>;
   getTailscaleStatus: () => Promise<TailscaleStatus>;
   openTailscale: () => Promise<{ ok: boolean; message?: string; status: TailscaleStatus }>;
@@ -1584,8 +1585,9 @@ function TerminalApp() {
     if (!api || !selectedTarget) return;
     setBusy(true);
     try {
-      if (captureSession?.status === 'capturing') {
+      if (captureSession?.status === 'capturing' || captureSession?.status === 'paused') {
         const stopped = await api.stopCapture();
+        if (!stopped) return;
         setCaptureSession(stopped);
         setMessage(`采集已结束，共保留 ${stopped?.count || 0} 张截图。系统正在后台送达并整理，无需再次确认。`);
       } else {
@@ -1771,7 +1773,7 @@ function TerminalApp() {
       <main className="terminal-shell">
         <header className="terminal-topbar">
           <div><div className="terminal-brand">AI教育管家</div><h1>Windows 学生终端</h1></div>
-          <div className="terminal-host-state"><span className="online-dot" />已连接 {config.hostUrl}<button onClick={() => setSettingsOpen((value) => !value)}>系统设置</button></div>
+          <div className="terminal-host-state"><span className="online-dot" />已连接 {config.hostUrl}<button onClick={() => setSettingsOpen((value) => !value)}>系统设置</button>{api?.openLearningMode && <button onClick={() => void api.openLearningMode?.()}>专注模式</button>}</div>
         </header>
         {settingsOpen ? (
           <section className="terminal-card target-card">
@@ -1985,6 +1987,7 @@ function TerminalApp() {
           {learningCapabilities.practice ? <StudentActionTile icon={Target} title="学习卡片" description="完成主机为我准备的练习" meta="作答后明确提交" tone="tone-report" active={activeWorkspace === 'practice'} disabled={busy} onClick={() => void openPractice()} /> : null}
           {learningCapabilities.learningStatus ? <StudentActionTile icon={TrendingUp} title="学习状态与每周成长" description="填写状态并查看、分享每周知识增长图" meta="一个入口" tone="tone-growth" active={activeWorkspace === 'collaboration'} disabled={busy} onClick={() => void openCollaboration()} /> : null}
           <StudentActionTile icon={Bot} title="学习导师" description="使用工具条中的学习模式，生成受控学习提示词" meta="不直接代写或认定掌握" tone="tone-knowledge" onClick={() => void openCompanionPanel('learning')} />
+          {api?.openLearningMode && <StudentActionTile icon={Bot} title="专注模式" description="设置本机游戏、网站和屏幕采集保护" meta="本机独立设置" tone="tone-knowledge" onClick={() => void api.openLearningMode?.()} />}
         </section> : null}
       </section> : null}
 

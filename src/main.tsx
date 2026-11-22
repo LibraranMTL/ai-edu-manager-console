@@ -1214,6 +1214,7 @@ type StudentOfflineMigrationPlan = {
 };
 
 type AndroidBridge = {
+  openLearningMode?: () => Promise<boolean>;
   firstRun?: (action: string, input?: Record<string, unknown>) => Promise<string>;
   getAppBootstrap?: () => Promise<string>;
   getSubsystemStatus?: () => Promise<string>;
@@ -17584,6 +17585,9 @@ ${JSON.stringify(items, null, 2)}
         )}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'learning-cards' && selectedStudent && (
           <React.Suspense fallback={<section className="panel">正在加载学习卡片…</section>}><PracticeCardsPanel key={selectedStudent.id} initialPublication={publicationEdit} onPublicationConsumed={()=>setPublicationEdit(null)} studentId={selectedStudent.id} languageRevision={`${selectedStudent.languageProfile?.primaryLanguage || ''}:${selectedStudent.languageProfile?.supportLanguage || ''}`} onOpenStudentProfile={() => { setNavigationGroup('home'); setActivePageTab('student-profile'); setActiveSection('archive'); }} api={bridge() as PracticeApi} /></React.Suspense>
+        )}
+        {activeSection === 'learning-companion' && bridge()?.openLearningMode && (
+          <section className="panel"><h2>专注模式</h2><p>在本机配置游戏与网站限制，保护学习采集。</p><button type="button" className="primary" onClick={() => void bridge()?.openLearningMode?.()}>打开专注模式</button></section>
         )}
         {!shouldBlockForAgentInstall && !isLicenseRestrictedSection && activeSection === 'learning-companion' && selectedStudent && (
           <React.Suspense fallback={<section className="panel">正在加载学习模式…</section>}><LearningCompanionPanel key={selectedStudent.id} studentId={selectedStudent.id} studentName={selectedStudent.name} api={bridge() || {}} /></React.Suspense>

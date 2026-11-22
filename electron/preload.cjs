@@ -181,6 +181,9 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
   startCaptureSession(optionsJson) {
     return ipcRenderer.invoke('bridge:startCaptureSession', optionsJson);
   },
+  openLearningMode() {
+    return ipcRenderer.invoke('bridge:openLearningMode');
+  },
   pauseCaptureSession(sessionId) {
     return ipcRenderer.invoke('bridge:pauseCaptureSession', sessionId);
   },

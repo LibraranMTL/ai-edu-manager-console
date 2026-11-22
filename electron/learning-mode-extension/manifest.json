@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "AI教育管家专注模式",
+  "version": "1.0.2",
+  "description": "应用本机专注模式的站点限制和课程例外。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAi2XfJ23a+W1D/dRRQipe4G+AyH0wLYzzQ91llnzCQOXUxhz/Hym1rFb8BF1pprO550qz2PKszofG6oakdolA0TI+eGSSSx1gU+5oRT4MJT0LzVzp9VSH7RA1jVHaUAIPxa2qEEewWJwJmTp66NQHfkWSCNz9gi9FIAJvZGZ0/NOWUYV/17zbMEZFhetHZ/d+30r1sfgsIk8YkhEFnXf15WA+RJ/kKi0e0oK9okP/tNPWYuAQ7G7q1f/27rZniF+GpDlq0QP/CUIjvsv7Rp2NaAY2ZJl/V6JgiFz40K9xH6ApWydCAWVeF5e4EAmAOKEg3Q0lhRH0ZYDrQchxy5hJuQIDAQAB",
+  "permissions": [
+    "declarativeNetRequestWithHostAccess",
+    "nativeMessaging",
+    "tabs",
+    "webNavigation",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "blocked.html"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ]
+}

@@ -186,6 +186,7 @@ test('normal app quit waits for maintenance completion and schedules only one de
   let handler, prevented = 0, quits = 0;
   const scope = { projectArchiveRuntime: runtime, projectArchiveStartupReady: true, materialQuitPending: false, setImmediate,
     taskStoreQuitReady: false, taskStoreGuard: { pending: () => false },
+    learningMode: { guardQuit: () => false },
     app: { on: (_event, fn) => { handler = fn; }, quit: () => { quits++; } } };
   const start = main.indexOf("app.on('before-quit',");
   Function('scope', `with (scope) { ${main.slice(start, main.indexOf("\napp.on('window-all-closed'", start))} }`)(scope);

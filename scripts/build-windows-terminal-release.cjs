@@ -14,6 +14,27 @@ const version = String(terminalVersion.versionName);
 validateWindowsVersion(version);
 const candidateTag = String(process.env.EDU_WINDOWS_CANDIDATE_TAG || '').trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
 const artifactBase = `AI-edu-manager-student-terminal-Windows-${version}${candidateTag && candidateTag !== version ? `-${candidateTag}` : ''}`;
+const installerName = `${artifactBase}-Setup.exe`;
+const learningModeFiles = [
+  'electron/learning-mode.cjs',
+  'electron/learning-mode-rules.cjs',
+  'electron/learning-mode-windows.cjs',
+  'electron/learning-mode-worker.cjs',
+  'electron/learning-mode-processes.ps1',
+  'electron/learning-mode-native-host.cs',
+  'electron/learning-mode-folder-assist.cs',
+  'electron/learning-mode-ui.html',
+  'electron/learning-mode-ui.js',
+  'electron/learning-mode-ui-preload.cjs',
+  'electron/learning-mode-browser-setup.html',
+  'electron/learning-mode-browser-setup.js',
+  'electron/learning-mode-extension/manifest.json',
+  'electron/learning-mode-extension/background.js',
+  'electron/learning-mode-extension/blocked.html',
+  'electron/learning-mode-extension/popup.html',
+  'electron/learning-mode-extension/popup.js',
+  'electron/structured-generation.cjs',
+];
 const artifactName = `${artifactBase}.exe`;
 const stageBase = path.resolve(process.env.LOCALAPPDATA || os.tmpdir(), 'AI-Education-Manager', 'terminal-release-stage');
 const stageRoot = path.resolve(stageBase, candidateTag ? `${version}-${candidateTag}` : version);
@@ -182,11 +203,13 @@ function writeRuntimePackage() {
       electronLanguages,
       directories: { output: 'out' },
       files: ['dist-terminal/**/*', 'electron/**/*', 'public/course-catalog/trusted-course-issuers.json', 'package.json'],
+      asarUnpack: [...learningModeFiles, 'electron/agent-lifecycle-hook.exe', 'electron/agent-lifecycle-hook.ps1'],
       win: {
         artifactName: `${artifactBase}.\${ext}`,
         icon: 'public/brand/robogala.ico',
-        target: ['portable'],
+        target: ['portable', 'nsis'],
       },
+      nsis: { artifactName: installerName, oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true },
     },
   };
   fs.writeFileSync(path.join(stageRoot, 'package.json'), `${JSON.stringify(runtimePackage, null, 2)}\n`, 'utf8');
@@ -246,6 +269,7 @@ function build() {
     'electron/student-course-trust.cjs',
     'public/course-catalog/trusted-course-issuers.json',
     'public/brand/robogala.ico',
+    ...learningModeFiles,
   ]) copyFile(relative);
   minifyStagedMainProcess();
   compileLifecycleHook(path.join(stageRoot, 'electron', 'agent-lifecycle-hook.cs'), path.join(stageRoot, 'electron', 'agent-lifecycle-hook.exe'));
@@ -254,7 +278,7 @@ function build() {
   writeRuntimePackage();
 
   process.stdout.write('[windows-terminal-release] package-electron\n');
-  const electronBuilderArgs = ['--projectDir', stageRoot, '--win', 'portable', '--x64'];
+  const electronBuilderArgs = ['--projectDir', stageRoot, '--win', 'portable', 'nsis', '--x64'];
   const configuredElectronDist = String(process.env.EDU_ELECTRON_DIST || '').trim();
   if (configuredElectronDist) {
     const electronDist = path.resolve(configuredElectronDist);
@@ -313,6 +337,7 @@ function build() {
     '\\electron\\student-course-trust.cjs',
     '\\public\\course-catalog\\trusted-course-issuers.json',
     '\\dist-terminal\\terminal.html',
+    ...learningModeFiles.map(file => '\\' + file.replaceAll('/', '\\')),
   ]) {
     if (!asarFiles.includes(expected)) throw new Error(`Terminal package is missing ${expected}.`);
   }
@@ -326,6 +351,8 @@ function build() {
 
   const releaseArtifact = path.join(releaseDir, artifactName);
   publishFile(stagedArtifact, releaseArtifact);
+  const installer = path.join(releaseDir, installerName);
+  publishFile(path.join(stageOutput, installerName), installer);
   const zipArtifact=path.join(releaseDir, `${artifactBase}.zip`);
   run('powershell.exe',['-NoProfile','-NonInteractive','-Command',`Compress-Archive -LiteralPath '${releaseArtifact.replaceAll("'","''")}' -DestinationPath '${zipArtifact.replaceAll("'","''")}' -Force`]);
   const audit = {
@@ -349,6 +376,7 @@ function build() {
     package: { asarBytes, asarFiles: asarFiles.length, nodeModuleFiles: nodeModuleFiles.length },
     runtimeDependencyAudit,
     artifact: { path: releaseArtifact, bytes: fs.statSync(releaseArtifact).size, sha256: sha256(releaseArtifact) },
+    installer: { path: installer, bytes: fs.statSync(installer).size, sha256: sha256(installer) },
     zip: { path: zipArtifact, bytes: fs.statSync(zipArtifact).size, sha256: sha256(zipArtifact) },
   };
   fs.writeFileSync(path.join(releaseDir, `${artifactName.replace(/\.exe$/, '')}-build-audit.json`), `${JSON.stringify(audit, null, 2)}\n`, 'utf8');

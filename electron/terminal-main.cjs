@@ -100,6 +100,7 @@ const courseTrustPolicy = loadCourseTrustPolicy({
   resourceRoots: [path.join(__dirname, '..', 'dist'), path.join(__dirname, '..', 'public')],
 });
 const captureRoot = () => path.join(terminalUserData(), 'screen-captures');
+const recoverableCapturePath = () => path.join(terminalUserData(), 'active-screen-capture.json');
 const capturedMediaRoot = () => path.join(terminalUserData(), 'captured-media');
 const conversationImportQueuePath = () => path.join(terminalUserData(), 'conversation-import-drafts.json');
 const captureDeliveryQueuePath = () => path.join(terminalUserData(), 'capture-delivery-queue.json');
@@ -114,6 +115,19 @@ let terminalUploadMutation = Promise.resolve();
 let captureDeliveryTimer = null;
 let captureDeliveryBusy = false;
 let activeCapture = null;
+let lastInterruptedCapture = null;
+const learningMode = require('./learning-mode.cjs').createLearningMode('student', {
+  parent: () => mainWindow,
+  sessionId: () => activeCapture?.id,
+  captureRunning: () => activeCapture?.status === 'capturing',
+  pauseCapture: () => setCapturePaused(true),
+  resumeCapture: () => setCapturePaused(false),
+  finishCapture: () => stopCapture('learning_mode_closed'),
+  lastInterruption: () => lastInterruptedCapture?.endedAt || '',
+  refreshCourse: () => {
+    if (courseView && learningMode.blocksUrl(courseView.webContents.getURL())) closeTerminalCourse('learning_mode_blocked');
+  },
+});
 let captureControlWindow = null;
 let companionWindow = null;
 let companionPopoverWindow = null;
@@ -1599,6 +1613,7 @@ async function openTerminalCourse(courseId) {
   // `course-start` only records the launch on the host; it must never replace
   // the already-validated URL (older hosts serialized https as `https\\://`).
   const trustedCourseUrl = courseUrl.toString();
+  if (learningMode.blocksUrl(trustedCourseUrl)) throw Error('此页面受专注模式限制。');
   const trustedAllowedHosts = Array.isArray(course.allowedHosts) ? [...course.allowedHosts] : [];
   try {
     const pinned = await requestJson('/api/student-session/course-start', { method: 'POST', body: { courseId }, token: config.sessionToken });
@@ -1613,7 +1628,7 @@ async function openTerminalCourse(courseId) {
   courseView = new WebContentsView({ webPreferences: secureCourseWebPreferences(partition) });
   installCourseGuards(courseView.webContents, course, courseSession, (blocked) => {
     notify('terminal:course-browser-changed', { open: true, blocked: true, courseId: course.courseId, ...blocked });
-  });
+  }, learningMode.blocksUrl);
   mainWindow.contentView.addChildView(courseView);
   courseView.setBounds(terminalCourseViewBounds());
   courseView.setBackgroundColor('#ffffff');
@@ -1622,6 +1637,7 @@ async function openTerminalCourse(courseId) {
     if (activeCourse?.courseId === course.courseId) activeCourse.currentUrl = url;
   });
   courseView.webContents.on('did-navigate-in-page', (_event, url) => {
+    if (learningMode.blocksUrl(url)) { closeTerminalCourse('learning_mode_blocked'); return; }
     if (activeCourse?.courseId === course.courseId) activeCourse.currentUrl = url;
   });
   courseView.webContents.on('before-input-event', (event, input) => {
@@ -2588,7 +2604,7 @@ function publicCaptureSession(session) {
 }
 
 async function captureFrame(session, input = {}) {
-  if (!session || session !== activeCapture) return false;
+  if (!session || session !== activeCapture || learningMode.holdCapture()) return false;
   try {
     if (session.status === 'paused') {
       appendCaptureSample(session, { decision: 'paused', paused: true });
@@ -2597,6 +2613,7 @@ async function captureFrame(session, input = {}) {
     }
     if (session.status !== 'capturing') return false;
     const sources = await desktopCapturer.getSources({ types: [session.sourceType], thumbnailSize: { width: 1600, height: 900 } });
+    if (learningMode.holdCapture() || session !== activeCapture || session.status !== 'capturing') return false;
     const source = sources.find((item) => item.id === session.sourceId);
     if (!source || source.thumbnail.isEmpty()) {
       appendCaptureSample(session, { decision: 'source_unavailable' });
@@ -2643,6 +2660,7 @@ async function captureFrame(session, input = {}) {
     session.lastDecision = decision.reason;
     session.count = session.files.length;
     session.updatedAt = new Date().toISOString();
+    writeJson(recoverableCapturePath(), publicCaptureSession(session));
     notify('terminal:capture-changed', publicCaptureSession(session));
     updateCaptureControlWindow();
     return true;
@@ -2702,6 +2720,7 @@ async function startCapture(input = {}) {
     courseUrl: activeCourse?.currentUrl || activeCourse?.url || '',
     courseStartedAt: activeCourse?.startedAt || '',
   };
+  writeJson(recoverableCapturePath(), publicCaptureSession(session));
   activeCapture = session;
   await captureFrame(session, { force: true });
   session.timer = setInterval(() => { void captureFrame(session); }, options.sampleIntervalMs);
@@ -2710,11 +2729,44 @@ async function startCapture(input = {}) {
   return publicCaptureSession(session);
 }
 
+function setCapturePaused(paused) {
+  if (!paused && learningMode.holdsModePause()) return { ok: false, message: '请先恢复专注模式。' };
+  if (!activeCapture) return { ok: false, message: '当前没有正在运行的屏幕采集。' };
+  activeCapture.status = paused ? 'paused' : 'capturing';
+  appendCaptureSample(activeCapture, { decision: paused ? 'paused' : 'resumed', paused });
+  activeCapture.updatedAt = new Date().toISOString();
+  notify('terminal:capture-changed', publicCaptureSession(activeCapture));
+  updateCaptureControlWindow();
+  return { ok: true, message: paused ? '采集已暂停。' : '采集已继续。' };
+}
+
+function recoverInterruptedTerminalCapture() {
+  const session = readJson(recoverableCapturePath(), null);
+  if (!session?.id || path.resolve(session.folder || '') !== path.join(captureRoot(), session.id)) return;
+  const items = Array.isArray(session.items) ? session.items : [];
+  const known = new Set(items.map(item => item.id));
+  for (const sample of readCaptureSamples(session)) {
+    if (!sample.captureItemId || !sample.path || known.has(sample.captureItemId)) continue;
+    if (path.dirname(path.resolve(sample.path)) !== session.folder || !fs.existsSync(sample.path)) continue;
+    known.add(sample.captureItemId);
+    items.push({ id: sample.captureItemId, path: sample.path, capturedAt: sample.sampledAt, sequence: items.length + 1 });
+  }
+  session.items = items;
+  session.files = items.map(item => item.path).filter(file => fs.existsSync(file));
+  session.count = session.files.length;
+  session.status = 'interrupted';
+  session.endReason = 'startup_recovery';
+  session.endedAt = new Date().toISOString();
+  if (session.files.length) queueCaptureDelivery(session);
+  lastInterruptedCapture = publicCaptureSession(session);
+  fs.rmSync(recoverableCapturePath(), { force: true });
+}
+
 function stopCapture(reason = 'manual') {
   if (!activeCapture) return null;
   clearInterval(activeCapture.timer);
   clearTimeout(activeCapture.stopTimer);
-  activeCapture.status = 'completed';
+  activeCapture.status = reason === 'app_closed' ? 'interrupted' : 'completed';
   activeCapture.endedAt = new Date().toISOString();
   activeCapture.courseCompletedAt = activeCapture.endedAt;
   activeCapture.endReason = reason;
@@ -2729,6 +2781,7 @@ function stopCapture(reason = 'manual') {
   activeCapture = null;
   updateCaptureControlWindow();
   const queued = queueCaptureDelivery(result, { resetAttempt: true });
+  fs.rmSync(recoverableCapturePath(), { force: true });
   notify('terminal:capture-changed', { ...result, deliveryStatus: queued ? 'queued' : 'empty' });
   if (queued) void runCaptureDeliveryQueue();
   return { ...result, deliveryStatus: queued ? 'queued' : 'empty' };
@@ -3225,7 +3278,12 @@ function registerIpc() {
     });
   });
   ipcMain.handle('terminal:start-capture', (_event, input) => startCapture(input));
-  ipcMain.handle('terminal:stop-capture', () => stopCapture());
+  ipcMain.handle('terminal:open-learning-mode', event => event.sender === mainWindow?.webContents && learningMode.open());
+  ipcMain.handle('terminal:stop-capture', async () => {
+    const id = activeCapture?.id;
+    if (!id || !await learningMode.authorizeCapture('验证密码后结束采集', id)) return null;
+    return stopCapture();
+  });
   ipcMain.handle('terminal:capture-control', async (_event, action) => {
     if (!activeCapture) return { ok: false, message: '当前没有正在运行的屏幕采集。' };
     if (action === 'highlight') {
@@ -3237,27 +3295,19 @@ function registerIpc() {
       updateCaptureControlWindow();
       return { ok: saved, message: saved ? '已保存重点页面。' : '重点页面未保存。' };
     }
-    if (action === 'pause') {
-      activeCapture.status = 'paused';
-      appendCaptureSample(activeCapture, { decision: 'paused', paused: true });
-      activeCapture.updatedAt = new Date().toISOString();
-      notify('terminal:capture-changed', publicCaptureSession(activeCapture));
-      updateCaptureControlWindow();
-      return { ok: true, message: '采集已暂停。' };
+    if (action === 'pause' || action === 'stop') {
+      const id = activeCapture.id;
+      if (!await learningMode.authorizeCapture(action === 'pause' ? '验证密码后暂停采集' : '验证密码后结束采集', id)) {
+        return { ok: false, message: '已取消，采集状态未变化。' };
+      }
+      if (action === 'pause') return setCapturePaused(true);
+      return { ok: true, session: stopCapture('floating_control'), message: '采集已结束，正在后台送达并整理。' };
     }
-    if (action === 'resume') {
-      activeCapture.status = 'capturing';
-      appendCaptureSample(activeCapture, { decision: 'resumed', paused: false });
-      activeCapture.updatedAt = new Date().toISOString();
-      notify('terminal:capture-changed', publicCaptureSession(activeCapture));
-      updateCaptureControlWindow();
-      return { ok: true, message: '采集已继续。' };
-    }
+    if (action === 'resume') return setCapturePaused(false);
     if (action === 'folder') {
       const error = await shell.openPath(activeCapture.folder);
       return { ok: !error, message: error || '已打开本次采集箱。' };
     }
-    if (action === 'stop') return { ok: true, session: stopCapture('floating_control'), message: '采集已结束，正在后台送达并整理。' };
     return { ok: false, message: '未知采集控制操作。' };
   });
   ipcMain.handle('terminal:upload-capture', (_event, input) => uploadPaths(input?.files || [], input?.target, {
@@ -3336,6 +3386,7 @@ if (!hasSingleInstanceLock) {
 
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
+  learningMode.init();
   const portableExecutable = String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim();
   if (portableExecutable) app.setAsDefaultProtocolClient('ai-education-student', path.resolve(portableExecutable));
   else if (!app.isPackaged && process.argv[1]) app.setAsDefaultProtocolClient('ai-education-student', process.execPath, [path.resolve(process.argv[1])]);
@@ -3344,6 +3395,8 @@ app.whenReady().then(() => {
   pendingConversationImports.splice(0, pendingConversationImports.length,
     ...(Array.isArray(savedDrafts.drafts) ? savedDrafts.drafts.slice(-20) : []));
   recoverTerminalUploadQueue(terminalUploadQueuePath());
+  try { recoverInterruptedTerminalCapture(); }
+  catch (error) { console.warn('学生端采集恢复失败', error.code || error.message); }
   registerIpc();
   startTerminalDiscovery();
   createWindow();
@@ -3361,14 +3414,15 @@ app.whenReady().then(() => {
   void refreshPersonalAgentCapture();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (learningMode.guardQuit(event)) return;
   if (autoDeliveryTimer) clearInterval(autoDeliveryTimer);
   if (terminalUploadTimer) clearInterval(terminalUploadTimer);
   if (captureDeliveryTimer) clearInterval(captureDeliveryTimer);
   if (pairStatusTimer) clearInterval(pairStatusTimer);
   if (agentCaptureDrainTimer) clearInterval(agentCaptureDrainTimer);
   if (agentCaptureInstallTimer) clearInterval(agentCaptureInstallTimer);
-  if (activeCapture?.timer) clearInterval(activeCapture.timer);
+  if (activeCapture) stopCapture('app_closed');
   if (companionPopoverWindow && !companionPopoverWindow.isDestroyed()) companionPopoverWindow.destroy();
   if (companionWindow && !companionWindow.isDestroyed()) companionWindow.destroy();
   if (terminalAgentBridge) void terminalAgentBridge.stop();

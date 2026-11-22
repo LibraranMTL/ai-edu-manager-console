@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+<title>专注模式</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f8fbfa;color:#132c28;font:15px/1.55 "Microsoft YaHei",system-ui,sans-serif}main{max-width:720px;margin:auto;padding:22px 25px}h1{margin:0;font-size:24px}h2{font-size:16px;margin:0 0 8px}p{margin:8px 0}section{background:#fff;border:1px solid #dbe6e1;border-radius:10px;padding:14px;margin-top:12px}label{display:block;font-weight:600;margin-top:8px}button,input,textarea{font:inherit}input[type=password],input[type=text],textarea{display:block;width:100%;border:1px solid #b9cec7;border-radius:6px;padding:7px;margin:5px 0;color:inherit;background:white}textarea{min-height:62px;resize:vertical}button{cursor:pointer;border:1px solid #a9c8be;border-radius:7px;background:white;color:#164c40;padding:6px 12px;margin:4px 5px 4px 0}button.primary{background:#165a49;color:white}button:disabled{opacity:.55;cursor:default}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #237e68;outline-offset:2px}#message{color:#19564a;white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;margin:6px 0}.sub{color:#435e57;font-size:13px}.event{border-top:1px solid #e9efec;padding-top:7px}.status{font-weight:600}dialog{border:1px solid #b9cec7;border-radius:8px;color:inherit}dialog::backdrop{background:#142a2570}[hidden]{display:none!important}
+</style></head><body><main>
+<h1 id="title">专注模式</h1>
+<p id="message" role="status"></p>
+<div id="auth" hidden>
+<form id="auth-form"><label id="secret-label" for="secret">管理密码</label><input id="secret" type="password" required maxlength="128" autocomplete="off">
+<div id="confirm-fields" hidden><label for="confirm-secret">再输入一次密码</label><input id="confirm-secret" type="password" maxlength="128" autocomplete="off"></div>
+<button class="primary" type="submit">确认</button><button type="button" id="cancel">取消</button></form>
+</div>
+<div id="settings" hidden>
+<section><h2>本机专注模式</h2><p id="state" class="status"></p><p id="coverage" class="sub"></p>
+<button class="primary" id="enable">开启</button><button id="pause">暂停 10 分钟</button><button id="resume">恢复</button><button id="disable">关闭</button><button id="reset">重置密码</button>
+<pre id="recovery" hidden></pre></section>
+<section><h2>应用与网页规则</h2><label><input type="checkbox" id="games"> 限制已识别的游戏和娱乐应用</label>
+<label for="sites">限制域名，每行一个</label><textarea id="sites" spellcheck="false"></textarea>
+<label for="allow">放行课程链接，每行一个</label><textarea id="allow" spellcheck="false"></textarea>
+<button id="save">保存规则</button></section>
+<section><h2>一键接入 Edge / Chrome</h2>
+<p id="browser-status" class="sub"></p>
+<button type="button" id="setup-edge">接入 Edge</button><button type="button" id="setup-chrome">接入 Chrome</button>
+<p id="browser-message" class="sub" role="status" aria-live="polite"></p>
+<div id="browser-page-guide" hidden>
+<label for="browser-page">扩展管理页地址</label><input type="text" id="browser-page" readonly spellcheck="false">
+<button type="button" id="copy-browser-page">复制管理页地址</button></div>
+<div id="browser-folder" hidden>
+<p class="sub">在接入指引所在的浏览器窗口打开扩展管理页，开启开发人员模式并点「加载已解压扩展」。检查目录后确认选择。若未填入目录，可复制后粘贴。规则生效后，上方会显示已连接。</p>
+<label for="browser-path">扩展目录</label><input type="text" id="browser-path" readonly spellcheck="false">
+<button type="button" id="copy-browser-folder">复制扩展目录</button></div></section>
+<section><h2>Agent 配置与排查</h2><p class="sub">可描述学习要求、输入打不开的课程链接，或询问管控状态。已授权的 Codex 生成建议，本机确认后才会应用。</p>
+<label for="question">你需要怎样设置或排查</label><textarea id="question" placeholder="例如，学习时限制抖音，保留这条课程视频"></textarea>
+<button id="agent">生成配置或诊断</button><button id="agent-apply" hidden>应用预览</button><button id="undo" hidden>撤销上一次规则变更</button><pre id="answer"></pre></section>
+<section><h2>应用识别</h2><div id="events"></div></section>
+</div></main><script src="learning-mode-ui.js"></script></body></html>

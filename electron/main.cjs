@@ -1592,6 +1592,20 @@ let persistedAuthorizationRestore = { phase: 'idle', restored: {}, message: '' }
 let taskCenterSnapshotCache = { at: 0, value: '' };
 let taskRuntimeMigrationChecked = false;
 let activeCaptureRuntime = null;
+const learningMode = require('./learning-mode.cjs').createLearningMode('host', {
+  parent: () => mainWindow,
+  resolveCodexCli: async () => (await refreshPreferredCodexCliInstall()).exePath,
+  spawnCodex: spawnAdapterProcess,
+  terminateCodex: terminateCaptureVisionProcess,
+  sessionId: () => activeCaptureRuntime?.session.id,
+  captureRunning: () => activeCaptureRuntime?.session.status === 'capturing',
+  pauseCapture: () => pauseCaptureSession(activeCaptureRuntime?.session.id),
+  resumeCapture: () => resumeCaptureSession(activeCaptureRuntime?.session.id),
+  finishCapture: () => stopCaptureSession(activeCaptureRuntime?.session.id, 'learning_mode_closed'),
+  refreshCourse: () => {
+    if (courseView && learningMode.blocksUrl(courseView.webContents.getURL())) closeCourseView('learning_mode_blocked');
+  },
+});
 let captureTray = null;
 let quickCaptureWindow = null;
 let quickCaptureLoaded = false;
@@ -11979,18 +11993,22 @@ function openCourseView(courseId) {
     if (!courseAllowedByCurrentPlan(course)) {
       return JSON.stringify({ ok: false, message: '机构自选课程仅向已激活的专业版和机构版开放。' });
     }
+    if (learningMode.blocksUrl(course.url)) return JSON.stringify({ ok: false, message: '此页面受专注模式限制。' });
     closeCourseView('switch');
     const partition = coursePartition(course.courseId);
     const courseSession = session.fromPartition(partition, { cache: true });
     courseView = new WebContentsView({ webPreferences: secureCourseWebPreferences(partition) });
     installCourseGuards(courseView.webContents, course, courseSession, (blocked) => {
       notify('onNativeCourseBrowserChanged', { open: true, blocked: true, courseId: course.courseId, ...blocked });
-    });
+    }, learningMode.blocksUrl);
     mainWindow.contentView.addChildView(courseView);
     courseCaptureSetupVisible = !activeCaptureRuntime;
     courseView.setBounds(courseViewBounds());
     courseView.setBackgroundColor('#ffffff');
     activeCourse = course;
+    courseView.webContents.on('did-navigate-in-page', (_event, url) => {
+      if (learningMode.blocksUrl(url)) closeCourseView('learning_mode_blocked');
+    });
     courseView.webContents.on('render-process-gone', () => closeCourseView('render_process_gone'));
     courseView.webContents.on('before-input-event', handleCourseFullscreenEscape);
     void courseView.webContents.loadURL(course.url);
@@ -13559,6 +13577,17 @@ function readCaptureStore() {
   }
 }
 
+function recoverInterruptedCaptureSessions() {
+  for (const summary of readCaptureStore().sessions) {
+    if (!['capturing', 'paused'].includes(summary.status) || summary.id === activeCaptureRuntime?.session.id) continue;
+    const detail = readCaptureSessionDetail(summary);
+    if (!detail) continue;
+    const recovered = { ...detail, status: 'interrupted', endReason: 'startup_recovery', endedAt: new Date().toISOString() };
+    persistCaptureSession(recovered);
+    if (recovered.items?.length) scheduleCaptureTimelineSemanticProcessing(recovered);
+  }
+}
+
 function writeCaptureStore(store) {
   writeJsonAtomic(captureSessionsPath(), {
     version: CAPTURE_PROTOCOL_VERSION,
@@ -14328,6 +14357,7 @@ function updateCaptureTray() {
     { label: active ? `${session.status === 'paused' ? '采集已暂停' : '正在采集'} · ${session.sourceName}` : '当前没有采集会话', enabled: false },
     { type: 'separator' },
     { label: '打开教育管家', click: showMainWindow },
+    { label: '专注模式', click: () => learningMode.open() },
     { label: quickCaptureWindow?.isVisible() ? '隐藏快捷采集工具条' : '显示快捷采集工具条', click: () => {
       if (quickCaptureWindow?.isVisible()) setQuickCaptureEnabled(false);
       else void showQuickCaptureNearMainWindow();
@@ -14342,10 +14372,10 @@ function updateCaptureTray() {
       click: () => {
         if (!activeCaptureRuntime) return;
         if (activeCaptureRuntime.session.status === 'paused') resumeCaptureSession(activeCaptureRuntime.session.id);
-        else pauseCaptureSession(activeCaptureRuntime.session.id);
+        else void requestManualCaptureAction('pause', activeCaptureRuntime.session.id);
       },
     },
-    { label: '结束并整理', enabled: active, click: () => { if (activeCaptureRuntime) void stopCaptureSession(activeCaptureRuntime.session.id); } },
+    { label: '结束并整理', enabled: active, click: () => { if (activeCaptureRuntime) void requestManualCaptureAction('stop', activeCaptureRuntime.session.id); } },
   ]));
 }
 
@@ -15004,9 +15034,9 @@ async function handleQuickCaptureAction(event, action, input = {}) {
   if (['pause', 'stop', 'highlight', 'capture-inbox'].includes(action)) {
     if (!session) return { ok: false, message: '当前没有屏幕采集会话。' };
     const result = action === 'capture-inbox' ? openCaptureInbox(session.id)
-      : action === 'stop' ? await stopCaptureSession(session.id)
+      : action === 'stop' ? await requestManualCaptureAction('stop', session.id)
       : action === 'highlight' ? await highlightCaptureSession(session.id)
-      : session.status === 'paused' ? await resumeCaptureSession(session.id) : await pauseCaptureSession(session.id);
+      : session.status === 'paused' ? await resumeCaptureSession(session.id) : await requestManualCaptureAction('pause', session.id);
     return JSON.parse(result);
   }
   const tabId = routeForAction(action);
@@ -15081,10 +15111,11 @@ async function captureSourceImage(sourceId, sourceType) {
 }
 
 async function captureFrame(runtime, input = {}) {
-  if (!runtime || runtime !== activeCaptureRuntime || runtime.busy || runtime.session.status !== 'capturing') return null;
+  if (!runtime || runtime !== activeCaptureRuntime || runtime.busy || runtime.session.status !== 'capturing' || learningMode.holdCapture()) return null;
   runtime.busy = true;
   try {
     const image = await captureSourceImage(runtime.session.sourceId, runtime.session.sourceType);
+    if (learningMode.holdCapture() || activeCaptureRuntime !== runtime || runtime.session.status !== 'capturing') return null;
     const signature = captureImageSignature(image);
     const now = Date.now();
     const decision = captureSaveDecision(runtime, {
@@ -15256,6 +15287,15 @@ async function startCaptureSession(optionsJson, validateContext = () => {}) {
   } finally { captureStartPending = false; }
 }
 
+async function requestManualCaptureAction(action, sessionId) {
+  const id = activeCaptureRuntime?.session.id;
+  if (!id || (sessionId && sessionId !== id)) return JSON.stringify({ ok: false, message: '没有可操作的采集会话。' });
+  if (!await learningMode.authorizeCapture(action === 'pause' ? '验证密码后暂停采集' : '验证密码后结束采集', id)) {
+    return JSON.stringify({ ok: false, message: '已取消，采集状态未变化。' });
+  }
+  return action === 'pause' ? pauseCaptureSession(id) : stopCaptureSession(id);
+}
+
 function pauseCaptureSession(sessionId) {
   const runtime = activeCaptureRuntime;
   if (!runtime || (sessionId && String(runtime.session.id) !== String(sessionId))) return JSON.stringify({ ok: false, message: '没有可暂停的采集会话。' });
@@ -15267,6 +15307,7 @@ function pauseCaptureSession(sessionId) {
 }
 
 function resumeCaptureSession(sessionId) {
+  if (learningMode.holdsModePause()) return JSON.stringify({ ok: false, message: '请先恢复专注模式。' });
   const runtime = activeCaptureRuntime;
   if (!runtime || (sessionId && String(runtime.session.id) !== String(sessionId))) return JSON.stringify({ ok: false, message: '没有可继续的采集会话。' });
   runtime.session.status = 'capturing';
@@ -15616,7 +15657,7 @@ function registerCaptureShortcuts() {
     ['CommandOrControl+Shift+2', () => {
       if (!activeCaptureRuntime) return;
       if (activeCaptureRuntime.session.status === 'paused') resumeCaptureSession(activeCaptureRuntime.session.id);
-      else pauseCaptureSession(activeCaptureRuntime.session.id);
+      else void requestManualCaptureAction('pause', activeCaptureRuntime.session.id);
     }],
     ['CommandOrControl+Shift+3', () => {
       if (activeCaptureRuntime) void highlightCaptureSession(activeCaptureRuntime.session.id);
@@ -44862,10 +44903,11 @@ ipcMain.handle('bridge:startCaptureSession', async (_event, optionsJson) => {
   const locked = licenseRequiredJson('屏幕资料采集');
   return locked || startCaptureSession(optionsJson);
 });
-ipcMain.handle('bridge:pauseCaptureSession', async (_event, sessionId) => pauseCaptureSession(sessionId));
+ipcMain.handle('bridge:openLearningMode', event => event.sender === mainWindow?.webContents && learningMode.open());
+ipcMain.handle('bridge:pauseCaptureSession', async (_event, sessionId) => requestManualCaptureAction('pause', sessionId));
 ipcMain.handle('bridge:resumeCaptureSession', async (_event, sessionId) => resumeCaptureSession(sessionId));
 ipcMain.handle('bridge:highlightCaptureSession', async (_event, sessionId) => highlightCaptureSession(sessionId));
-ipcMain.handle('bridge:stopCaptureSession', async (_event, sessionId) => stopCaptureSession(sessionId));
+ipcMain.handle('bridge:stopCaptureSession', async (_event, sessionId) => requestManualCaptureAction('stop', sessionId));
 ipcMain.handle('bridge:promoteCaptureSession', async (_event, sessionId, targetMode) => {
   const locked = licenseRequiredJson('屏幕采集资料晋升');
   return locked || promoteCaptureSession(sessionId, targetMode);
@@ -44922,6 +44964,7 @@ if (practicePrintHelperMode) {
 
   app.whenReady().then(() => {
     appendStartupDiagnostic('electron_ready');
+    learningMode.init();
     // Paint the shell before database migration, integrity checks and recovery.
     // Business writes remain gated until the protected startup sequence ends.
     createWindow();
@@ -45010,6 +45053,8 @@ if (practicePrintHelperMode) {
         }
         await restorePersistedAgentAuthorization();
         businessStartupReady = true;
+        try { recoverInterruptedCaptureSessions(); }
+        catch (error) { console.warn('采集会话恢复失败', error.code || error.message); }
         executionPlaneReadyAt = Date.now() + 10_000;
         projectAutomationReadyAt = Date.now() + 60_000;
         if (projectsReady) {
@@ -45085,6 +45130,7 @@ let materialQuitPending = false;
 let taskStoreQuitReady = false;
 let smartInboxQuitReady = false, smartInboxQuitPending = false;
 app.on('before-quit', (event) => {
+  if (learningMode.guardQuit(event)) return;
   if (typeof workBuddyStatusMonitorStopped !== 'undefined') workBuddyStatusMonitorStopped = true;
   if (typeof workBuddyStatusMonitor !== 'undefined' && workBuddyStatusMonitor) {
     clearTimeout(workBuddyStatusMonitor); workBuddyStatusMonitor = null;

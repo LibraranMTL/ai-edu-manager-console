@@ -73,13 +73,15 @@ test('Windows student exposes the same collaboration functions and confirms upda
   assert.match(windowsUi, /window\.confirm/);
 });
 
-test('current client sources and formal manifest remain aligned', () => {
-  assert.match(read('android-tablet-terminal/AndroidManifest.xml'), /versionCode="104"[\s\S]*versionName="0\.6\.34"/);
+test('student candidates remain separate from the published client manifest', () => {
+  assert.match(read('android-tablet-terminal/AndroidManifest.xml'), /versionCode="105"[\s\S]*versionName="0\.6\.35"/);
   assert.match(read('android-teacher-terminal/AndroidManifest.xml'), /versionCode="6"[\s\S]*versionName="0\.1\.5"/);
   const terminalVersion = JSON.parse(read('windows-terminal-version.json'));
   const candidate = JSON.parse(read('package.json'));
   const formal = JSON.parse(read('release/edu-manager-version.json'));
-  assert.deepEqual(terminalVersion, { versionCode: 241, versionName: '0.19.1', releaseStatus: 'stable' });
+  assert.deepEqual(terminalVersion, { versionCode: 242, versionName: '0.19.2', releaseStatus: 'candidate' });
+  assert.equal(formal.windowsTerminalVersionCode, 241);
+  assert.equal(formal.windowsTerminalVersionName, '0.19.1');
   assert.ok([formal.windowsVersionName, nextWindowsVersion(formal.windowsVersionName)].includes(candidate.version));
   assert.equal(formal.tabletTerminalVersionName, '0.6.34');
   assert.equal(formal.teacherTerminalVersionName, '0.1.5');

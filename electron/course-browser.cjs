@@ -19,10 +19,12 @@ function secureCourseWebPreferences(partition) {
   };
 }
 
-function installCourseGuards(webContents, course, courseSession, onBlocked = () => {}) {
+function installCourseGuards(webContents, course, courseSession, onBlocked = () => {}, learningModeBlocks = () => false) {
   const allowedHosts = course.allowedHosts || [];
   const guard = (event, url) => {
-    const result = safeCourseNavigation(url, allowedHosts);
+    const result = learningModeBlocks(url)
+      ? { ok: false, code: 'LEARNING_MODE_BLOCKED', message: '此页面受专注模式限制。' }
+      : safeCourseNavigation(url, allowedHosts);
     if (!result.ok) {
       event?.preventDefault?.();
       onBlocked({ url, ...result });

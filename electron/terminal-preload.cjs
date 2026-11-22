@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('terminalBridge', {
   setCourseLearningFullscreen: (enabled) => ipcRenderer.invoke('terminal:set-course-learning-fullscreen', Boolean(enabled)),
   listCaptureSources: () => ipcRenderer.invoke('terminal:list-capture-sources'),
   startCapture: (input) => ipcRenderer.invoke('terminal:start-capture', input),
+  openLearningMode: () => ipcRenderer.invoke('terminal:open-learning-mode'),
   stopCapture: () => ipcRenderer.invoke('terminal:stop-capture'),
   captureControl: (action) => ipcRenderer.invoke('terminal:capture-control', action),
   uploadCapture: (input) => ipcRenderer.invoke('terminal:upload-capture', input),

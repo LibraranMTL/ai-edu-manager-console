@@ -42401,6 +42401,7 @@ async function externalHostLifecycleAction(action, input) {
     const installed = unifiedKnowledgeRegistrations(), previous = installed[host];
     if (action === 'uninstallInstalled') {
       // Revoke first; even a malformed/locked host config must not retain access.
+      learningMode.revokeFocusAccess(host);
       for (const c of store.snapshot().connections.filter(c => c.hostType === host && c.status !== 'revoked')) await store.action('connection', { connectionId: c.connectionId, status: 'revoked' });
       installed[host] = { ...previous, status: 'uninstall_pending', uninstalledAt: new Date().toISOString() }; save(installed);
       try {
@@ -42462,7 +42463,7 @@ function writeExternalConnectionRuntimeConfig(connectionId, token = '') {
   fs.mkdirSync(directory, { recursive: true });
   if (token) fs.writeFileSync(credentialFile, token, { flag: 'wx', mode: 0o600 });
   if (!fs.existsSync(credentialFile)) throw Error(`外部连接 ${connectionId} 缺少本机凭据文件`);
-  // Copy the two stdio modules outside asar so Node-mode Electron can launch
+  // Copy the stdio modules outside asar so Node-mode Electron can launch
   // them reliably. Host startup refreshes the executable after portable updates.
   const copyIfChanged = (source, target) => {
     const sourceBytes = fs.readFileSync(source);
@@ -42479,10 +42480,12 @@ function writeExternalConnectionRuntimeConfig(connectionId, token = '') {
     writeJsonAtomic(target, value);
     return true;
   };
-  for (const file of ['external-agent-mcp.cjs', 'agent-capability-contract.cjs']) copyIfChanged(path.join(__dirname, file), path.join(directory, file));
+  for (const file of ['learning-mode-mcp.cjs', 'agent-capability-contract.cjs', 'external-agent-mcp.cjs']) copyIfChanged(path.join(__dirname, file), path.join(directory, file));
+  const provider = externalConnectorStore().snapshot().connections.find(item => item.connectionId === connectionId)?.hostType;
   writeJsonIfChanged(path.join(directory, 'connection.json'), { schema: 'edu-manager.external-connection.v1', connectionId,
     endpoint: `http://127.0.0.1:${getHostServicePort()}/api/agent/connector`, credentialFile,
-    runtimeExecutable: runtime.executable, runtimeScript: path.join(directory, 'external-agent-mcp.cjs'), runtimeKind: runtime.useElectronNode ? 'electron-node' : 'node' });
+    runtimeExecutable: runtime.executable, runtimeScript: path.join(directory, 'external-agent-mcp.cjs'), runtimeKind: runtime.useElectronNode ? 'electron-node' : 'node',
+    focus: learningMode.focusConfig(provider) });
   const configPath = path.join(directory, 'mcp-config.json');
   writeJsonIfChanged(configPath, { mcpServers: { 'edu-manager-knowledge': { command: runtime.executable,
     args: [path.join(directory, 'external-agent-mcp.cjs'), path.join(directory, 'connection.json')], ...(runtime.useElectronNode ? { env: { ELECTRON_RUN_AS_NODE: '1' } } : {}) } } });

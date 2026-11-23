@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const readline = require('node:readline');
 const { CAPABILITIES } = require('./agent-capability-contract.cjs');
+const { createFocusClient, ENABLE, STATUS, toolResult } = require('./learning-mode-mcp.cjs');
 const ALIASES = { query_education_knowledge: 'education_knowledge_query', submit_education_conversation: 'education_conversation_submit', list_education_archive: 'education_archive_list', get_education_task_status: 'education_task_status', execute_education_write: 'education_write_operation', get_education_write_status: 'education_write_operation', get_recent_education_context: 'recent', start_education_session: 'start', record_authorized_education_turn: 'append', finalize_education_session: 'finalize', accept_education_handoff: 'accept', cancel_education_handoff: 'cancel' };
 const QUERY_CAPABILITIES = ['knowledge.query', 'student.overview', 'archive.list', 'task.status', 'report.list'];
 function capabilityInputSchema(name, multi = false) {
@@ -44,6 +45,7 @@ function toolDefinitions(permissions) {
 }
 async function run(configPath) {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const focus = createFocusClient(config.focus);
   const url = new URL(config.endpoint);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/api/agent/connector') throw Error('LOCAL_ENDPOINT_REQUIRED');
   const request = async body => {
@@ -62,9 +64,15 @@ async function run(configPath) {
       if (message.method === 'initialize') result = { protocolVersion: '2024-11-05', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'edu-manager-knowledge', version: '2.0.1-r21' }, instructions: `除独立健康检查外，先 education_open_session 获取 sessionId/contextRevision，不能沿用旧固定学生参数或活动页面学生。授权仅由主机用户设置。全学生会话先 list_authorized_students；跨学生查询按学生分组；每项写入明确 targetStudentId，不自动归档混合对话或记忆。旧工具名仍可使用，但必须使用当前工具声明的会话参数。${REPORT_GUIDANCE}` };
       else if (message.method === 'ping') result = {};
       else if (message.method === 'tools/list') {
-        const info = await request({ action: 'describe' });
-        if (!info.ok) throw Error(info.code || 'AUTH_REQUIRED');
-        result = { tools: toolDefinitions(info.capabilities) };
+        const focusTools = focus.tools();
+        const info = await request({ action: 'describe' }).catch(error => {
+          if (!focusTools.length) throw error;
+          return null;
+        });
+        if (!info?.ok && !focusTools.length) throw Error(info?.code || 'AUTH_REQUIRED');
+        result = { tools: [...(info?.ok ? toolDefinitions(info.capabilities) : []), ...focusTools] };
+      } else if (message.method === 'tools/call' && [ENABLE, STATUS].includes(message.params?.name)) {
+        result = toolResult(await focus.call(message.params.name, message.params.arguments));
       } else if (message.method === 'tools/call') {
         const args = { ...(message.params?.arguments || {}) }, originalName = message.params?.name;
         let name = ALIASES[originalName] || originalName;

@@ -118,6 +118,7 @@ let activeCapture = null;
 let lastInterruptedCapture = null;
 const learningMode = require('./learning-mode.cjs').createLearningMode('student', {
   parent: () => mainWindow,
+  copyFocusConfig: copyTerminalFocusConfig,
   sessionId: () => activeCapture?.id,
   captureRunning: () => activeCapture?.status === 'capturing',
   pauseCapture: () => setCapturePaused(true),
@@ -1377,16 +1378,41 @@ async function setTerminalAgentBridge(enabled) {
   return bridge.start(scope);
 }
 
+function terminalAgentMcpScript() {
+  const bridgeRoot = path.join(terminalUserData(), 'student-agent-bridge');
+  fs.mkdirSync(bridgeRoot, { recursive: true });
+  for (const name of ['learning-mode-mcp.cjs', 'terminal-agent-mcp.cjs']) {
+    const target = path.join(bridgeRoot, name);
+    const temporary = target + '.tmp';
+    fs.writeFileSync(temporary, fs.readFileSync(path.join(__dirname, name)));
+    fs.renameSync(temporary, target);
+  }
+  return path.join(bridgeRoot, 'terminal-agent-mcp.cjs');
+}
+
+function copyTerminalFocusConfig(provider, focus) {
+  const script = terminalAgentMcpScript();
+  const config = path.join(path.dirname(script), 'focus-' + provider + '.json');
+  const temporary = config + '.tmp';
+  fs.writeFileSync(temporary, JSON.stringify({ focus, knowledgeConfigPath: getTerminalAgentBridge().snapshot().descriptorFile }));
+  fs.renameSync(temporary, config);
+  const command = process.execPath;
+  const args = [script, config];
+  const env = { ELECTRON_RUN_AS_NODE: '1' };
+  if (provider === 'codex') return [
+    '[mcp_servers.ai-education-student]',
+    'command = ' + JSON.stringify(command),
+    'args = ' + JSON.stringify(args),
+    'env = { ELECTRON_RUN_AS_NODE = "1" }',
+    'tool_timeout_sec = 90',
+  ].join('\n');
+  return JSON.stringify({ mcpServers: { 'ai-education-student': { command, args, env, type: 'stdio' } } }, null, 2);
+}
+
 function copyTerminalAgentBridgeConfig() {
   const state = getTerminalAgentBridge().snapshot();
   if (!state.enabled) throw new Error('请先启用外部 Agent 查询。');
-  const bridgeRoot = path.join(terminalUserData(), 'student-agent-bridge');
-  fs.mkdirSync(bridgeRoot, { recursive: true });
-  const durableMcpScript = path.join(bridgeRoot, 'terminal-agent-mcp.cjs');
-  const temporaryMcpScript = `${durableMcpScript}.tmp`;
-  fs.writeFileSync(temporaryMcpScript, fs.readFileSync(path.join(__dirname, 'terminal-agent-mcp.cjs')));
-  fs.copyFileSync(temporaryMcpScript, durableMcpScript);
-  fs.unlinkSync(temporaryMcpScript);
+  const durableMcpScript = terminalAgentMcpScript();
   const stableExecutable = path.resolve(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
   const config = { mcpServers: { 'ai-education-student': { command: stableExecutable, args: [durableMcpScript, state.descriptorFile], env: { ELECTRON_RUN_AS_NODE: '1' } } } };
   const value = JSON.stringify(config, null, 2);

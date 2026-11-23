@@ -54,6 +54,14 @@ function render(state) {
   by('disable').hidden = !state.enabled;
   by('reset').hidden = !state.hasPassword;
   by('undo').hidden = !state.canUndo;
+  for (const [provider, label] of [['codex', 'Codex'], ['workbuddy', 'WorkBuddy']]) {
+    const allowed = Boolean(state.focusAccess?.[provider]);
+    const button = by('focus-' + provider);
+    button.textContent = allowed ? '撤销 ' + label + ' 授权' : '允许 ' + label + ' 请求开启';
+    button.onclick = () => command('focus-access', { provider, enabled: !allowed });
+    by('copy-focus-' + provider).hidden = !state.focusCopy || !allowed;
+    by('copy-focus-' + provider).onclick = () => command('focus-copy', { provider });
+  }
   if (revision !== state.revision) {
     revision = state.revision;
     by('games').checked = state.rules.games;

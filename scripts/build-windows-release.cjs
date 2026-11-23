@@ -484,6 +484,7 @@ function build() {
       'electron/external-agent-connector.cjs',
       'electron/external-agent-host.cjs',
       'electron/external-agent-mcp.cjs',
+      'electron/learning-mode-mcp.cjs',
       'electron/external-agent-install.cjs',
       'electron/agent-report-read.cjs',
       'electron/external-agent-writes.cjs',

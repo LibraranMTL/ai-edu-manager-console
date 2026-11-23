@@ -1706,6 +1706,7 @@ function TerminalApp() {
         </section>
         <section className="terminal-card connection-card">
           <h2>连接主机</h2>
+          {api?.openLearningMode && <button onClick={() => void api.openLearningMode?.()}>专注模式</button>}
           {!api ? <div className="terminal-warning">当前是界面预览。配对和上传功能仅在 Windows 学生终端程序内可用。</div> : null}
           <div className="connection-method-grid" aria-label="选择连接方式">
             <button className={connectionMethod === 'lan' ? 'connection-method-card active' : 'connection-method-card'} onClick={() => selectConnectionMethod('lan')} aria-pressed={connectionMethod === 'lan'}>

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { randomUUID, randomBytes } = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { execFile } = require('node:child_process');
 const { setTimeout: wait } = require('node:timers/promises');
 
 const PROVIDERS = { codex: 'Codex', workbuddy: 'WorkBuddy' };
@@ -136,16 +136,22 @@ function createFocusServer({ root, role, executable, installed, snapshot, activa
 }
 
 function startInstalledApp(executable, userData) {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  delete env.PORTABLE_EXECUTABLE_FILE;
-  delete env.PORTABLE_EXECUTABLE_DIR;
+  // A one-off Agent may close its entire process tree as soon as it replies.
+  // Ask the signed-in Windows desktop to open the app in its own lifetime.
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    '$shell = New-Object -ComObject Shell.Application',
+    '$hwnd = 0',
+    '$desktop = $shell.Windows().FindWindowSW(0, 0, 8, [ref]$hwnd, 1)',
+    "if (!$desktop) { throw 'Windows desktop shell is not available' }",
+    "$appArgs = '--user-data-dir=' + [char]34 + $env:QX_FOCUS_PROFILE + [char]34",
+    "$desktop.Document.Application.ShellExecute($env:QX_FOCUS_APP, $appArgs, $env:QX_FOCUS_DIRECTORY, 'open', 1)",
+  ].join('; ');
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const env = { ...process.env, QX_FOCUS_APP: executable, QX_FOCUS_PROFILE: userData, QX_FOCUS_DIRECTORY: path.dirname(executable) };
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['--user-data-dir=' + userData], {
-      detached: true, stdio: 'ignore', windowsHide: false, env, cwd: path.dirname(executable),
-    });
-    child.once('error', reject);
-    child.once('spawn', () => { child.unref(); resolve(); });
+    execFile(powershell, ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, env, timeout: 10_000 },
+      error => error ? reject(error) : resolve());
   });
 }
 

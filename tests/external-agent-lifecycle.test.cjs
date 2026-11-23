@@ -116,6 +116,7 @@ async function mainFixture(t) {
   const { root } = fixture(t), electron = path.resolve(__dirname, '../electron'); let server;
   const load = n => require(path.join(electron, n));
   const ctx = vm.createContext({ fs, path, os: { homedir: () => root }, app: { getPath: () => root }, process: { execPath: process.execPath, env: {} }, __dirname: electron,
+    learningMode: { focusConfig: provider => ({ role: 'host', provider, root }), revokeFocusAccess: () => {} },
     readStudentsIndex: () => [], readProjects: () => [], readProjectMetadata: () => [],
     getProjectMetadata: () => null, normalizeProject: p => p, normalizeProjectMetadata: p => p,
     agentAccessGrantStorePath: () => path.join(root, 'grants.json'), agentWriteIntentPath: () => path.join(root, 'writes.json'), readAgentWriteIntents: () => ({ intents: [] }),

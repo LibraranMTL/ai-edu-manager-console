@@ -32,5 +32,9 @@
 <section><h2>Agent 配置与排查</h2><p class="sub">可描述学习要求、输入打不开的课程链接，或询问管控状态。已授权的 Codex 生成建议，本机确认后才会应用。</p>
 <label for="question">你需要怎样设置或排查</label><textarea id="question" placeholder="例如，学习时限制抖音，保留这条课程视频"></textarea>
 <button id="agent">生成配置或诊断</button><button id="agent-apply" hidden>应用预览</button><button id="undo" hidden>撤销上一次规则变更</button><pre id="answer"></pre></section>
+<section><h2>从 Agent 开启本机专注模式</h2>
+<p class="sub">授权后，可在对应 Agent 对话中请求开启。每次开启都在教育管家验证管理密码。</p>
+<p><button type="button" id="focus-codex"></button><button type="button" id="copy-focus-codex" hidden>复制 Codex 连接器配置</button></p>
+<p><button type="button" id="focus-workbuddy"></button><button type="button" id="copy-focus-workbuddy" hidden>复制 WorkBuddy 连接器配置</button></p></section>
 <section><h2>应用识别</h2><div id="events"></div></section>
 </div></main><script src="learning-mode-ui.js"></script></body></html>

@@ -9,6 +9,7 @@ const { app, BrowserWindow, clipboard, ipcMain } = require('electron');
 const { rootPath, statePath, readJson, active, blockedBy, rulesFrom } = require('./learning-mode-rules.cjs');
 const { BROWSERS, DEFAULT_RULES, writeJson, installWindowsWorker, installBrowserConnection, openBrowserSetupGuide, windowsStatus, currentPolicy } = require('./learning-mode-windows.cjs');
 const { createCodexStructuredGenerator, redact } = require('./structured-generation.cjs');
+const { createFocusServer, PROVIDERS } = require('./learning-mode-mcp.cjs');
 
 const derive = promisify(crypto.scrypt);
 const run = promisify(execFile);
@@ -35,6 +36,7 @@ function createLearningMode(role, hooks) {
   let agentBusy = false;
   let timer;
   let appliedPolicy = '';
+  let focusServer;
   const disabled = process.platform !== 'win32';
   const emptyState = { enabled: false, pauseUntil: 0, revision: 0, rules: DEFAULT_RULES };
   const credential = () => readJson(credentialsFile, {});
@@ -51,7 +53,8 @@ function createLearningMode(role, hooks) {
     return {
       ...state, remainingMs: Math.max(0, state.pauseUntil - Date.now()),
       paused: state.enabled && state.pauseUntil > Date.now(), hasPassword: Boolean(credential().password),
-      canUndo: Boolean(previousRules), captureInterruptedAt: hooks.lastInterruption?.() || '', ...windowsStatus(role),
+      canUndo: Boolean(previousRules), captureInterruptedAt: hooks.lastInterruption?.() || '',
+      focusAccess: focusServer?.access() || {}, focusCopy: Boolean(hooks.copyFocusConfig), ...windowsStatus(role),
     };
   }
 
@@ -81,16 +84,20 @@ function createLearningMode(role, hooks) {
     settings.once('closed', () => { settings = null; });
     return true;
   }
-  function prompt(kind, title) {
+  function prompt(kind, title, { signal, onTimeout } = {}) {
     if (challenge) { challenge.window.focus(); return Promise.resolve(null); }
-    const window = makeWindow(kind, settings || hooks.parent());
+    if (signal?.aborted) return Promise.resolve(null);
+    const window = makeWindow(kind, signal ? undefined : settings || hooks.parent());
     return new Promise(resolve => {
       const pending = { window, kind, title, result: null, busy: false };
       challenge = pending;
-      const expire = setTimeout(() => { if (!window.isDestroyed()) window.close(); }, 45_000);
+      const close = () => { if (!window.isDestroyed()) window.close(); };
+      signal?.addEventListener('abort', close, { once: true });
+      const expire = setTimeout(() => { onTimeout?.(); close(); }, 45_000);
       window.once('closed', () => {
         challenge = null;
         clearTimeout(expire);
+        signal?.removeEventListener('abort', close);
         resolve(pending.result);
       });
     });
@@ -146,6 +153,36 @@ function createLearningMode(role, hooks) {
     if (resumeCaptureId && hooks.sessionId() === resumeCaptureId) hooks.resumeCapture();
     resumeCaptureId = '';
     return true;
+  }
+  async function enable(allowed = () => true) {
+    if (!allowed()) return false;
+    if (active(load())) return true;
+    await installWindowsWorker(role);
+    if (!allowed()) return false;
+    const current = load();
+    if (current.enabled && current.pauseUntil) restorePause(true);
+    else if (!current.enabled) save({ ...current, enabled: true, pauseUntil: 0 });
+    return true;
+  }
+
+  function focusSnapshot() {
+    const current = load();
+    const status = windowsStatus(role);
+    const mode = !current.enabled ? 'disabled' : active(current) ? 'enabled' : 'paused';
+    return { mode, applicationControl: mode !== 'enabled' ? 'inactive' : status.worker ? 'running' : 'waiting',
+      browsers: Object.fromEntries(Object.keys(BROWSERS).map(name => [name, status.coverage.includes(name) ? 'connected' : 'not_connected'])) };
+  }
+
+  async function activateFromAgent({ provider, signal, permitted, onConfirmed }) {
+    if (challenge) return { state: 'failed', message: '教育管家已有密码窗口，请完成后重试。' };
+    if (!credential().password || !permitted() || signal.aborted) return { state: 'cancelled', message: '本机专注模式授权已失效。' };
+    let expired = false;
+    const approved = await prompt('verify', PROVIDERS[provider] + ' 请求开启本机专注模式', { signal, onTimeout: () => { expired = true; } });
+    if (!approved || signal.aborted || !permitted()) {
+      return { state: expired ? 'timed_out' : 'cancelled', message: expired ? '等待密码验证超时。' : '本机未批准开启请求。' };
+    }
+    onConfirmed();
+    return await enable(() => permitted() && !signal.aborted) ? { state: 'enabled' } : { state: 'cancelled' };
   }
   function changeRules(rules, expectedRevision, undo = false) {
     const state = load();
@@ -246,6 +283,20 @@ function createLearningMode(role, hooks) {
   async function settingsCommand(action, input) {
     if (action === 'agent') return askAgent(input?.question);
     if (action === 'resume') { restorePause(true); return { state: stateForUi() }; }
+    if (action === 'focus-copy' || action === 'focus-access') {
+      const provider = input?.provider;
+      if (!focusServer || !Object.hasOwn(PROVIDERS, provider)) throw Error('请选择 Codex 或 WorkBuddy。');
+      if (action === 'focus-copy') {
+        if (!hooks.copyFocusConfig || !focusServer.access()[provider]) throw Error('请先为该 Agent 授权。');
+        clipboard.writeText(hooks.copyFocusConfig(provider, focusConfig(provider)));
+        return { message: '配置已复制。请原位更新对应 Agent 的 ai-education-student 连接器，再重启 Agent。' };
+      }
+      if (typeof input.enabled !== 'boolean') throw Error('无效的授权设置。');
+      const permission = await requirePassword('验证权限后更改 ' + PROVIDERS[provider] + ' 的专注模式授权');
+      if (!permission.ok) return { message: '已取消。', state: stateForUi() };
+      focusServer.setAccess(provider, input.enabled);
+      return { state: stateForUi(), recovery: permission.recovery };
+    }
     if (action === 'copy-browser-folder') {
       const folder = windowsStatus(role).browserExtensionPath;
       if (!folder) throw Error('请先准备浏览器扩展。');
@@ -271,8 +322,7 @@ function createLearningMode(role, hooks) {
     if (!permission.ok) return { message: '已取消。' };
     const state = load();
     if (action === 'enable') {
-      await installWindowsWorker(role);
-      save({ ...load(), enabled: true, pauseUntil: 0 });
+      await enable();
     } else if (action === 'pause' && state.enabled && active(state)) {
       resumeCaptureId = hooks.captureRunning() ? hooks.sessionId() : '';
       save({ ...state, pauseUntil: Date.now() + PAUSE_MS });
@@ -313,6 +363,12 @@ function createLearningMode(role, hooks) {
     }
     return { state: stateForUi(), recovery: permission.recovery };
   }
+  function focusConfig(provider) {
+    if (!Object.hasOwn(PROVIDERS, provider)) return undefined;
+    return { role, provider, root: path.join(app.getPath('userData'), 'learning-mode') };
+  }
+  function revokeFocusAccess(provider) { focusServer?.setAccess(provider, false); }
+
   function init() {
     if (disabled || timer) return;
     const root = rootPath();
@@ -321,6 +377,11 @@ function createLearningMode(role, hooks) {
     const privateRoot = path.join(app.getPath('userData'), 'learning-mode');
     fs.mkdirSync(privateRoot, { recursive: true });
     credentialsFile = path.join(privateRoot, 'auth.json');
+    focusServer = createFocusServer({ root: privateRoot, role, executable: process.execPath,
+      installed: () => app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE,
+      snapshot: focusSnapshot, activate: activateFromAgent });
+    void focusServer.start().catch(() => console.warn('专注模式 Agent 本机连接未能启动'));
+    app.once('will-quit', () => focusServer.stop());
     ipcMain.handle('learning-mode:window-info', event => {
       if (event.sender === challenge?.window.webContents) return { kind: challenge.kind, title: challenge.title };
       if (event.sender === settings?.webContents) return { kind: 'settings', state: stateForUi() };
@@ -360,7 +421,7 @@ function createLearningMode(role, hooks) {
     });
     return true;
   }
-  return { init, open, authorizeCapture, guardQuit, holdCapture, holdsModePause, isActive,
+  return { init, open, authorizeCapture, guardQuit, holdCapture, holdsModePause, isActive, focusConfig, revokeFocusAccess,
     blocksUrl: url => !disabled && blockedBy(url, currentPolicy()) !== null };
 }
 module.exports = { createLearningMode };

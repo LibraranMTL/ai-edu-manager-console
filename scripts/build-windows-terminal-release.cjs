@@ -17,6 +17,7 @@ const artifactBase = `AI-edu-manager-student-terminal-Windows-${version}${candid
 const installerName = `${artifactBase}-Setup.exe`;
 const learningModeFiles = [
   'electron/learning-mode.cjs',
+  'electron/learning-mode-mcp.cjs',
   'electron/learning-mode-rules.cjs',
   'electron/learning-mode-windows.cjs',
   'electron/learning-mode-worker.cjs',

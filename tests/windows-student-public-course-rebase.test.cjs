@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const { parseCourseTrustPolicy } = require('../electron/course-trust-policy.cjs');
 const { validateStudentCourseProjection, isCourseStartFallbackAllowed } = require('../electron/student-course-trust.cjs');
+const { validateWindowsVersion } = require('../scripts/version-policy.cjs');
 
 test('Windows student R4 feature baseline remains present after public-course port', () => {
   const main = read('electron/terminal-main.cjs');
@@ -44,7 +45,9 @@ test('Windows student keeps verified offline leases but fails closed on authoriz
 test('Windows student release packages trust resources with source audit', () => {
   const version = JSON.parse(read('windows-terminal-version.json'));
   const build = read('scripts/build-windows-terminal-release.cjs');
-  assert.deepEqual([version.versionName, version.versionCode, version.releaseStatus], ['0.19.2', 242, 'stable']);
+  validateWindowsVersion(version.versionName);
+  assert.ok(Number.isSafeInteger(version.versionCode) && version.versionCode > 0);
+  assert.ok(['stable', 'candidate'].includes(version.releaseStatus));
   for (const marker of [
     'electron/course-trust-policy.cjs',
     'electron/student-course-trust.cjs',

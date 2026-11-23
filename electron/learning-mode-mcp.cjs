@@ -135,13 +135,15 @@ function createFocusServer({ root, role, executable, installed, snapshot, activa
   return { access, setAccess, grantFile, start, stop };
 }
 
-function startInstalledApp(executable) {
+function startInstalledApp(executable, userData) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.PORTABLE_EXECUTABLE_FILE;
   delete env.PORTABLE_EXECUTABLE_DIR;
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, [], { detached: true, stdio: 'ignore', windowsHide: false, env });
+    const child = spawn(executable, ['--user-data-dir=' + userData], {
+      detached: true, stdio: 'ignore', windowsHide: false, env, cwd: path.dirname(executable),
+    });
     child.once('error', reject);
     child.once('spawn', () => { child.unref(); resolve(); });
   });
@@ -196,7 +198,7 @@ function createFocusClient(config, { launch = startInstalledApp, startupTimeout 
       return failure('FOCUS_INSTALLATION_MISSING', '找不到已授权的教育管家安装版，请打开新版重新授权。');
     }
     if (!starting) starting = (async () => {
-      await launch(entry.executable);
+      await launch(entry.executable, path.dirname(root));
       const expires = Date.now() + startupTimeout;
       do {
         if (grant()?.token !== entry.token) return false;

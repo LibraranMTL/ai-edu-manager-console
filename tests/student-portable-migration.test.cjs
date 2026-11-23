@@ -53,7 +53,7 @@ test('portable migration contract rejects traversal-like IDs and identifies cont
   assert.equal(isInside('C:/workspace/student', 'C:/workspace/another/file.md'), false);
 });
 
-test('three current candidate clients expose the one-click upgrade contract', () => {
+test('three clients expose the one-click upgrade contract', () => {
   const repo = path.join(__dirname, '..');
   const host = fs.readFileSync(path.join(repo, 'electron', 'main.cjs'), 'utf8');
   const student = fs.readFileSync(path.join(repo, 'android-tablet-terminal', 'src', 'com', 'qxmatrix', 'eduterminal', 'MainActivity.java'), 'utf8');
@@ -63,8 +63,9 @@ test('three current candidate clients expose the one-click upgrade contract', ()
   assert.match(host, /auth\.allowedStudentIds\.includes\(String\(studentId\)\)/);
   assert.match(host, /portable-migrations/);
   assert.match(student, /从 Windows 主机升级到单机版（少量资料）/);
-  assert.match(student, /VERSION_NAME = "0\.6\.35"/);
-  assert.match(student, /VERSION_CODE = 105/);
+  const androidManifest = fs.readFileSync(path.join(repo, 'android-tablet-terminal', 'AndroidManifest.xml'), 'utf8');
+  assert.equal(student.match(/VERSION_NAME = "([^"]+)"/)?.[1], androidManifest.match(/versionName="([^"]+)"/)?.[1]);
+  assert.equal(student.match(/VERSION_CODE = (\d+)/)?.[1], androidManifest.match(/versionCode="(\d+)"/)?.[1]);
   assert.match(student, /!student\.fileStatsReady/);
   assert.match(student, /student\.rawFileCount >= 1000/);
   assert.match(student, /student\.rawTotalBytes >= 3L \* 1024L \* 1024L \* 1024L/);

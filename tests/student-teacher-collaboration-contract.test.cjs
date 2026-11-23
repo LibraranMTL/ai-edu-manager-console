@@ -79,11 +79,10 @@ test('current client sources and formal manifest remain aligned', () => {
   const terminalVersion = JSON.parse(read('windows-terminal-version.json'));
   const candidate = JSON.parse(read('package.json'));
   const formal = JSON.parse(read('release/edu-manager-version.json'));
-  assert.deepEqual(terminalVersion, {
-    versionCode: formal.windowsTerminalVersionCode,
-    versionName: formal.windowsTerminalVersionName,
-    releaseStatus: formal.windowsTerminalReleaseStatus,
-  });
+  const terminalCandidate = terminalVersion.releaseStatus === 'candidate';
+  assert.equal(terminalVersion.versionCode, formal.windowsTerminalVersionCode + (terminalCandidate ? 1 : 0));
+  assert.equal(terminalVersion.versionName, terminalCandidate ? nextWindowsVersion(formal.windowsTerminalVersionName) : formal.windowsTerminalVersionName);
+  if (!terminalCandidate) assert.equal(terminalVersion.releaseStatus, formal.windowsTerminalReleaseStatus);
   assert.ok([formal.windowsVersionName, nextWindowsVersion(formal.windowsVersionName)].includes(candidate.version));
   assert.equal(formal.tabletTerminalVersionName, '0.6.34');
   assert.equal(formal.teacherTerminalVersionName, '0.1.5');

@@ -53,7 +53,12 @@ test('cold start, concurrent retry, local confirmation and distinct browser stat
   const f = fixture(t, 'host');
   let launched = 0;
   const codex = createFocusClient(f.config('codex'), {
-    launch: async exe => { assert.equal(exe, f.executable); launched++; await f.server.start(); },
+    launch: async (exe, userData) => {
+      assert.equal(exe, f.executable);
+      assert.equal(userData, path.dirname(f.root));
+      launched++;
+      await f.server.start();
+    },
   });
   assert.deepEqual(codex.tools(), []);
   assert.equal((await codex.call(ENABLE)).code, 'FOCUS_NOT_AUTHORIZED');

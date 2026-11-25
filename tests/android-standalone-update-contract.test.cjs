@@ -45,7 +45,14 @@ test('public update manifest publishes the current standalone release channel', 
   assert.equal(candidate.versionName, sourceVersionName);
   assert.equal(candidate.releaseStatus, 'candidate');
   assert.ok(publicManifest.standaloneVersionCode <= sourceVersionCode, 'published channel cannot exceed source candidate');
-  assert.equal(publicManifest.standaloneApkUrl, `https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-${publicManifest.standaloneVersionName}-release.apk`);
+  const publishedRecordPath = path.join(__dirname, '..', 'android-standalone-manager', 'delivery', `AI-Education-Manager-Android-Standalone-${publicManifest.standaloneVersionName}-release.json`);
+  const publishedRecord = JSON.parse(fs.readFileSync(publishedRecordPath, 'utf8'));
+  assert.equal(publishedRecord.releaseStatus, 'release');
+  assert.equal(publishedRecord.versionCode, publicManifest.standaloneVersionCode);
+  assert.equal(publishedRecord.sha256.toUpperCase(), publicManifest.standaloneSha256);
+  const publicFileName = publishedRecord.publicFileName || publishedRecord.fileName;
+  assert.ok([`AI-Education-Manager-Android-Standalone-${publicManifest.standaloneVersionName}.apk`, `AI-Education-Manager-Android-Standalone-${publicManifest.standaloneVersionName}-release.apk`].includes(publicFileName));
+  assert.equal(publicManifest.standaloneApkUrl, `https://www.greatbg.com/download/${publicFileName}`);
   assert.match(publicManifest.standaloneSha256, /^[A-F0-9]{64}$/);
   assert.equal(publicManifest.managerApkReleaseStatus, 'internal');
   assert.equal(publicManifest.managerApkUrl, '');

@@ -1,0 +1,25 @@
+{
+  "schema": "edu-manager.android-release.v1",
+  "packageName": "com.qxmatrix.edumanager.standalone",
+  "versionName": "1.3.9",
+  "versionCode": 43,
+  "releaseStatus": "release",
+  "published": true,
+  "fileName": "AI-Education-Manager-Android-Standalone-1.3.9-release.apk",
+  "publicFileName": "AI-Education-Manager-Android-Standalone-1.3.9.apk",
+  "apkUrl": "https://www.greatbg.com/download/AI-Education-Manager-Android-Standalone-1.3.9.apk",
+  "bytes": 69160643,
+  "sha256": "9DE2EEFDA00B37C6CBB4446A581DECB927E15493BA801ABC9EADD58A6EEDAED7",
+  "certificateSha256": "647087C196380BED06FF285A95B29617DC5A31C4977A0C04DDBA895ADC67164F",
+  "signatureSchemes": [
+    "v1",
+    "v2"
+  ],
+  "fromCandidate": "self-activation-1.3.9-r1",
+  "candidateBytesUnchanged": true,
+  "physicalAcceptance": "passed-for-self-activation-and-upgrade-on-NAM-AL00-Android12",
+  "performanceStatus": "pending_verification",
+  "publishedAt": "2026-11-25T15:36:49.076Z",
+  "implementationCommit": "1efbc42877b1541a6b685ac198a959f73ff96219",
+  "backup": "/var/backups/edu-android-139-20261125-r1"
+}

@@ -44,7 +44,7 @@ async function verify(tool) {
   const card = { title: '合成练习', subject: '数学', knowledgePoint: '乘法', rationale: '合成连接验收', minutes: 5, sourceRefs: ['synthetic'], prompt: '6乘7等于多少？', hint: '', answer: '42', explanation: '6乘7等于42。' };
   const batch = { projectId: 'synthetic-project', batchId: nonce, baselines: [{ relativePath: '摘要库/synthetic.md' }], sources: [{ materialId: 'synthetic', version: 1, sha256: 'a'.repeat(64) }] };
   const examples = [
-    { schema: require('./smart-inbox-policy.cjs').ROUTING_SCHEMA, result: { candidates: [], sensitive: false, conflict: false, reason: '合成资料，无归属证据' } },
+    { schema: require('./smart-inbox-policy.cjs').ROUTING_SCHEMA, result: { assessment: null, candidates: [], sensitive: false, conflict: false, reason: '合成资料，无归属证据' } },
     { schema: require('./project-material-agent.cjs').outputSchema(batch), result: { schema: require('./project-material-digest.cjs').RESULT_SCHEMA, projectId: batch.projectId, batchId: batch.batchId, status: 'completed', message: '合成验收', artifacts: [{ relativePath: batch.baselines[0].relativePath, content: '6乘7等于42。', sources: batch.sources }] } },
     { schema: require('./practice-cards.cjs').CONTENT_SCHEMA, result: card },
   ];
@@ -66,7 +66,7 @@ async function createAdapter(tool) {
       if (images?.length) throw failure('CLI_CONTRACT_REQUIRED', '标准 CLI 暂不支持图像输入');
       if (await fingerprint(tool) !== hash) throw failure('CLI_CONTRACT_REQUIRED', 'CLI 程序已变化');
       const result = await invoke(tool, { requestId: crypto.randomUUID(), type: 'generate', prompt, schema }, { timeoutMs, signal });
-      return require('./structured-contract-check.cjs').check(result, schema);
+      return require('./structured-contract-check.cjs').check(require('./smart-inbox-policy.cjs').normalizeLegacyRoutingResult(result, schema), schema);
     } };
 }
 module.exports = { PROTOCOL, fingerprint, invoke, verify, createAdapter };

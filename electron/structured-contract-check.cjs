@@ -3,9 +3,17 @@
 function check(value, schema, depth = 0) {
   if (depth > 32) throw Error('结构化结果嵌套过深');
   if (!schema || typeof schema !== 'object') throw Error('结果合同无效');
+  if (schema.anyOf) {
+    for (const branch of schema.anyOf) {
+      try { return check(value, branch, depth + 1); } catch { /* Try the next declared alternative. */ }
+    }
+    throw Error('结果未匹配任何允许结构');
+  }
   if (schema.enum && !schema.enum.includes(value) || Object.hasOwn(schema, 'const') && schema.const !== value) throw Error('结构化结果枚举不符');
   const type = schema.type;
-  if (type === 'object') {
+  if (type === 'null') {
+    if (value !== null) throw Error('结果应为空值');
+  } else if (type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('结果应为对象');
     for (const key of schema.required || []) if (!Object.hasOwn(value, key)) throw Error(`结果缺少字段 ${key}`);
     for (const key of Object.keys(value)) {

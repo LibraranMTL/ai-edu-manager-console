@@ -5,6 +5,7 @@ function send(channel, ...args) {
 }
 
 contextBridge.exposeInMainWorld('licenseAdmin', {
+  activation(action,input) { return ipcRenderer.invoke('license:activation',action,input); },
   getAppInfo() {
     return send('license:getAppInfo');
   },

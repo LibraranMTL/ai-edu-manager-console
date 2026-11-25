@@ -42,7 +42,7 @@ class LicenseManager(private val context: Context) {
 
     fun activate(token: String): LocalLicenseStatus {
         val checked = verify(token.trim()).getOrThrow()
-        preferences.edit().putString(KEY_TOKEN, token.trim()).apply()
+        require(preferences.edit().putString(KEY_TOKEN, token.trim()).commit()) { "授权保存失败，原授权保持保留。" }
         return checked
     }
 
@@ -72,7 +72,7 @@ class LicenseManager(private val context: Context) {
         require(payload.optString("schema") == "edu-manager.license.v3") { "激活码版本不受支持。" }
         require(payload.optString("productId") == PRODUCT_ID) { "该激活码不属于 Android 单机版。" }
         val keyId = payload.optString("keyId")
-        val publicKey = trustedPublicKey(keyId)
+        val publicKey = trustedPublicKey(keyId, payload.optString("edition"))
         val signature = Signature.getInstance("SHA256withRSA")
         signature.initVerify(publicKey)
         signature.update("AIE3.${parts[1]}".toByteArray(Charsets.UTF_8))
@@ -96,12 +96,15 @@ class LicenseManager(private val context: Context) {
         )
     }
 
-    private fun trustedPublicKey(keyId: String): java.security.PublicKey {
+    private fun trustedPublicKey(keyId: String, edition: String): java.security.PublicKey {
         val root = JSONObject(context.resources.openRawResource(R.raw.trusted_license_issuers).bufferedReader().use { it.readText() })
         val issuers = root.getJSONArray("issuers")
         for (index in 0 until issuers.length()) {
             val issuer = issuers.getJSONObject(index)
             if (issuer.optString("keyId") != keyId) continue
+            val editions = listOf("TRIAL", "FAMILY", "PRO", "ORG", "PLATFORM")
+            require(issuer.optString("status") != "revoked" && editions.indexOf(edition) >= 0 &&
+                editions.indexOf(edition) <= editions.indexOf(issuer.optString("maxEdition", "ORG"))) { "签发密钥无权授予该版本。" }
             val pem = issuer.getString("publicKey")
             val der = Base64.decode(pem.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "").trim(), Base64.DEFAULT)
             return KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(der))

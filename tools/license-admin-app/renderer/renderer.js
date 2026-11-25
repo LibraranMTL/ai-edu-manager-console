@@ -1,5 +1,66 @@
 const bridge = window.licenseAdmin;
 
+let batchRows = [];
+let remoteBatches = [];
+function renderActivationBatches() {
+  const query = $('activationSearch').value.toLowerCase();
+  $('activationBatches').replaceChildren();
+  for (const row of batchRows.filter(row => JSON.stringify(row).toLowerCase().includes(query))) {
+    const remote = remoteBatches.find(item => item.id === row.id);
+    const box = document.createElement('article'); box.className = 'key-item';
+    const info = document.createElement('p');
+    info.textContent = `${row.id} · ${row.productId === 'WINDOWS_HOST' ? 'Windows 主机' : '安卓单机版'} · ${row.edition} · ${row.customer || ''} ${row.orderNo || ''} · ${row.registered ? '已登记' : '登记待续接'}${remote ? ` · 已兑换 ${remote.redeemed}/${remote.total} · 作废 ${remote.voided} · ${remote.expired ? '兑换已到期' : remote.state === 'paused' ? '暂停兑换' : '可兑换'}` : ''}`;
+    box.append(info);
+    const actions = row.registered ? [...(!row.remoteOnly ? [['export','导出完整交付码'],['reveal','查看交付码与二维码']] : []),['pause','暂停新兑换'],['resume','恢复新兑换'],['void','作废未兑换码']] : [['retry','续接登记']];
+    for (const [action,label] of actions) {
+      const button = document.createElement('button'); button.textContent = label; button.className = 'secondary';
+      button.onclick = () => { if(action==='void' && !window.confirm('仅作废此批次尚未兑换的码，确认继续？')) return;
+        if(action==='reveal') { void revealActivationCodes(row.id); return; }
+        void activationAction(action==='export'||action==='retry' ? action : 'action',{id:row.id,action}); };
+      box.append(button);
+    }
+    $('activationBatches').append(box);
+  }
+}
+async function refreshActivationBatches(remote = true) {
+  const local = parseResult(await bridge.activation('local')); if (local.ok) batchRows = local.rows || [];
+  if (remote) {
+    const result = parseResult(await bridge.activation('list')); if (!result.ok) throw Error(result.message);
+    remoteBatches = result.rows || [];
+    for (const row of remoteBatches) if (!batchRows.some(local=>local.id===row.id)) batchRows.push({...row,registered:true,remoteOnly:true});
+    const health = parseResult(await bridge.activation('status'));
+    $('activationHealth').textContent = health.ok ? `最近15分钟请求 ${health.recent.requests}，服务错误 ${health.recent.errors}，最长耗时 ${health.recent.maxLatencyMs}ms；加密备份 ${health.backupAt || '未完成'}；异地备份 ${health.offsiteAt || '未确认'}。${(health.alerts || []).join('；')}` : health.message;
+    const records = parseResult(await bridge.activation('activations'));
+    $('activationRecords').textContent = records.ok ? JSON.stringify(records.rows, null, 2) : records.message;
+  }
+  renderActivationBatches();
+}
+async function revealActivationCodes(id) {
+  const result=parseResult(await bridge.activation('reveal',{id}));
+  if(!result.ok) { $('activationMessage').textContent=result.message; return; }
+  const dialog=$('activationCodesDialog');const list=$('activationCodes');list.replaceChildren();
+  for(const code of result.codes){const box=document.createElement('p');const text=document.createElement('code');text.textContent=code;const button=document.createElement('button');button.textContent='显示二维码';button.onclick=()=>{dialog.close();void showLicenseQr(code,'联网兑换码');};box.append(text,button);list.append(box);}
+  dialog.showModal();
+}
+async function activationAction(action, input = {}) {
+  try {
+    const result = parseResult(await bridge.activation(action,input)); if(!result.ok) throw Error(result.message);
+    $('activationMessage').textContent = result.message || (result.cancelled ? '已取消。' : '操作完成。');
+    await refreshActivationBatches();
+  } catch(error) { $('activationMessage').textContent = error.message; await refreshActivationBatches(false); }
+}
+window.addEventListener('DOMContentLoaded', () => {
+  $('batchDeadline').value = new Date(Date.now()+365*86400000).toISOString().slice(0,10);
+  $('activationLogin').onclick = () => { const password=$('activationPassword').value; $('activationPassword').value=''; void activationAction('login',{password}); };
+  $('activationLoginLocal').onclick = () => { void activationAction('loginLocal'); };
+  $('activationRefresh').onclick = () => { void refreshActivationBatches().catch(e => { $('activationMessage').textContent=e.message; }); };
+  $('activationSearch').oninput = renderActivationBatches;
+  $('activationCodesClose').onclick=()=>$('activationCodesDialog').close();
+  $('batchProduct').onchange = () => { const android=$('batchProduct').value==='ANDROID_STANDALONE'; $('batchDevices').value=android?'1':'3';$('batchDevices').disabled=android;$('batchStudents').value=android?'1':'3'; };
+  $('activationForm').onsubmit = event => { event.preventDefault(); void activationAction('create',{productId:$('batchProduct').value,edition:$('batchEdition').value,count:Number($('batchCount').value),students:Number($('batchStudents').value),terminalDevices:Number($('batchDevices').value),durationDays:Number($('batchDays').value),redeemBefore:$('batchDeadline').value+'T23:59:59+08:00',orderNo:$('batchOrder').value,customer:$('batchCustomer').value}); };
+  void refreshActivationBatches(false);
+});
+
 const state = {
   records: [],
   query: '',
@@ -220,7 +281,7 @@ function normalizedV3Code(code) {
 }
 
 async function showLicenseQr(code, label = 'License-v3') {
-  const token = normalizedV3Code(code);
+  const token = normalizedV3Code(code) || (/^AEC1[WA]-[0-9A-HJKMNP-TV-Z-]+$/.test(code) ? code : '');
   if (!token) {
     showMessage('只有有效的 License v3 激活码才能生成二维码。', true);
     return;

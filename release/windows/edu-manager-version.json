@@ -1,10 +1,10 @@
 {
   "versionCode": 104,
   "versionName": "0.6.34",
-  "windowsVersionCode": 282,
-  "windowsVersionName": "0.24.3",
+  "windowsVersionCode": 283,
+  "windowsVersionName": "0.24.4",
   "windowsReleaseStatus": "stable",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.3.zip",
+  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.4.zip",
   "windowsTerminalVersionCode": 243,
   "windowsTerminalVersionName": "0.19.3",
   "windowsTerminalReleaseStatus": "stable",
@@ -32,8 +32,12 @@
   "managerApkReleaseStatus": "internal",
   "managerApkNotes": "旧 Android 控制台仅供内部装机和测试，当前不提供公网安装包。",
   "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.6.34.apk",
-  "notes": "Windows 主机端 0.24.3 与学生端 0.19.3 新增通过本机 MCP 请求开启专注模式。Windows 安装包未签名。",
-  "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.3-Setup.exe",
-  "windowsNotes": "授权后，可从 Codex 或 WorkBuddy 请求开启本机专注模式。教育管家退出后支持拉起，需在教育管家中输入管理密码。",
-  "standalonePerformanceStatus": "pending_verification"
+  "notes": "Windows 主机端 0.24.4 与学生端 0.19.3 新增通过本机 MCP 请求开启专注模式。Windows 安装包未签名。",
+  "windowsInstallerUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.4-Setup.exe",
+  "windowsNotes": "新增联网自助激活，无需发送设备码；保留原设备码授权和同设备恢复。资料收件箱支持确定性自动回收、分类与投递回执恢复，原件及有效证据保留。Windows程序未进行Authenticode签名。",
+  "standalonePerformanceStatus": "pending_verification",
+  "windowsPortableUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.24.4.exe",
+  "windowsSha256": "F1620DE8E6FCE13F7ABBA1841F82BB2DD4EDE17327F34998CA9C9D6596240499",
+  "windowsInstallerSha256": "4B3EBA8BD0A54CDC1F678C1A2F301233F1C2272D0AADE84A138B27DF7E3264FC",
+  "windowsPortableSha256": "A95A40E3FB58E274C8552FCC4F900628755F6FF4CA48C23F4A1F69BA84A649F6"
 }

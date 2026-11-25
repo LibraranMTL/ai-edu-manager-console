@@ -58,6 +58,143 @@ async function fixture(t, overrides = {}) {
   return { dir, source, destination, directory, calls, host, engine, add, scan, write };
 }
 
+test('r7 classification budget survives source renaming, new item names and restart', async t => {
+  let calls = 0;
+  const f = await fixture(t, { classify: async () => { calls++; return { candidates: 'invalid' }; } });
+  const source = await f.add(); await f.write('first.txt', '普通且有实质内容的记录。'); await f.scan(source.id);
+  for (let n = 0; n < 4; n++) { const row = (await f.engine.list()).rows[0]; await f.engine.decide({ requestId: `budget-${n}`, action: 'retry', items: [row] }); await f.engine.tick(); }
+  assert.equal(calls, 3);
+  await fs.rename(path.join(f.source, 'first.txt'), path.join(f.source, 'renamed.txt'));
+  await f.engine.updateSource({ ...source, name: 'renamed source' }); await f.scan(source.id);
+  assert.equal(calls, 3); await f.engine.close();
+  const restarted = createSmartInbox(f.host); t.after(() => restarted.close()); await restarted.init(); await restarted.requestScan(source.id); await restarted.tick();
+  assert.equal(calls, 3);
+});
+
+test('r7 exact no-effect proof resumes delivery with the same operation id once', async t => {
+  let firstOperation, attempts = 0, proof = false;
+  const f = await fixture(t, { deliver: async (snapshot, _, item) => {
+    attempts++; if (!firstOperation) firstOperation = item.operationId;
+    assert.equal(item.operationId, firstOperation);
+    if (attempts === 1) throw Error('confirmed scope lookup returned without import');
+    const file = path.join(f.destination, 'only-copy.txt'); await fs.copyFile(snapshot, file); return { ok: true, path: file, recordId: firstOperation };
+  }, reconcile: async item => proof ? { notDelivered: true, noInFlight: true, operationId: item.operationId,
+    sha256: item.fingerprint.sha256, target: item.target } : null });
+  const source = await f.add({ target }); await f.write('delivery.txt'); await f.scan(source.id);
+  proof = true;
+  const row = (await f.engine.list()).rows[0];
+  const result = await f.engine.decide({ requestId: 'no-effect-resume', action: 'reconcile', items: [row] });
+  assert.equal(result.results[0].ok, true, result.results[0].message);
+  await f.engine.tick(); assert.equal(attempts, 2); assert.equal((await f.engine.detail(row.id)).status, 'delivered');
+});
+
+test('r7 empty file is recycled without extraction or classifier and recovery can be cancelled', async t => {
+  const f = await fixture(t); const source = await f.add(); await f.write('empty.txt', ''); await f.scan(source.id);
+  const recycled = await f.engine.previewCleanup({ studentId: 'student-a' }); assert.equal(recycled.total, 1);
+  assert.equal(f.calls.extract, 0); assert.equal(f.calls.classify, 0); assert.equal(f.calls.deliver, 0);
+  await f.engine.restoreCleanup({ id: recycled.entries[0].id, revision: recycled.entries[0].revision });
+  await f.scan(source.id); assert.equal((await f.engine.list()).rows[0].manualLocked, true);
+});
+
+test('backlog preview filters pure internal tasks identically to processing without model calls', async t => {
+  const f = await fixture(t, { automaticTriage: false });
+  const source = await f.add();
+  await f.write('internal.txt', JSON.stringify({ schema: 'edu-manager.agent-conversation-submission.v1', messages: [
+    { role: 'user', content: 'This is an app-generated request for a suggested next user message.' }] }));
+  await f.scan(source.id); f.host.automaticTriage = true;
+  const before = { ...f.calls }, preview = await f.engine.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(preview.previewCounts.ignore, 1); assert.equal(f.calls.classify, before.classify); assert.equal(f.calls.deliver, 0);
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
+  assert.equal((await f.engine.list({ status: 'ignored' })).total, 1); assert.equal(f.calls.classify, before.classify);
+});
+
+test('ignore rules cannot match assistant quotations or swallow a mixed real conversation', () => {
+  const rule = { id: 'ignore-memory', name: '旧忽略规则', studentId: 'student-a', sourceId: 's', action: 'ignore', enabled: true, includeWords: ['Memory Writing Agent'] };
+  const input = { rules: [rule], source: { id: 's', studentId: 'student-a' }, item: { studentId: 'student-a', conversationKind: 'conversation' }, context };
+  const wrap = messages => JSON.stringify({ schema: 'edu-manager.agent-conversation-submission.v1', messages });
+  assert.equal(P.matchUserRules({ ...input, text: wrap([{ role: 'user', content: '修复资料导入' }, { role: 'assistant', content: 'Memory Writing Agent' }]) }).status, 'none');
+  const mixed = P.matchUserRules({ ...input, text: wrap([{ role: 'user', content: 'Memory Writing Agent' }, { role: 'user', content: '修复资料导入' }]) });
+  assert.equal(mixed.status, 'none'); assert.equal(mixed.bypassed.length, 1);
+});
+
+test('exhausted classification discovers a late bound decision and reuses it without redispatch', async t => {
+  let input;
+  const f = await fixture(t, { classify: async value => { input = value; throw Object.assign(Error('unknown'), { code: 'execution_unknown' }); } });
+  const source = await f.add(); await f.write('late.txt'); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0]; await f.engine.close();
+  const file = path.join(f.directory, 'items', `${row.id}.json`), record = JSON.parse(await fs.readFile(file));
+  record.reconcileAttempts = 3; record.nextReconcileAt = ''; await fs.writeFile(file, JSON.stringify(record));
+  await fs.writeFile(path.join(f.directory, 'decisions', 'late-alternate-attempt.json'), JSON.stringify({ itemId: row.id,
+    studentId: record.studentId, sha256: record.fingerprint.sha256, purpose: input.context.purpose,
+    contextHash: P.digest(input.context), workKey: record.analysisWork.key, result: suggestion() }));
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  const preview = await restored.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(preview.previewCounts.reconcile, 1); assert.equal(f.calls.deliver, 0);
+  await restored.tick();
+  assert.equal((await restored.detail(row.id)).status, 'delivered'); assert.equal(f.calls.deliver, 1);
+});
+
+test('unknown results remain waiting and mismatched decisions cannot authorize a replay', async t => {
+  const f = await fixture(t, { classify: async () => { throw Object.assign(Error('unknown'), { code: 'execution_unknown' }); } });
+  const source = await f.add(); await f.write('unknown.txt'); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0], detail = await f.engine.detail(row.id);
+  await fs.writeFile(path.join(f.directory, 'decisions', `${detail.executionId}.json`), JSON.stringify({ itemId: row.id,
+    studentId: 'student-b', sha256: detail.fingerprint.sha256, result: suggestion() }));
+  const preview = await f.engine.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(preview.previewCounts.wait, 1); assert.equal(preview.previewCounts.reconcile || 0, 0);
+  assert.equal(f.calls.deliver, 0);
+});
+
+test('backlog reconciliation verifies an existing receipt even with a missing original and never recopies', async t => {
+  let receipt, fail = true;
+  const f = await fixture(t, { deliver: async (snapshot, _, item) => { f.calls.deliver++; const file = path.join(f.destination, 'registered.txt');
+    await fs.copyFile(snapshot, file); receipt = { ok: true, path: file, recordId: item.operationId }; throw Error('receipt lost'); },
+    reconcile: async () => fail ? null : receipt });
+  const source = await f.add({ target }); await f.write('receipt.txt'); await f.scan(source.id);
+  await fs.unlink(path.join(f.source, 'receipt.txt')); fail = false;
+  const before = f.calls.deliver, preview = await f.engine.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(preview.previewCounts.reconcile, 1);
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
+  assert.equal((await f.engine.list({ status: 'delivered' })).total, 1); assert.equal(f.calls.deliver, before);
+});
+
+test('captured session with one explicit subject is scoped to that authorized student before project context loads', async t => {
+  let eventFile;
+  const hints = [{ id: 'student-a', name: '甲同学' }, { id: 'student-b', name: '乙同学' }];
+  const f = await fixture(t, { studentHints: () => hints,
+    context: async id => ({ studentId: id, projects: [] }),
+    validateTarget: async value => { assert.equal(value.studentId, 'student-b'); return { value }; },
+    events: async () => [{ locator: JSON.stringify({ assetId: 'subject-test' }), name: 'subject.txt' }],
+    resolveEvent: async () => ({ path: eventFile, stat: await fs.lstat(eventFile) }),
+    classify: async value => { assert.equal(value.context.studentId, 'student-b'); return {
+      candidates: [{ studentId: 'student-b', type: 'student', id: '', categoryId: '', score: .99,
+        evidence: '所属学生：乙同学', reason: '学习资料' }], sensitive: false, conflict: false, reason: '明确主体' }; } });
+  await f.engine.bootstrap({ students: [hints[0]] });
+  const source = (await f.engine.sources()).sources.find(s => s.type === 'session');
+  eventFile = path.join(f.source, 'subject.txt'); await fs.writeFile(eventFile, '所属学生：乙同学\n参考甲同学。学习记录。');
+  await f.engine.updateSource({ ...source, enabled: true, automatic: true }); await f.scan(source.id);
+  const row = (await f.engine.list({ status: 'delivered' })).rows[0];
+  assert.equal(row.studentId, 'student-b');
+  const detail = await f.engine.detail(row.id);
+  assert.equal(detail.studentConfirmation.automatic, true); assert.equal(detail.studentCorrections[0].from, 'student-a');
+});
+
+test('completed rejected classification resumes within its budget while preserving old execution evidence', async t => {
+  let failed = false;
+  const f = await fixture(t, { classify: async value => {
+    if (!failed) { failed = true; await value.onStage({ stage: 'result_rejected' });
+      throw Object.assign(Error('invalid result'), { code: 'execution_unknown', blockReason: { resultReceived: true } }); }
+    return suggestion(); } });
+  const source = await f.add(); await f.write('invalid.txt'); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0];
+  const preview = await f.engine.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(preview.previewCounts.reconcile, 1);
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick(); await f.engine.tick();
+  const detail = await f.engine.detail(row.id);
+  assert.equal(detail.status, 'delivered');
+  assert.equal(detail.executionHistory.at(-1).resolution, 'verified_result_rejected');
+});
+
 test('reason group counts and filtering cover all pages within the source and student scope', async t => {
   const f = await fixture(t), source = await f.add({ studentId: '' });
   for (let i = 0; i < 27; i++) await f.write(`group-${i}.txt`, `synthetic ${i}`);
@@ -559,7 +696,8 @@ test('user rules honor priority, fail closed on conflict, and never ignore expli
     priority: 10, action: 'ignore', includeWords: ['内部会话'], excludeWords: [], pathIncludes: [], extensions: ['.md'], projectAliases: [], version: 1 };
   const input = { source: { id: 'source-a', studentId: 'student-a' }, item: { studentId: 'student-a', name: 'a.md', locator: 'sessions/a.md' }, context };
   assert.equal(P.matchUserRules({ ...input, rules: [base], text: '内部会话缓存' }).action, 'ignore');
-  assert.equal(P.matchUserRules({ ...input, rules: [base], text: '内部会话 project-physics' }).status, 'conflict');
+  const protectedMatch = P.matchUserRules({ ...input, rules: [base], text: '内部会话 project-physics' });
+  assert.equal(protectedMatch.status, 'none'); assert.equal(protectedMatch.bypassed.length, 1);
   const targetRule = { ...base, id: 'rule-b', name: '投递', action: 'deliver', target, includeWords: ['内部会话'] };
   assert.equal(P.matchUserRules({ ...input, rules: [base, targetRule], text: '内部会话' }).status, 'conflict');
   assert.throws(() => P.validateUserRule({ ...base, includeWords: [], extensions: [], sourceId: '' }), /忽略规则|至少需要/);
@@ -614,7 +752,7 @@ test('draft rule preview cannot enqueue work before the rule is saved', async t 
 test('student conflict prevents source binding and user rules from auto delivery', async t => {
   const f = await fixture(t, { studentHints: () => [{ id: 'student-a', name: '甲同学' }, { id: 'student-b', name: '乙同学' }] });
   const source = await f.add({ target }); await f.write('conflict.md', '乙同学 project-physics'); await f.scan(source.id);
-  assert.equal(f.calls.deliver, 0); assert.equal(f.calls.classify, 0);
+  assert.equal(f.calls.deliver, 0); assert.ok(f.calls.classify <= 3);
   assert.match((await f.engine.list()).rows[0].message, /其他学生/);
 });
 test('explicit internal-task rule ignores only a recognized pure system conversation', async t => {
@@ -916,14 +1054,236 @@ test('repeated acceptance of a single file cannot create an automatic learned ru
   const files = await fs.readdir(path.join(f.directory, 'rules')); const rule = JSON.parse(await fs.readFile(path.join(f.directory, 'rules', files[0]), 'utf8'));
   assert.equal(rule.count, 1); assert.equal(rule.active, false);
 });
-test('three distinct confirmations learn a scoped exact rule; correction disables it immediately', async t => {
+test('three independent confirmations enter shadow validation; correction suspends conflicting rule', async t => {
   const f = await fixture(t); const s = await f.add({ automatic: false });
   for (let n = 0; n < 3; n++) { await f.write(`${n}.txt`, `project-physics 第${n}次实验`); await f.scan(s.id);
     const row = (await f.engine.list()).rows[0]; await f.engine.decide({ requestId: `accept-${n}`, action: 'accept', items: [{ id: row.id, revision: row.revision }] }); }
   const files = await fs.readdir(path.join(f.directory, 'rules')), file = path.join(f.directory, 'rules', files[0]);
-  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).active, true);
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).active, false);
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).state, 'observing');
   const row = (await f.engine.list({ status: 'delivered' })).rows[0]; await f.engine.decide({ requestId: 'correct', action: 'correct', items: [{ id: row.id, revision: row.revision, target: { ...target, id: 'project-biology' } }] });
   assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).active, false);
+});
+
+function learningAssessment(text, projects = []) {
+  return { kind: 'learning', studentId: 'student-a', evidence: text, subjectEvidence: text,
+    score: .97, tags: ['数学', '学习笔记'], checkedProjectIds: projects.map(project => project.id), competingProjectIds: [] };
+}
+test('shared intake with an explicit student subject automatically scopes learning material without rebinding its source', async t => {
+  const text = '所属学生：甲同学\n今天完成了二次方程配方法的数学练习，记录移项、配方、求解和验根步骤。';
+  const f = await fixture(t, { studentHints: () => [{ id: 'student-a', name: '甲同学' }],
+    classify: async () => ({ candidates: [], sensitive: false, conflict: false, reason: '学生学习笔记', assessment: learningAssessment(text, context.projects) }) });
+  const source = await f.add({ studentId: '', automatic: true, autoAttributeShared: true });
+  await f.write('shared-math.txt', text); await f.scan(source.id);
+  const row = (await f.engine.list({ status: 'delivered' })).rows[0];
+  assert.equal(row.studentId, 'student-a'); assert.equal(row.target.type, 'student');
+  assert.equal((await f.engine.detail(row.id)).ownershipBasis, 'verified_subject');
+  assert.equal((await f.engine.sources()).sources.find(value => value.id === source.id).studentId, '');
+});
+test('explicit headers do not override a shared source whose automatic attribution is disabled', async t => {
+  const f = await fixture(t, { studentHints: () => [{ id: 'student-a', name: '甲同学' }] });
+  const source = await f.add({ studentId: '', automatic: true, autoAttributeShared: false });
+  await f.write('shared-disabled.txt', '所属学生：甲同学\n明确的学习笔记。'); await f.scan(source.id);
+  assert.equal(f.calls.extract, 0); assert.equal(f.calls.classify, 0); assert.equal(f.calls.deliver, 0);
+});
+test('historical pending items gain new triage behavior only after the backlog confirmation', async t => {
+  let permit = false;
+  const text = '甲同学完成了二次方程配方法练习，记录了移项、配方、求解和验根步骤。';
+  const f = await fixture(t, { acquire: () => permit ? () => {} : null,
+    classify: async () => ({ candidates: [], sensitive: false, conflict: false, reason: '学习笔记', assessment: learningAssessment(text, context.projects) }) });
+  const source = await f.add(); await f.write('historical-pending.txt', text); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0]; await f.engine.close();
+  const file = path.join(f.directory, 'items', `${row.id}.json`);
+  const record = JSON.parse(await fs.readFile(file, 'utf8')); delete record.automationEligible;
+  await fs.writeFile(file, JSON.stringify(record)); permit = true;
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init(); await restored.tick();
+  assert.equal(f.calls.deliver, 0); assert.equal((await restored.detail(row.id)).status, 'review');
+  const preview = await restored.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  await restored.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await restored.tick();
+  assert.equal((await restored.detail(row.id)).target.type, 'student'); assert.equal(f.calls.deliver, 1);
+});
+test('large-scope no-project learning material automatically reaches student raw library with tags', async t => {
+  const projects = Array.from({ length: 8 }, (_, n) => ({ id: `project-${n}`, name: `音乐项目${n}`, studentIds: ['student-a'], categories: [] }));
+  const text = '甲同学完成了分式方程练习，记录了移项、验根和计算错误的修改过程。';
+  const f = await fixture(t, { context: async (id, options = {}) => ({ studentId: id,
+    projects: options.mode === 'details' ? projects.filter(project => options.projectIds.includes(project.id)) : projects }),
+    classify: async () => ({ candidates: [], sensitive: false, conflict: false, reason: '普通学习笔记', assessment: learningAssessment(text, projects) }) });
+  const source = await f.add(); await f.write('math.md', text); await f.scan(source.id);
+  const [row] = (await f.engine.list({ status: 'delivered' })).rows;
+  assert.equal(row.target.type, 'student'); assert.deepEqual(row.suggestedTags, ['数学', '学习笔记']);
+  assert.equal((await f.engine.detail(row.id)).awaitingProject, true);
+});
+test('verified all-project review can authorize a recalled semantic project without claiming lexical completeness', async t => {
+  const text = '我们记录了来回摆动周期，并改变悬线长度，比较每次测量的实验结果及误差，并记录了多次重复测量的数据。';
+  const projects = Array.from({ length: 8 }, (_, n) => ({ id: `project-${n}`, name: n === 7 ? '钟摆研究' : `其他项目${n}`, studentIds: ['student-a'], categories: [] }));
+  const stages = [];
+  const f = await fixture(t, { validateTarget: async value => { assert.equal(value.studentId, 'student-a'); assert.ok(projects.some(project => project.id === value.id)); return value; }, context: async (id, options = {}) => ({ studentId: id,
+    projects: options.mode === 'details' ? projects.filter(project => options.projectIds.includes(project.id)) : projects }),
+    classify: async input => {
+      stages.push(input.context.purpose);
+      return { candidates: [{ ...target, id: 'project-7', evidence: text, score: .97, reason: '周期实验对应项目' }],
+        sensitive: false, conflict: false, reason: '钟摆研究', assessment: { ...learningAssessment(text, projects), kind: 'project',
+          checkedProjectIds: input.context.projects.map(project => project.id) } };
+    } });
+  const source = await f.add(); await f.write('experiment.md', text); await f.scan(source.id);
+  assert.equal((await f.engine.list({ status: 'delivered' })).total, 1, JSON.stringify((await f.engine.list()).rows));
+  assert.deepEqual(stages, ['candidate_recall', 'classification']);
+});
+test('pure system request is reversibly ignored without classifier; mixed conversation remains classifiable', async t => {
+  const f = await fixture(t), source = await f.add();
+  const system = { role: 'user', content: 'This is an app-generated request for a suggested next user message. synthetic' };
+  await f.write('system.json.txt', JSON.stringify({ schema: 'edu-manager.agent-conversation-submission.v1', messages: [system] }));
+  await f.scan(source.id); assert.equal((await f.engine.list({ status: 'ignored' })).total, 1); assert.equal(f.calls.classify, 0);
+  await f.write('mixed.txt', JSON.stringify({ schema: 'edu-manager.agent-conversation-submission.v1', messages: [system,
+    { role: 'user', content: '请分析 project-physics 的测量实验' }] }));
+  await f.scan(source.id); assert.equal((await f.engine.list({ status: 'delivered' })).total, 1);
+});
+test('assistant-only reference to another student does not override user subject', async t => {
+  const f = await fixture(t, { studentHints: () => [{ id: 'student-a', name: '甲同学' }, { id: 'student-b', name: '乙同学' }] });
+  const source = await f.add();
+  await f.write('conversation.txt', JSON.stringify({ schema: 'edu-manager.agent-conversation-submission.v1', messages: [
+    { role: 'user', content: '甲同学 project-physics 实验记录' }, { role: 'assistant', content: '可以参考乙同学的测量方法。' }] }));
+  await f.scan(source.id); assert.equal(f.calls.deliver, 1);
+});
+test('cross-page group preview excludes individual items, replays once and reports all results', async t => {
+  const f = await fixture(t), source = await f.add({ automatic: false });
+  for (let n = 0; n < 29; n++) await f.write(`${n}.txt`, `project-physics 第${n}次测量`);
+  await f.scan(source.id); await f.engine.tick();
+  const groups = await f.engine.groups({ studentId: 'student-a' }); assert.equal(groups.groups.length, 1);
+  const preview = await f.engine.previewBatch({ type: 'group', studentId: 'student-a', groupId: groups.groups[0].id, action: 'accept' });
+  assert.equal(preview.total, 29); assert.equal(preview.entries.length, 25);
+  const last = await f.engine.batchDetail({ id: preview.id, page: 2 }); assert.equal(last.entries.length, 4);
+  const input = { id: preview.id, action: 'start', confirmed: true, excludeIds: [last.entries[0].id] };
+  await f.engine.controlBatch(input); await f.engine.tick(); await f.engine.tick();
+  await f.engine.controlBatch(input); await f.engine.tick();
+  assert.equal(f.calls.deliver, 28); assert.equal((await f.engine.batchDetail({ id: preview.id })).counts.skipped, 1);
+});
+test('backlog preview is read-only until one confirmation and rejects a changed source', async t => {
+  const f = await fixture(t, { classify: async () => ({ candidates: [], sensitive: false, conflict: false, reason: '暂无证据' }) });
+  const source = await f.add(); await f.write('note.txt', '这是一段没有明确项目编号的普通资料，保留在收件箱等待分类。'); await f.scan(source.id);
+  const before = f.calls.deliver;
+  const preview = await f.engine.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(f.calls.deliver, before); assert.equal(preview.status, 'preview');
+  await assert.rejects(f.engine.controlBatch({ id: preview.id, action: 'start' }), /确认/);
+  await f.engine.updateSource({ ...source, name: '已修改来源' });
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
+  assert.equal((await f.engine.batchDetail({ id: preview.id })).counts.skipped, 1);
+});
+test('confirmed batch survives restart and continues without duplicate delivery', async t => {
+  let permit = true;
+  const f = await fixture(t, { automaticAllowed: () => permit }); const source = await f.add({ automatic: false });
+  await f.write('restart.txt'); await f.scan(source.id);
+  const group = (await f.engine.groups({ studentId: 'student-a' })).groups[0];
+  const preview = await f.engine.previewBatch({ type: 'group', groupId: group.id, action: 'accept', studentId: 'student-a' });
+  permit = false;
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick(); await f.engine.close();
+  permit = true;
+  const restarted = createSmartInbox(f.host); t.after(() => restarted.close()); await restarted.init(); await restarted.tick();
+  assert.equal(f.calls.deliver, 1); await restarted.tick(); assert.equal(f.calls.deliver, 1);
+});
+test('late classification result is revalidated and automatically delivered without a second Agent invocation', async t => {
+  let savedInput;
+  const f = await fixture(t, { classify: async input => { savedInput = input; throw Object.assign(Error('unknown'), { code: 'execution_unknown' }); } });
+  const source = await f.add(); await f.write('recover.txt'); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0], detail = await f.engine.detail(row.id);
+  await fs.writeFile(path.join(f.directory, 'decisions', `${detail.executionId}.json`), JSON.stringify({ itemId: detail.id,
+    studentId: detail.studentId, sha256: detail.fingerprint.sha256, purpose: savedInput.context.purpose,
+    contextHash: P.digest(savedInput.context), workKey: detail.analysisWork.key, result: suggestion() }));
+  await f.engine.decide({ requestId: 'reconcile-late', action: 'reconcile', items: [{ id: row.id, revision: row.revision }] });
+  assert.equal((await f.engine.detail(row.id)).status, 'delivered'); assert.equal(f.calls.deliver, 1);
+});
+test('unchanged context reuses the three-stage analysis budget instead of calling Agent repeatedly', async t => {
+  let calls = 0;
+  const f = await fixture(t, { classify: async () => { calls++; return { candidates: [], sensitive: false, conflict: false, reason: '尚无证据' }; } });
+  const source = await f.add(); await f.write('ambiguous.txt', '一份没有明确项目依据的普通记录，需要保留原文以便后续核对。'); await f.scan(source.id);
+  for (let n = 0; n < 4; n++) {
+    const row = (await f.engine.list()).rows[0];
+    await f.engine.decide({ requestId: `retry-budget-${n}`, action: 'retry', items: [{ id: row.id, revision: row.revision }] }); await f.engine.tick();
+  }
+  assert.equal(calls, 1);
+});
+test('only-this corrections do not create learned rules', async t => {
+  const f = await fixture(t), source = await f.add({ automatic: false }); await f.write('once.txt'); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0];
+  await f.engine.decide({ requestId: 'one-time', action: 'accept', onlyThis: true, items: [{ id: row.id, revision: row.revision }] });
+  assert.deepEqual(await f.engine.learnedRules({ studentId: 'student-a' }), []);
+});
+test('new rule activates only after five agreeing observations across independent batches', async t => {
+  const f = await fixture(t), source = await f.add({ automatic: false });
+  for (let n = 0; n < 3; n++) {
+    await f.write(`confirm-${n}.txt`, `project-physics 第${n}次人工确认`); await f.scan(source.id);
+    const row = (await f.engine.list()).rows[0];
+    await f.engine.decide({ requestId: `learn-${n}`, action: 'accept', items: [{ id: row.id, revision: row.revision }] });
+  }
+  assert.equal((await f.engine.learnedRules())[0].state, 'observing');
+  for (let n = 0; n < 5; n++) {
+    await f.write(`shadow-${n}.txt`, `project-physics 第${n}次自动观察`); await f.scan(source.id);
+  }
+  const rule = (await f.engine.learnedRules())[0]; assert.equal(rule.active, true);
+  await f.engine.pauseLearnedRule({ id: rule.id, expectedVersion: rule.version });
+  assert.equal((await f.engine.learnedRules())[0].manualDisabled, true);
+});
+test('project context changes automatically associate a raw-library item using its verified managed original', async t => {
+  let added = false;
+  const text = '甲同学在学习中测量摆线长度与往返周期，并对多次实验记录进行比较和误差分析，记录了完整的测量步骤和计算方法。';
+  const f = await fixture(t, { context: async id => ({ studentId: id, projects: added ? [context.projects[0]] : [] }),
+    classify: async () => added ? suggestion(text) : { candidates: [], sensitive: false, conflict: false, reason: '学生学习记录', assessment: learningAssessment(text) } });
+  const source = await f.add(); await f.write('raw-then-project.txt', text); await f.scan(source.id);
+  const row = (await f.engine.list({ status: 'delivered' })).rows[0]; assert.equal(row.target.type, 'student');
+  added = true; await f.engine.tick();
+  const associated = await f.engine.detail(row.id);
+  assert.equal(associated.status, 'delivered'); assert.equal(associated.target.id, 'project-physics');
+  assert.equal(associated.fingerprint.sha256, (await f.engine.detail(row.id)).fingerprint.sha256);
+});
+test('paused batch survives a tick and resumes the same immutable preview', async t => {
+  let permit = true;
+  const f = await fixture(t, { automaticAllowed: () => permit }); const source = await f.add({ automatic: false });
+  await f.write('paused.txt'); await f.scan(source.id);
+  const group = (await f.engine.groups()).groups[0];
+  const preview = await f.engine.previewBatch({ type: 'group', groupId: group.id, action: 'accept' });
+  permit = false; await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true });
+  await f.engine.controlBatch({ id: preview.id, action: 'pause' }); permit = true; await f.engine.tick();
+  assert.equal(f.calls.deliver, 0);
+  await f.engine.controlBatch({ id: preview.id, action: 'resume' }); await f.engine.tick(); assert.equal(f.calls.deliver, 1);
+});
+test('missing original can be ignored as a group without bypassing delivery validation', async t => {
+  const f = await fixture(t), source = await f.add({ automatic: false }); await f.write('missing-group.txt'); await f.scan(source.id);
+  await fs.unlink(path.join(f.source, 'missing-group.txt')); await f.scan(source.id);
+  const group = (await f.engine.groups()).groups[0]; assert.deepEqual(group.actions, ['ignore']);
+  const preview = await f.engine.previewBatch({ type: 'group', groupId: group.id, action: 'ignore' });
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
+  assert.equal((await f.engine.list({ status: 'ignored' })).total, 1); assert.equal(f.calls.deliver, 0);
+});
+test('a failed delivery is reported separately from skipped entries and does not stop the group', async t => {
+  const f = await fixture(t), source = await f.add({ automatic: false });
+  const deliver = f.host.deliver;
+  f.host.deliver = async (...args) => {
+    if (args[2].name === 'fail.txt') throw Error('synthetic destination unavailable');
+    return deliver(...args);
+  };
+  await f.write('fail.txt', 'project-physics 失败文件'); await f.write('ok.txt', 'project-physics 正常文件'); await f.scan(source.id);
+  const group = (await f.engine.groups()).groups[0];
+  const preview = await f.engine.previewBatch({ type: 'group', groupId: group.id, action: 'accept' });
+  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
+  const result = await f.engine.batchDetail({ id: preview.id });
+  assert.equal(result.counts.failed, 1); assert.equal(result.counts.delivered, 1); assert.equal(result.counts.skipped, 0);
+});
+test('a rule changed while the classifier runs invalidates the old decision before delivery', async t => {
+  let f, source, updated = false;
+  f = await fixture(t, { classify: async () => {
+    if (!updated) {
+      updated = true;
+      await f.engine.saveUserRule({ name: '新确定的学生原始库规则', studentId: 'student-a', sourceId: source.id,
+        action: 'deliver', target: { studentId: 'student-a', type: 'student', id: '' }, includeWords: ['实验记录'], priority: 10, enabled: true });
+    }
+    return suggestion();
+  } });
+  source = await f.add(); await f.write('changing-rule.txt'); await f.scan(source.id);
+  assert.equal(f.calls.deliver, 0);
+  assert.equal((await f.engine.list()).rows[0].reasonCode, 'routing_context_changed');
+  await f.engine.tick();
+  const delivered = (await f.engine.list({ status: 'delivered' })).rows[0];
+  assert.equal(delivered.target.type, 'student'); assert.equal(f.calls.deliver, 1);
 });
 
 test('existing importer sees the durable checkpoint on its operation object', async t => {

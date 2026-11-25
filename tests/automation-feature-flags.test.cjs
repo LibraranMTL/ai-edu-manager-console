@@ -8,6 +8,9 @@ test('automation phases are independently enabled by default and can be rolled b
   assert.deepEqual(resolveAutomationFeatureFlags({}), {
     workBuddyRuntimeStatusV2: true,
     routingDecisionV2: true,
+    inboxAutomaticTriage: true,
+    inboxEventRecovery: true,
+    inboxLearnedRules: true,
     provisionalProjectInbox: true,
     backlogConvergence: true,
     digestArtifactRepair: true,
@@ -21,6 +24,9 @@ test('automation phases are independently enabled by default and can be rolled b
   }), {
     workBuddyRuntimeStatusV2: false,
     routingDecisionV2: true,
+    inboxAutomaticTriage: true,
+    inboxEventRecovery: true,
+    inboxLearnedRules: true,
     provisionalProjectInbox: false,
     backlogConvergence: false,
     digestArtifactRepair: true,

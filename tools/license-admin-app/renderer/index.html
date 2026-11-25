@@ -20,6 +20,35 @@
         </div>
       </section>
 
+      <section class="panel" aria-labelledby="activationTitle">
+        <h2 id="activationTitle">批量兑换码 · 客户联网自助激活</h2>
+        <p class="muted">无需客户发送设备码。默认一枚码绑定一台设备，使用期限从首次兑换起算。原有设备码授权在下方保留。</p>
+        <div class="grid-3">
+          <label>管理员密码<input id="activationPassword" type="password" autocomplete="current-password" /></label>
+          <button id="activationLogin" class="secondary">登录激活服务</button>
+          <button id="activationLoginLocal" class="secondary">使用本机运维凭据登录</button>
+          <button id="activationRefresh" class="secondary">刷新兑换记录</button>
+        </div>
+        <form id="activationForm">
+          <div class="grid-3">
+            <label>产品<select id="batchProduct"><option value="WINDOWS_HOST">Windows 主机</option><option value="ANDROID_STANDALONE">安卓单机版</option></select></label>
+            <label>套餐<select id="batchEdition"><option>FAMILY</option><option>PRO</option><option>ORG</option><option>TRIAL</option></select></label>
+            <label>数量<input id="batchCount" type="number" value="10" min="1" max="1000" required /></label>
+            <label>学生席位<input id="batchStudents" type="number" value="3" min="1" max="9999" required /></label>
+            <label>可连接的学生终端数<input id="batchDevices" type="number" value="3" min="1" max="9999" required /></label>
+            <label>首次激活后有效天数<input id="batchDays" type="number" value="365" min="1" max="3650" required /></label>
+            <label>兑换截止日期<input id="batchDeadline" type="date" required /></label>
+            <label>订单号<input id="batchOrder" maxlength="120" /></label><label>客户<input id="batchCustomer" maxlength="120" /></label>
+          </div>
+          <button type="submit" class="primary">生成并登记批次</button>
+        </form>
+        <div id="activationMessage" role="status" aria-live="polite"></div>
+        <p id="activationHealth" role="status"></p>
+        <label>查询批次、客户或订单<input id="activationSearch" type="search" /></label>
+        <div id="activationBatches"></div>
+        <details><summary>最近兑换记录</summary><pre id="activationRecords"></pre></details>
+        <p class="muted">暂停只阻止新兑换；作废只处理未兑换码。已签发的离线许可证不会因此立即停用。换机仍需售后核验。</p>
+      </section>
       <section class="panel key-panel" aria-labelledby="keyPanelTitle">
         <div class="panel-title">
           <div>
@@ -204,6 +233,7 @@
         </div>
       </div>
     </dialog>
+    <dialog id="activationCodesDialog"><h2>完整交付码 · 请妥善保管</h2><div id="activationCodes"></div><button id="activationCodesClose" type="button">关闭交付码</button></dialog>
     <script src="./qrcode.bundle.js"></script>
     <script src="./renderer.js"></script>
   </body>

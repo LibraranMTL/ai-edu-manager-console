@@ -7,6 +7,12 @@
       "maxEdition": "PLATFORM",
       "fingerprint": "56f1ff2681b78c4c174c33358047539d48a55d0438abbef22719d48dd7bc26d7",
       "publicKey": "-----BEGIN PUBLIC KEY-----\nMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAtmtzhj22jx2tad/AP2ni\n9aioHeojqbQwVbuLIFjQWW9qsLYmIAqwCYxm+f+16gZ9kGlAa6EtJxmTlQQoGyX2\nbXR/O5JgFuVEaMVs7eqU2XmxEKphkj5V7nW3gMzAYb0MLllnYIui2HbnD+E3a2Y6\nAXJB3lYTH6KvmhIYHwPG4Tq7C+hG/9Paswbgn58e6do+EhxYrD7JjmXJVB8eHJO+\ny4QmbQLHut2R4F7vcV/QWn9dQp9oCeDcqSPiThjUb+qkB/PptbEkl57R0CkFxy0d\n6lFDqAyw1usb0NiRNUvoYtro/pzp28NHGsDEQAu1Qr06nw5H/wbmnZZH15VZwngj\nnFdOLxxVR05y/WNWk+K08GmuRklLT1MgWCm6sOs1l0sfZZd6CNPizKvi3qoTJQpd\nXt4KmFZI56iNoaJDMkmRUVluYnKelRp/NOQlMg+DQM4pgY8EyiWwEVqH0vGNbOvg\n5uM7pploIgj3h4twEccBvYXacdP+TZJLRfW5CoyirrPVAgMBAAE=\n-----END PUBLIC KEY-----\n"
+    },
+    {
+      "keyId": "activation-online-20261125",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA8r81PTs5YKA8RxgBrNxs\nU+iYIU7uLEAtw0r3uzp5V4K/tmhnyxqUGPvGP8+ltXkGxR4w91uqD3Hx5IymBXTe\nZJm+iGrpvrRwlH5QpyT5skjJ6bxsoBmFivGb6Y/H4fUfm4plld9TjSOLBWKBhsWK\nZ1y82rh9LlzRZShaQ03M1NThwXAsIcuwW0ENRy7bRyuJwkAMk8/w8RSbE2DWvwdM\nLby9BOZwh2x1ybjwWTx8zbToL89ziVzNsRMlPuFKMl5quGojsuk+CfVq7tpyT5TO\n1d50lQB7B47rIuSxwpkhtwWAAOAwpfGmsW8bJj6/I4xVifFYLdnn0c7EhAT/mRUa\nU19rUP8zcBeHeqA1OcJ+M+DdjDRBIFWlaAizet5FKqGT7TlICgQfWlBoJXzUiHPp\nZgHOVekiLcpT/VkvWdGG+1Gi9gI/V+RYugwjy8o/FSzbp8k/1VVyeQoHOdPJyUPw\nXfVF2R1dkz18CZuuo617a5JB2C9wvAwYVppmqekajmPRAgMBAAE=\n-----END PUBLIC KEY-----\n",
+      "maxEdition": "ORG",
+      "purpose": "license_signing"
     }
   ]
 }

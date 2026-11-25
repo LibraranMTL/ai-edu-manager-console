@@ -1,11 +1,12 @@
 {
   "name": "ai-edu-license-admin",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "private": true,
   "main": "main.cjs",
   "description": "AI教育管家内部授权码管理工具",
   "author": "嘉玛蓝（北京）科技有限公司",
   "build": {
+    "npmRebuild": false,
     "electronVersion": "43.0.0",
     "appId": "com.greatbg.ai-edu-license-admin",
     "productName": "AI教育管家授权管理工具",
@@ -16,10 +17,13 @@
       "main.cjs",
       "preload.cjs",
       "license-core.cjs",
+      "activation-admin.cjs",
       "renderer/**/*",
       "package.json"
     ],
     "extraResources": [
+      { "from": "../../shared/activation-code.cjs", "to": "activation-code.cjs" },
+      { "from": "../../electron/windows-protected-data.cjs", "to": "windows-protected-data.cjs" },
       {
         "from": "../../electron/platform-key-manager.cjs",
         "to": "platform-key-manager.cjs"

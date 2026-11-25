@@ -32,7 +32,7 @@ const { createSmartInbox } = require('../electron/smart-inbox.cjs');
   await engine.requestScan(backlog.id); await engine.tick();
   await fs.unlink(path.join(source, '已失效资料.docx')); await engine.requestScan(initial.id); await engine.tick();
   const { createServer } = await import('vite');
-  const server = await createServer({ server: { host: '127.0.0.1', port: 5187, strictPort: true }, plugins: [{ name: 'smart-inbox-isolated', configureServer(vite) {
+  const server = await createServer({ cacheDir: path.join(root, 'vite-cache'), optimizeDeps: { entries: ['tests/fixtures/smart-inbox-ui.html'] }, server: { host: '127.0.0.1', port: 5187, strictPort: true }, plugins: [{ name: 'smart-inbox-isolated', configureServer(vite) {
     vite.middlewares.use('/__smart_inbox_test', async (req, res) => {
       try {
         let text = ''; for await (const chunk of req) { text += chunk; if (text.length > 100000) throw Error('request too large'); }
@@ -47,6 +47,7 @@ const { createSmartInbox } = require('../electron/smart-inbox.cjs');
         else if (action === 'pause') data = await engine.pause(input.id);
         else if (action === 'detach') data = await engine.detach(input.id);
         else if (action === 'detail') data = await engine.detail(input.id);
+        else if (['groups', 'previewBatch', 'batchDetail', 'controlBatch', 'learnedRules', 'pauseLearnedRule'].includes(action)) { data = await engine[action](input); if (action === 'controlBatch') await engine.tick(); }
         else if (action === 'context') data = context(input.studentId);
         else if (action === 'rules') data = await engine.listUserRules(input);
         else if (action === 'saveRule') data = await engine.saveUserRule(input);

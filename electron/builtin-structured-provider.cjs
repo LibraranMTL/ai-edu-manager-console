@@ -126,7 +126,7 @@ function extractStructuredResult(value, schema, depth = 0, seen = new Set()) {
   }
   if (typeof value !== 'object' || seen.has(value)) return null;
   seen.add(value);
-  try { return check(value, schema); } catch { /* wrapper or event envelope */ }
+  try { return check(require('./smart-inbox-policy.cjs').normalizeLegacyRoutingResult(value, schema), schema); } catch { /* wrapper or event envelope */ }
   const preferred = ['structured_output', 'result', 'structuredOutput', 'data', 'payload', 'response', 'output', 'text', 'message', 'content', 'payloads', 'messages'];
   for (const key of preferred) {
     if (!Object.hasOwn(value, key)) continue;
@@ -225,7 +225,8 @@ async function createAdapter({ id, runtime, spawnProcess, invoke } = {}) {
     generate: async ({ prompt, schema, timeoutMs, signal, images }) => {
       if (images?.length) throw failure('AGENT_CONTRACT_REQUIRED', `${id} 结构化通道暂不支持图像输入`);
       if (await runtimeFingerprint(id, runtime) !== runtimeHash) throw failure('AGENT_POLICY_CHANGED', `${id} 运行环境已经变化`);
-      return check(await call({ prompt, schema }, { timeoutMs, signal }), schema);
+      const result = await call({ prompt, schema }, { timeoutMs, signal });
+      return check(require('./smart-inbox-policy.cjs').normalizeLegacyRoutingResult(result, schema), schema);
     },
   };
 }
@@ -235,7 +236,7 @@ function qualificationExamples(profile) {
   if (profile === 'classification_readonly.v1') {
     return [{
       schema: require('./smart-inbox-policy.cjs').ROUTING_SCHEMA,
-      result: { candidates: [{ studentId: 'synthetic-student', type: 'project', id: `synthetic-${nonce}`, categoryId: '', score: 1,
+      result: { assessment: null, candidates: [{ studentId: 'synthetic-student', type: 'project', id: `synthetic-${nonce}`, categoryId: '', score: 1,
         evidence: `synthetic-${nonce}`, reason: '合成合同验证' }], sensitive: false, conflict: false, reason: '' },
     }];
   }

@@ -894,6 +894,9 @@ function getSmartInbox() {
       materialCategories: project => projectMaterialReadClient().request('categories', { project }),
       materialRoutingContext: project => projectMaterialReadClient().request('routing_context', { project }),
       routingV2Enabled: AUTOMATION_FEATURES.routingDecisionV2,
+      automaticTriage: AUTOMATION_FEATURES.inboxAutomaticTriage,
+      eventRecovery: AUTOMATION_FEATURES.inboxEventRecovery,
+      learnedRulesEnabled: AUTOMATION_FEATURES.inboxLearnedRules,
       capture: getCaptureInbox,
       legacySettings: () => getDownloadInbox().getSettings(),
       forbiddenRoots: () => [app.getPath('userData'), process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
@@ -1086,6 +1089,22 @@ function getSmartInbox() {
         if (['history', 'session'].includes(item.sourceType)) {
           const found = readConversationDeliveries(context.student).deliveries.find(d => d.assetId === JSON.parse(item.locator).assetId && d.targetType === item.target.type && String(d.targetId) === String(item.target.id || item.target.studentId));
           if (found) return { ok: true, path: found.path, recordId: found.materialId || found.id };
+          // This legacy adapter copied student-bound conversations synchronously
+          // into one deterministic path. A returned attempt, no registry entry
+          // and no destination together prove that the old scope lookup did not
+          // import anything. Generic absence is never a replay authorization.
+          if (item.status === 'delivery_reconcile' && item.studentConfirmation?.reassigned
+            && item.studentConfirmation.automatic && item.target.type === 'student' && item.operationId && !item.receipt) {
+            const assetId = String(JSON.parse(item.locator).assetId || '');
+            if (/^[a-zA-Z0-9_-]+$/.test(assetId)) {
+              const expected = path.join(context.student.rawPath || getRawDir(context.student.name), 'Agent对话资料', `${assetId}.md`);
+              const sourceStudent = findStudentByKey(item.studentConfirmation.sourceStudentId);
+              const original = sourceStudent && resolveConversationInboxAsset(sourceStudent, JSON.parse(item.locator));
+              if (original && !fs.existsSync(expected)) return { notDelivered: true, noInFlight: true,
+                operationId: item.operationId, sha256: item.fingerprint.sha256, target: item.target,
+                basis: 'legacy_synchronous_scope_lookup_no_effect' };
+            }
+          }
         }
         const found = readUploadRecords().find(r => r.id === `download-${item.operationId}` && String(r.studentId) === item.target.studentId && String(r.projectId || '') === String(item.target.id || ''));
         return found ? { ok: true, path: found.path, recordId: found.id } : null;
@@ -6285,6 +6304,8 @@ function activateLicense(code) {
   const settings = readSettings();
   const previous = publicLicenseStatus(settings.license);
   settings.license = parsed.license;
+  // A successful explicit license selection supersedes any older pending exchange.
+  settings.licenseActivationAutoResumeDisabled = true;
   writeSettings(settings);
   appendHostTimeline({
     type: 'license_activated',
@@ -6299,6 +6320,31 @@ function activateLicense(code) {
   });
   notify('onNativeHostServiceChanged', getHostServiceStatus());
   return JSON.stringify({ ok: true, message: '激活成功。平板终端将跟随 Windows 主机授权状态。', license: publicLicenseStatus(parsed.license), status: JSON.parse(getHostServiceStatus()) });
+}
+
+let selfActivationClient;
+function windowsActivationClient() {
+  if (!selfActivationClient) selfActivationClient = require('./activation-client.cjs').createActivationClient({
+    rootDir: app.getPath('userData'), deviceId: () => getHostIdentity().hostId,
+    protect: value => { if (!safeStorage.isEncryptionAvailable()) throw new Error('本机安全存储不可用，无法保存激活凭据'); return safeStorage.encryptString(value).toString('base64'); },
+    unprotect: value => safeStorage.decryptString(Buffer.from(value, 'base64')),
+    acceptLicense: token => JSON.parse(activateLicense(token)),
+  });
+  return selfActivationClient;
+}
+async function selfActivateLicense(code, recovery) {
+  try {
+    if (recovery === 'resume' && readSettings().licenseActivationAutoResumeDisabled) return JSON.stringify({ ok: true, skipped: true });
+    if (!recovery) {
+      require('../shared/activation-code.cjs').normalizeCode(code);
+      const settings = readSettings(); settings.licenseActivationAutoResumeDisabled = false; writeSettings(settings);
+    }
+    const client = windowsActivationClient();
+    const result = recovery === 'resume' ? await client.resume() : recovery ? await client.recover() : await client.activate(code);
+    return JSON.stringify(result || { ok: true, skipped: true });
+  } catch (error) {
+    return JSON.stringify({ ok: false, code: error.code || 'ACTIVATION_UNAVAILABLE', message: error.message || '联网激活失败，请稍后重试。', license: publicLicenseStatus() });
+  }
 }
 
 function importLicenseFile() {
@@ -6327,6 +6373,7 @@ function getLicenseTrustStatus() {
 
 function deactivateLicense() {
   const settings = readSettings();
+  settings.licenseActivationAutoResumeDisabled = true;
   delete settings.license;
   writeSettings(settings);
   if (hostServer) stopHostService();
@@ -23597,8 +23644,14 @@ async function classificationAdapter(providerId) {
     // Authorization and explicit verification must not race the startup scan:
     // an older PATH CLI may reject config written by the newer Desktop CLI.
     const install = await refreshPreferredCodexCliInstall();
+    const authScope = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    let model;
+    try {
+      const configured = require('smol-toml').parse(await fs.promises.readFile(path.join(authScope, 'config.toml'), 'utf8')).model;
+      if (typeof configured === 'string' && /^[a-zA-Z0-9._:/-]{1,128}$/.test(configured)) model = configured;
+    } catch { /* A missing model preference leaves the official CLI default in use. */ }
     return install.exePath ? { id: providerId, executable: install.exePath,
-      authScope: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), authVersion: auth.version }
+      authScope, authVersion: auth.version, model }
       : { id: providerId, unavailable: true, code: 'AGENT_UNAVAILABLE', message: '未找到 Codex CLI' };
   }
   const install = findAgentToolInstall('workbuddy');
@@ -33847,13 +33900,15 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
       targetName = targetProject.name;
     }
     const destinationDir = path.join(targetRoot, 'Agent对话资料');
+    const captureStudent = intakeSnapshot?.sourceStudentId ? findStudentByKey(intakeSnapshot.sourceStudentId) : student;
+    if (!captureStudent) throw Error('原采集学生不存在，未投递');
     const store = readConversationDeliveries(student);
     const deliveries = [...(store.deliveries || [])];
     let delivered = 0;
     let deduplicated = 0;
     const results = [];
     for (const source of sources) {
-      let resolved = resolveConversationInboxAsset(student, source);
+      let resolved = resolveConversationInboxAsset(captureStudent, source);
       if (!resolved) continue;
       // Only the internal intake adapter supplies this third argument; IPC keeps
       // its existing two-argument contract. Import the analyzed immutable bytes.
@@ -33877,6 +33932,7 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
       const existing = deliveries.find((item) => item.id === deliveryId);
       const workspaceDelivery = targetProject && isWorkspaceMaterialProject(targetProject);
       if (!workspaceDelivery && existing?.path && fs.existsSync(existing.path)) {
+        if ((await hashStableFile(existing.path)).sha256 !== contentHash) throw Error('已登记投递副本指纹不一致，保留原件等待核验');
         deduplicated += 1;
         results.push(existing);
         continue;
@@ -33891,6 +33947,7 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
           sourceScopeType: resolved.sourceScopeType, sourceScopeId: resolved.sourceScopeId,
           sourceScopeName: resolved.sourceScopeName, targetType, targetId, targetName,
           path: accepted.path, materialId: accepted.materialId,
+          intakeAssociation: intakeSnapshot?.intakeAssociation || null,
           registeredAssetId: accepted.assetId, contentHash,
           deliveredAt: existing?.deliveredAt || new Date().toISOString(),
         };
@@ -33916,6 +33973,7 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
         fs.mkdirSync(destinationDir, { recursive: true });
         fs.copyFileSync(resolved.asset.storedPath, finalPath);
       }
+      if ((await hashStableFile(finalPath)).sha256 !== contentHash) throw Error('目标已有不同内容，未覆盖或登记');
       const delivery = {
         id: deliveryId,
         studentId: String(student.id),
@@ -33928,6 +33986,7 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
         targetId,
         targetName,
         path: finalPath,
+        intakeAssociation: intakeSnapshot?.intakeAssociation || null,
         contentHash,
         deliveredAt: new Date().toISOString(),
       };
@@ -33955,6 +34014,7 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
     }
     return JSON.stringify({
       ok: delivered > 0 || deduplicated > 0,
+      noEffect: delivered === 0 && deduplicated === 0,
       delivered,
       deduplicated,
       results,
@@ -44031,6 +44091,10 @@ ipcMain.on('bridge:checkAllStudentsPathHealth', (event) => { licensedIpc(event, 
 ipcMain.on('bridge:resolveStudentPath', (event, studentId, logicalPath) => { event.returnValue = resolveStudentPathFromLogical(studentId, logicalPath); });
 ipcMain.handle('bridge:getLicenseStatus', () => deferredInvoke(() => getLicenseStatus()));
 ipcMain.on('bridge:activateLicense', (event, code) => { event.returnValue = activateLicense(code); });
+ipcMain.handle('bridge:selfActivateLicense', (event, code, recovery) => {
+  if (!projectArchiveRecoveryCallerAllowed(event)) return JSON.stringify({ ok: false, code: 'forbidden' });
+  return selfActivateLicense(String(code || ''), recovery);
+});
 ipcMain.on('bridge:importLicenseFile', (event) => { event.returnValue = importLicenseFile(); });
 ipcMain.on('bridge:getLicenseTrustStatus', (event) => { event.returnValue = getLicenseTrustStatus(); });
 ipcMain.on('bridge:deactivateLicense', (event) => { event.returnValue = deactivateLicense(); });
@@ -44097,6 +44161,13 @@ ipcMain.handle('bridge:smartInboxAction', (event, action, input = {}) => license
   if (action === 'sources') data = { ...await engine.sources(), recommended: ['documents', 'pictures'].map(key => ({ key, path: app.getPath(key), name: key === 'documents' ? '文档' : '图片' })) };
   else if (action === 'list') data = await engine.list(input);
   else if (action === 'detail') data = await engine.detail(input.id);
+  else if (action === 'groups') data = await engine.groups(input);
+  else if (action === 'previewBatch') data = await engine.previewBatch(input);
+  else if (action === 'batchDetail') data = await engine.batchDetail(input);
+  else if (action === 'controlBatch') data = await engine.controlBatch(input);
+  else if (['cleanupPolicy', 'updateCleanupPolicy', 'previewCleanup', 'cleanupDetail', 'restoreCleanup'].includes(action)) data = await engine[action](input);
+  else if (action === 'learnedRules') data = await engine.learnedRules(input);
+  else if (action === 'pauseLearnedRule') data = await engine.pauseLearnedRule(input);
   else if (action === 'context') data = await smartInboxHostRuntime.context(input.studentId);
   else if (action === 'agentStatus') {
     const student = findStudentByKey(String(input.studentId || ''));

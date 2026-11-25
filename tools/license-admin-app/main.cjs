@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const {
@@ -17,6 +17,39 @@ const { createPlatformKeyManager } = require(keyManagerModulePath);
 const APP_VERSION = require('./package.json').version;
 
 let mainWindow = null;
+let onlineAdmin;
+function activationAdmin() {
+  if (!onlineAdmin) onlineAdmin=require('./activation-admin.cjs').createActivationAdmin({rootDir:app.getPath('userData'),
+    protect: value=>{if(!safeStorage.isEncryptionAvailable())throw Error('本机安全存储不可用，不能保存兑换码');return safeStorage.encryptString(value).toString('base64');},
+    unprotect:value=>safeStorage.decryptString(Buffer.from(value,'base64'))});
+  return onlineAdmin;
+}
+ipcMain.handle('license:activation',async (_event,action,input={})=>{
+  try {
+    const admin=activationAdmin();
+    if(action==='loginLocal') {
+      const file=path.join(process.env.LOCALAPPDATA,'AI-Education-Manager/activation-ops/admin.enc');
+      if(!fs.existsSync(file))throw Error('本机未配置运维登录凭据，请使用管理员密码登录');
+      const dpapi=require(app.isPackaged?path.join(process.resourcesPath,'windows-protected-data.cjs'):'../../electron/windows-protected-data.cjs');
+      return ok(await admin.login(dpapi.unprotectString(fs.readFileSync(file,'utf8'))));
+    }
+    if(action==='login') return ok(await admin.login(input.password));
+    if(action==='local') return ok({rows:admin.listLocal()});
+    if(action==='create') return ok(await admin.create(input));
+    if(action==='retry') return ok(await admin.register(input.id));
+    if(action==='list') return ok(await admin.list());
+    if(action==='activations') return ok(await admin.activations());
+    if(action==='status') return ok(await admin.status());
+    if(action==='reveal') return ok(admin.reveal(input.id));
+    if(action==='action') return ok(await admin.action(input.id,input.action));
+    if(action==='export') {
+      const csv=admin.exportBatch(input.id);
+      const target=dialog.showSaveDialogSync(mainWindow,{title:'导出完整兑换码，请保管销售交付文件',defaultPath:path.join(app.getPath('downloads'),`激活码-${input.id}.csv`),filters:[{name:'CSV',extensions:['csv']}]});
+      if(!target)return ok({cancelled:true}); fs.writeFileSync(target,csv,'utf8'); return ok({message:'已导出销售交付清单。'});
+    }
+    throw Error('不支持的兑换码管理操作');
+  } catch(error) {return fail(error);}
+});
 
 function recordsPath() {
   return path.join(app.getPath('userData'), 'license-records.json');

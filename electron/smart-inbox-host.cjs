@@ -147,6 +147,9 @@ function createSmartInboxHost(h) {
     directory: h.directory, forbiddenRoots: h.forbiddenRoots, context, fingerprintProjects, workspaceCandidates, automaticAllowed: h.automaticAllowed,
     studentHints: () => (h.students?.() || []).filter(s => !s.archived && s.status !== 'archived').map(s => ({ id: String(s.id), name: String(s.name || '') })),
     routingV2Enabled: h.routingV2Enabled !== false,
+    automaticTriage: h.automaticTriage !== false,
+    eventRecovery: h.eventRecovery !== false,
+    learnedRulesEnabled: h.learnedRulesEnabled !== false,
     canReuseReceipt: target => { const project = h.projects().find(p => String(p.id) === target.id); return Boolean(project && h.isWorkspace(project)); },
     acquire: h.acquire, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch,
     settleItems: h.settleItems, changed: h.changed, onError: h.onError,
@@ -184,6 +187,7 @@ function createSmartInboxHost(h) {
       const from = extraction(item); return from.value.extract(from.input);
     },
     classify: input => routing.classify(input),
+    recoveryIdentity: id => routing.recoveryIdentity(id),
     prepareAssociation: item => associations.prepare(item),
     async registerAssociation(item) {
       await associations.bind(item);
@@ -194,10 +198,20 @@ function createSmartInboxHost(h) {
     },
     async deliver(snapshot, target, item, checkpoint) {
       if (['history', 'session'].includes(item.sourceType)) {
+        const captureStudentId = item.captureStudentId || item.studentConfirmation?.sourceStudentId || item.studentId;
+        student(captureStudentId); student(item.target.studentId);
+        await checkpoint({ deliveryAttempt: { stage: 'prepared', operationId: item.operationId, captureStudentId,
+          studentId: item.target.studentId, sha256: item.fingerprint.sha256 } });
         const result = JSON.parse(await h.deliverConversation(item.target.studentId, JSON.stringify({ sources: [JSON.parse(item.locator)], targetType: item.target.type, targetId: item.target.id || item.target.studentId }),
           { path: snapshot, sha256: item.fingerprint.sha256, assetId: JSON.parse(item.locator).assetId,
+            sourceStudentId: captureStudentId,
             intakeAssociation: { itemId: item.id, operationId: item.operationId } }));
-        if (!result.ok) throw Error(result.message);
+        if (!result.ok) {
+          await checkpoint({ deliveryAttempt: { stage: 'returned_error', operationId: item.operationId,
+            captureStudentId, studentId: item.target.studentId, sha256: item.fingerprint.sha256,
+            noEffect: result.noEffect === true, message: result.message } });
+          throw Error(result.message);
+        }
         const receipt = (result.results || result.deliveries || []).find(r => r.path);
         if (!receipt) throw Error('会话投递缺少可核验回执');
         return { ok: true, path: receipt.path, recordId: receipt.materialId || receipt.id, projectId: item.target.id, studentId: item.target.studentId };

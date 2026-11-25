@@ -36,7 +36,7 @@ test('license admin packages the canonical key manager and uses its package vers
   const preload = read('tools', 'license-admin-app', 'preload.cjs');
   const html = read('tools', 'license-admin-app', 'renderer', 'index.html');
   const renderer = read('tools', 'license-admin-app', 'renderer', 'renderer.js');
-  assert.equal(packageJson.version, '0.4.3');
+  assert.equal(packageJson.version, '0.5.0');
   assert.match(JSON.stringify(packageJson.build.extraResources), /platform-key-manager\.cjs/);
   assert.match(main, /package\.json/);
   assert.match(main, /process\.resourcesPath[\s\S]*platform-key-manager\.cjs/);

@@ -34,7 +34,7 @@ if (adapterId === 'workbuddy') {
     });
   }
 }
-const agent = createRoutingAgent({ select: async () => { await runtimeReady; return { id: adapterId, executable, runtime }; } });
+const agent = createRoutingAgent({ select: async () => { await runtimeReady; return { id: adapterId, executable, runtime, model: option('--model') || undefined }; } });
 (async () => {
   const results = [];
   for (const value of fixture.cases.filter(item => ids.has(item.id))) {

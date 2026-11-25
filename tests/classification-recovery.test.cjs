@@ -80,3 +80,20 @@ test('both providers failing keeps structured attempts and never sends student b
     run: async (_, i) => { assert.equal(i.context.studentId, 'synthetic-student'); throw Object.assign(Error('login'), { code: 'AUTHENTICATION_REQUIRED' }); } });
   await assert.rejects(agent.classify(input()), e => e.blockReason.code === 'NO_FALLBACK_AGENT' && e.blockReason.attempts.length === 2);
 });
+
+test('a completed invalid classification is durably distinguished from an unknown remote execution', async t => {
+  const f = await fixture(t), stages = [];
+  const agent = createRoutingAgent({ select: f.select, run: async (_, value) => value.context.studentId === 'synthetic-student'
+    ? answer(value) : { ...answer(value), candidates: [{ ...answer(value).candidates[0], evidence: 'invented' }] } });
+  await assert.rejects(agent.classify({ ...input(), onStage: async stage => stages.push(stage) }), error =>
+    error.code === 'execution_unknown' && error.blockReason.resultReceived === true);
+  assert.equal(stages.at(-1).stage, 'result_rejected');
+});
+
+test('failure saving a valid result is not labeled as a rejected model result', async t => {
+  const f = await fixture(t), stages = [];
+  const agent = createRoutingAgent({ select: f.select, run: async (_, value) => answer(value) });
+  await assert.rejects(agent.classify({ ...input(), onStage: async stage => stages.push(stage),
+    onResult: async () => { throw Error('disk full'); } }), /disk full/);
+  assert.equal(stages.some(stage => stage.stage === 'result_rejected'), false);
+});

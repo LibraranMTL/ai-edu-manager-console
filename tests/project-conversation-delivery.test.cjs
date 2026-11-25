@@ -40,6 +40,7 @@ async function fixture(t) {
   let deliveries = { deliveries: [] };
   const assetCalls = [];
   const scope = {
+    hashStableFile: require('../electron/project-materials.cjs').hashStableFile,
     fs: fsSync, path, createProjectMaterialHost, createProjectUploadIntake, stageProjectDirectImport,
     projectUploadRecoveryIssues: [],
     sha256FileDirect: async (file) => crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex'),
@@ -97,6 +98,26 @@ function request(f) {
     sources: [{ sourceScopeType: 'student', sourceScopeId: f.student.id,
       assetId: f.conversationAsset.id }] });
 }
+
+test('trusted cross-student intake resolves original capture scope and records one target receipt', async t => {
+  const f = await fixture(t), targetStudent = { id: 'student-2', name: 'Target', rawPath: path.join(f.root, 'target-raw') };
+  await fs.mkdir(targetStudent.rawPath);
+  f.scope.findStudentByKey = id => id === f.student.id ? f.student : id === targetStudent.id ? targetStudent : null;
+  f.scope.resolveConversationInboxAsset = student => student.id === f.student.id ? { asset: f.conversationAsset,
+    sourceScopeType: 'student', sourceScopeId: f.student.id, sourceScopeName: f.student.name } : null;
+  const payload = JSON.stringify({ targetType: 'student', targetId: targetStudent.id, sources: [{ assetId: f.conversationAsset.id }] });
+  const snapshot = { path: f.source, sha256: f.conversationAsset.contentHash, assetId: f.conversationAsset.id,
+    sourceStudentId: f.student.id, intakeAssociation: { itemId: 'intake', operationId: 'same-operation' } };
+  const first = JSON.parse(await f.scope.deliverConversationMaterials(targetStudent.id, payload, snapshot));
+  assert.equal(first.ok, true, first.message); assert.equal(first.results[0].studentId, targetStudent.id);
+  assert.equal(first.results[0].sourceScopeId, f.student.id);
+  assert.equal(first.results[0].intakeAssociation.operationId, 'same-operation');
+  const second = JSON.parse(await f.scope.deliverConversationMaterials(targetStudent.id, payload, snapshot));
+  assert.equal(second.delivered, 0); assert.equal(second.deduplicated, 1); assert.equal(f.deliveries().deliveries.length, 1);
+  await fs.writeFile(first.results[0].path, 'changed');
+  const changed = JSON.parse(await f.scope.deliverConversationMaterials(targetStudent.id, payload, snapshot));
+  assert.equal(changed.ok, false); assert.match(changed.message, /指纹/);
+});
 
 test('project conversation delivery saves one accepted original in workspace and returns stable receipt', async (t) => {
   const f = await fixture(t);

@@ -5,18 +5,18 @@ var QRCode = (() => {
     return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   };
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/can-promise.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/can-promise.js
   var require_can_promise = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/can-promise.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/can-promise.js"(exports, module) {
       module.exports = function() {
         return typeof Promise === "function" && Promise.prototype && Promise.prototype.then;
       };
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/utils.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/utils.js
   var require_utils = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/utils.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/utils.js"(exports) {
       var toSJISFunction;
       var CODEWORDS_COUNT = [
         0,
@@ -93,9 +93,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-level.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-level.js
   var require_error_correction_level = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-level.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-level.js"(exports) {
       exports.L = { bit: 1 };
       exports.M = { bit: 0 };
       exports.Q = { bit: 3 };
@@ -138,9 +138,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-buffer.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-buffer.js
   var require_bit_buffer = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-buffer.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-buffer.js"(exports, module) {
       function BitBuffer() {
         this.buffer = [];
         this.length = 0;
@@ -173,9 +173,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-matrix.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-matrix.js
   var require_bit_matrix = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-matrix.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/bit-matrix.js"(exports, module) {
       function BitMatrix(size) {
         if (!size || size < 1) {
           throw new Error("BitMatrix size must be defined and greater than 0");
@@ -202,9 +202,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/alignment-pattern.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/alignment-pattern.js
   var require_alignment_pattern = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/alignment-pattern.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/alignment-pattern.js"(exports) {
       var getSymbolSize = require_utils().getSymbolSize;
       exports.getRowColCoords = function getRowColCoords(version) {
         if (version === 1) return [];
@@ -237,9 +237,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/finder-pattern.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/finder-pattern.js
   var require_finder_pattern = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/finder-pattern.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/finder-pattern.js"(exports) {
       var getSymbolSize = require_utils().getSymbolSize;
       var FINDER_PATTERN_SIZE = 7;
       exports.getPositions = function getPositions(version) {
@@ -256,9 +256,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/mask-pattern.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/mask-pattern.js
   var require_mask_pattern = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/mask-pattern.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/mask-pattern.js"(exports) {
       exports.Patterns = {
         PATTERN000: 0,
         PATTERN001: 1,
@@ -398,9 +398,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-code.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-code.js
   var require_error_correction_code = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-code.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/error-correction-code.js"(exports) {
       var ECLevel = require_error_correction_level();
       var EC_BLOCKS_TABLE = [
         // L  M  Q  H
@@ -759,9 +759,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/galois-field.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/galois-field.js
   var require_galois_field = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/galois-field.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/galois-field.js"(exports) {
       var EXP_TABLE = new Uint8Array(512);
       var LOG_TABLE = new Uint8Array(256);
       (function initTables() {
@@ -792,9 +792,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/polynomial.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/polynomial.js
   var require_polynomial = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/polynomial.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/polynomial.js"(exports) {
       var GF = require_galois_field();
       exports.mul = function mul(p1, p2) {
         const coeff = new Uint8Array(p1.length + p2.length - 1);
@@ -828,9 +828,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/reed-solomon-encoder.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/reed-solomon-encoder.js
   var require_reed_solomon_encoder = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/reed-solomon-encoder.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/reed-solomon-encoder.js"(exports, module) {
       var Polynomial = require_polynomial();
       function ReedSolomonEncoder(degree) {
         this.genPoly = void 0;
@@ -860,18 +860,18 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/version-check.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/version-check.js
   var require_version_check = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/version-check.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/version-check.js"(exports) {
       exports.isValid = function isValid(version) {
         return !isNaN(version) && version >= 1 && version <= 40;
       };
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/regex.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/regex.js
   var require_regex = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/regex.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/regex.js"(exports) {
       var numeric = "[0-9]+";
       var alphanumeric = "[A-Z $%*+\\-./:]+";
       var kanji = "(?:[u3000-u303F]|[u3040-u309F]|[u30A0-u30FF]|[uFF00-uFFEF]|[u4E00-u9FAF]|[u2605-u2606]|[u2190-u2195]|u203B|[u2010u2015u2018u2019u2025u2026u201Cu201Du2225u2260]|[u0391-u0451]|[u00A7u00A8u00B1u00B4u00D7u00F7])+";
@@ -897,9 +897,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/mode.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/mode.js
   var require_mode = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/mode.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/mode.js"(exports) {
       var VersionCheck = require_version_check();
       var Regex = require_regex();
       exports.NUMERIC = {
@@ -978,9 +978,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/version.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/version.js
   var require_version = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/version.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/version.js"(exports) {
       var Utils = require_utils();
       var ECCode = require_error_correction_code();
       var ECLevel = require_error_correction_level();
@@ -1073,9 +1073,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/format-info.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/format-info.js
   var require_format_info = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/format-info.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/format-info.js"(exports) {
       var Utils = require_utils();
       var G15 = 1 << 10 | 1 << 8 | 1 << 5 | 1 << 4 | 1 << 2 | 1 << 1 | 1 << 0;
       var G15_MASK = 1 << 14 | 1 << 12 | 1 << 10 | 1 << 4 | 1 << 1;
@@ -1091,9 +1091,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/numeric-data.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/numeric-data.js
   var require_numeric_data = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/numeric-data.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/numeric-data.js"(exports, module) {
       var Mode = require_mode();
       function NumericData(data) {
         this.mode = Mode.NUMERIC;
@@ -1126,9 +1126,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/alphanumeric-data.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/alphanumeric-data.js
   var require_alphanumeric_data = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/alphanumeric-data.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/alphanumeric-data.js"(exports, module) {
       var Mode = require_mode();
       var ALPHA_NUM_CHARS = [
         "0",
@@ -1205,9 +1205,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/byte-data.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/byte-data.js
   var require_byte_data = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/byte-data.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/byte-data.js"(exports, module) {
       var Mode = require_mode();
       function ByteData(data) {
         this.mode = Mode.BYTE;
@@ -1235,9 +1235,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/kanji-data.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/kanji-data.js
   var require_kanji_data = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/kanji-data.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/kanji-data.js"(exports, module) {
       var Mode = require_mode();
       var Utils = require_utils();
       function KanjiData(data) {
@@ -1274,9 +1274,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/dijkstrajs@1.0.3/node_modules/dijkstrajs/dijkstra.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/dijkstrajs@1.0.3/node_modules/dijkstrajs/dijkstra.js
   var require_dijkstra = __commonJS({
-    "node_modules/.pnpm/dijkstrajs@1.0.3/node_modules/dijkstrajs/dijkstra.js"(exports, module) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/dijkstrajs@1.0.3/node_modules/dijkstrajs/dijkstra.js"(exports, module) {
       "use strict";
       var dijkstra = {
         single_source_shortest_paths: function(graph, s, d) {
@@ -1375,9 +1375,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/segments.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/segments.js
   var require_segments = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/segments.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/segments.js"(exports) {
       var Mode = require_mode();
       var NumericData = require_numeric_data();
       var AlphanumericData = require_alphanumeric_data();
@@ -1561,9 +1561,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/qrcode.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/qrcode.js
   var require_qrcode = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/core/qrcode.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/core/qrcode.js"(exports) {
       var Utils = require_utils();
       var ECLevel = require_error_correction_level();
       var BitBuffer = require_bit_buffer();
@@ -1822,9 +1822,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/renderer/utils.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/renderer/utils.js
   var require_utils2 = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/renderer/utils.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/renderer/utils.js"(exports) {
       function hex2rgba(hex) {
         if (typeof hex === "number") {
           hex = hex.toString();
@@ -1902,9 +1902,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/renderer/canvas.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/renderer/canvas.js
   var require_canvas = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/renderer/canvas.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/renderer/canvas.js"(exports) {
       var Utils = require_utils2();
       function clearCanvas(ctx, canvas, size) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1955,9 +1955,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/renderer/svg-tag.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/renderer/svg-tag.js
   var require_svg_tag = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/renderer/svg-tag.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/renderer/svg-tag.js"(exports) {
       var Utils = require_utils2();
       function getColorAttrib(color, attrib) {
         const alpha = color.a / 255;
@@ -2013,9 +2013,9 @@ var QRCode = (() => {
     }
   });
 
-  // node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/browser.js
+  // C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/browser.js
   var require_browser = __commonJS({
-    "node_modules/.pnpm/qrcode@1.5.4/node_modules/qrcode/lib/browser.js"(exports) {
+    "C:/Users/bxw00/AppData/Local/AI-Education-Manager/pnpm-vstore/edu-launcher-app-0.21.2-low-risk/qrcode@1.5.4/node_modules/qrcode/lib/browser.js"(exports) {
       var canPromise = require_can_promise();
       var QRCode = require_qrcode();
       var CanvasRenderer = require_canvas();

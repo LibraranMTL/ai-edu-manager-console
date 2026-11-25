@@ -1421,6 +1421,7 @@ type AndroidBridge = {
   resolveStudentPath?: (studentId: string, logicalPath: string) => Promise<string>;
   getLicenseStatus?: () => Promise<string>;
   activateLicense?: (code: string) => Promise<string>;
+  recoverLicenseActivation?: (resumeOnly?: boolean) => Promise<string>;
   importLicenseFile?: () => Promise<string>;
   getLicenseTrustStatus?: () => Promise<string>;
   deactivateLicense?: () => Promise<string>;
@@ -6705,6 +6706,7 @@ function App() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [licenseCodeDraft, setLicenseCodeDraft] = useState('');
   const [licenseMessage, setLicenseMessage] = useState('');
+  const [licenseActivating, setLicenseActivating] = useState(false);
   const [licenseTrustIssuers, setLicenseTrustIssuers] = useState<Array<{ keyId: string; fingerprint: string; status: string }>>([]);
   const [templateCenter, setTemplateCenter] = useState<TemplateCenterState | null>(null);
   const [templateMessage, setTemplateMessage] = useState('');
@@ -7864,7 +7866,12 @@ function App() {
       setLicenseMessage('请先输入激活码。');
       return;
     }
-    const raw = await bridge()?.activateLicense?.(licenseCodeDraft);
+    if (licenseActivating) return;
+    setLicenseActivating(true);
+    let raw: string | undefined;
+    try { raw = await bridge()?.activateLicense?.(licenseCodeDraft); }
+    catch { setLicenseMessage('激活请求未完成，请重试或恢复上次激活。'); return; }
+    finally { setLicenseActivating(false); }
     if (!raw) {
       setLicenseMessage('当前环境不支持许可证激活。');
       return;
@@ -9864,6 +9871,13 @@ ${sourceText}`;
       void refreshTemplateCenter();
     }
   }, [activeSection]);
+
+  useEffect(() => {
+    void bridge()?.recoverLicenseActivation?.(true).then(raw => {
+      const result = JSON.parse(raw);
+      if (!result.skipped) { if (result.license) setLicenseStatus(result.license); setLicenseMessage(result.message || '已恢复上次激活。'); }
+    }).catch(() => { /* A manual retry remains available when the service is offline. */ });
+  }, []);
 
   useEffect(() => {
     const target = window as unknown as { onNativeAgentToolInstallChanged?: (payload: string) => void };
@@ -23482,10 +23496,10 @@ ${JSON.stringify(items, null, 2)}
                   <input
                     value={licenseCodeDraft}
                     onChange={(event) => setLicenseCodeDraft(event.target.value)}
-                    placeholder="输入由授权管理工具签发的 AIE3 激活码"
+                    placeholder="输入购买的激活码，或原有 AIE3 授权码"
                   />
-                  <button className="primary" onClick={activateLicense}>
-                    激活
+                  <button className="primary" onClick={activateLicense} disabled={licenseActivating}>
+                    {licenseActivating ? '正在激活…' : '激活'}
                   </button>
                 </div>
                 <div className="actions">
@@ -23496,6 +23510,13 @@ ${JSON.stringify(items, null, 2)}
                     移除本机许可证
                   </button>
                   <button className="secondary compact" onClick={importLicenseFile}>导入 License 文件</button>
+                  <button className="secondary compact" disabled={licenseActivating} onClick={async () => {
+                    setLicenseActivating(true);
+                    try { const raw = await bridge()?.recoverLicenseActivation?.(); const result = raw ? JSON.parse(raw) : null;
+                      setLicenseMessage(result?.message || (result?.ok ? '已恢复原授权。' : '未能恢复，请输入原激活码重试。'));
+                      await refreshLicenseStatus();
+                    } catch { setLicenseMessage('恢复请求未完成，请稍后重试。'); } finally { setLicenseActivating(false); }
+                  }}>恢复上次激活</button>
                   <button className="ghost compact" onClick={refreshLicenseTrustStatus}>查看可信签发方</button>
                 </div>
                 {licenseTrustIssuers.length ? (
@@ -23504,7 +23525,7 @@ ${JSON.stringify(items, null, 2)}
                   </div>
                 ) : null}
                 {licenseMessage && <p>{licenseMessage}</p>}
-                <p className="muted-text">授权码由内部“AI教育管家授权管理工具”生成；Windows 0.16.5 起只接受绑定本机设备码的 License v3，旧版激活码需换发。</p>
+                <p className="muted-text">购买的激活码首次使用需联网，自动绑定本机，无需发送设备码；激活后本地功能可在授权有效期内离线使用。原有绑定设备的 License v3 和授权文件继续可用。换机或设备身份变化请联系售后核验。</p>
               </div>
             )}
             {(!isWindows || settingsSubmenu === 'basic') && <div className="notice legal-notice">

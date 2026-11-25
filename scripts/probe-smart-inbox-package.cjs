@@ -19,7 +19,7 @@ app.whenReady().then(async () => {
   const checks = [], hashes = {}, cleanupWarnings = []; let error, service, taskHost;
   try {
     Object.defineProperty(process, 'resourcesPath', { value: resources });
-    for (const name of ['smart-inbox.cjs', 'smart-inbox-policy.cjs', 'smart-inbox-agent.cjs', 'smart-inbox-host.cjs', 'smart-inbox-associations.cjs', 'agent-invocation-service.cjs', 'agent-authorization-detection.cjs', 'task-circuit-probe.cjs', 'task-executor-circuit.cjs', 'project-material-extract.cjs', 'workbuddy-runtime.cjs', 'workbuddy-controlled.cjs', 'workbuddy-profile-gate.cjs', 'workbuddy-cli-manager.cjs', 'classification-auth.cjs', 'student-controlled-material.cjs', 'project-material-host.cjs', 'project-materials.cjs', 'main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'download-inbox.cjs', 'project-material-classification.cjs', 'task-protocol.cjs', 'task-store-service.cjs', 'task-progress-buffer.cjs', 'task-io-client.cjs', 'task-io-worker.cjs', 'task-store-writer.cjs', 'task-read-model.cjs']) {
+    for (const name of ['smart-inbox-content.cjs', 'smart-inbox-cleanup.cjs', 'smart-inbox.cjs', 'smart-inbox-batches.cjs', 'smart-inbox-conversation.cjs', 'smart-inbox-policy.cjs', 'smart-inbox-agent.cjs', 'smart-inbox-host.cjs', 'smart-inbox-associations.cjs', 'agent-invocation-service.cjs', 'agent-authorization-detection.cjs', 'task-circuit-probe.cjs', 'task-executor-circuit.cjs', 'project-material-extract.cjs', 'workbuddy-runtime.cjs', 'workbuddy-controlled.cjs', 'workbuddy-profile-gate.cjs', 'workbuddy-cli-manager.cjs', 'classification-auth.cjs', 'student-controlled-material.cjs', 'project-material-host.cjs', 'project-materials.cjs', 'main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'download-inbox.cjs', 'project-material-classification.cjs', 'task-protocol.cjs', 'task-store-service.cjs', 'task-progress-buffer.cjs', 'task-io-client.cjs', 'task-io-worker.cjs', 'task-store-writer.cjs', 'task-read-model.cjs']) {
       const packaged = await fs.readFile(path.join(runtime, name));
       const staged = await fs.readFile(path.join(stagedRuntime, name));
       assert.equal(Buffer.compare(packaged, staged), 0, `${name} differs from audited staged runtime (${packaged.length} != ${staged.length})`);
@@ -124,6 +124,12 @@ app.whenReady().then(async () => {
     assert.equal((await service.engine.decide({ requestId: 'remove-stale', action: 'ignore', items: [stale] })).results[0].ok, true);
     assert.equal((await service.engine.list({ status: 'ignored' })).total, 1); assert.equal(deliveries, 2); assert.equal(agentCalls, 2);
     checks.push('ASAR stale original is marked and removed from pending without deleting history or dispatching Agent');
+    const grouped = await service.engine.groups({ studentId: student.id });
+    assert.ok(Array.isArray(grouped.groups));
+    const preview = await service.engine.previewBatch({ type: 'backlog', studentId: student.id });
+    assert.equal(preview.status, 'preview'); assert.equal(agentCalls, 2); assert.equal(deliveries, 2);
+    assert.equal((await service.engine.batchDetail({ id: preview.id })).id, preview.id);
+    checks.push('ASAR problem groups and durable backlog preview are available without model calls or delivery');
     const { createIntakeAssociations } = require(path.join(runtime, 'smart-inbox-associations.cjs'));
     const { hashStableFile } = require(path.join(runtime, 'project-materials.cjs'));
     const projects = ['old-project', 'new-project'].map(id => ({ id, name: id, studentIds: [student.id], materialStorageMode: 'workspace-v1',

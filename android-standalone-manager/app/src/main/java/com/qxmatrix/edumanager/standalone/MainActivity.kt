@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var conversationImportService: ConversationImportService
     private lateinit var uiPreferences: UiPreferences
     private lateinit var licenseManager: LicenseManager
+    private var activationBusy = false
     private var activationInput: EditText? = null
     private var activationStatusText: TextView? = null
     private lateinit var palette: UiPalette
@@ -328,7 +329,7 @@ class MainActivity : ComponentActivity() {
     private fun buildActivationScreen(): View {
         val current = licenseManager.status()
         val input = EditText(this).apply {
-            hint = "粘贴 AIE3 激活码"
+            hint = "输入购买的激活码，或原有 AIE3 授权码"
             minLines = 4
             maxLines = 8
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -405,21 +406,41 @@ class MainActivity : ComponentActivity() {
                 }, REQUEST_LICENSE_QR_IMAGE)
             }, matchWrap())
             addView(themedButton("激活并进入教育管家", YouthButtonRole.PRIMARY) {
-                runCatching { licenseManager.activate(input.text.toString()) }
-                    .onSuccess { recreate() }
-                    .onFailure { statusText.text = it.message ?: "激活失败。" }
+                runProductActivation(input.text.toString())
             }, matchWrap())
+            addView(themedButton("恢复上次联网激活") { runProductActivation("", recover = true) }, matchWrap())
             addView(statusText, matchWrap())
             addView(TextView(this@MainActivity).apply {
-                text = "激活不需要连接授权服务器。请妥善保管激活码；换机或恢复出厂设置后需要重新签发。"
+                text = "购买的激活码首次使用需联网，无需发送设备码；激活后本地功能可在有效期内离线使用。原 AIE3 授权码仍可离线激活。换机或恢复出厂设置请联系售后核验。"
                 textSize = 14f
                 setTextColor(palette.muted)
             }, matchWrap())
         }
+        runProductActivation(null)
         return ScrollView(this).apply {
             setBackgroundColor(palette.page)
             addView(card, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+    }
+
+    private fun runProductActivation(code: String?, recover: Boolean = false) {
+        if (activationBusy) return
+        activationBusy = true
+        if (code != null) activationStatusText?.text = "正在核验激活，请稍候…"
+        Thread {
+            val result = runCatching {
+                if (code?.trim()?.startsWith("AIE3.") == true) { licenseManager.activate(code); true }
+                else {
+                    val client = OnlineActivationClient(this)
+                    when { recover -> { client.recover(); true }; code == null -> client.resume(); else -> { client.activate(code); true } }
+                }
+            }
+            runOnUiThread {
+                activationBusy = false
+                if (!isFinishing && !isDestroyed) result.onSuccess { if (it) recreate() }
+                    .onFailure { activationStatusText?.text = it.message ?: "激活未完成，可重试或恢复上次激活。" }
+            }
+        }.start()
     }
 
     private fun buildAppShell(): FrameLayout {
@@ -1491,9 +1512,9 @@ class MainActivity : ComponentActivity() {
 
     private fun confirmLicenseReplacement() {
         AlertDialog.Builder(this).setTitle("更换激活码")
-            .setMessage("清除当前激活码后将返回产品激活页。已有资料不会删除。确认继续吗？")
+            .setMessage("进入激活页更换授权。新授权校验和保存成功前，保留当前授权及已有资料。确认继续吗？")
             .setNegativeButton("取消", null)
-            .setPositiveButton("继续") { _, _ -> licenseManager.clear(); recreate() }
+            .setPositiveButton("继续") { _, _ -> setContentView(buildActivationScreen()) }
             .show()
     }
 
@@ -1902,19 +1923,17 @@ class MainActivity : ComponentActivity() {
     private fun handleRecognizedLicense(rawToken: String?, source: String) {
         val token = LicenseQrPayload.normalize(rawToken)
         if (token == null) {
-            activationStatusText?.text = "$source 未包含有效的 AIE3 License v3 激活码。"
+            activationStatusText?.text = "$source 未包含有效的激活码或 License v3。"
             return
         }
         activationInput?.setText(token)
         activationStatusText?.text = "$source 已识别，等待确认激活。"
         AlertDialog.Builder(this)
             .setTitle("确认激活 Android 单机版")
-            .setMessage("已从${source}识别 License v3。确认后将在本机校验产品、设备码、数字签名和有效期；二维码图片不会上传或保存。")
+            .setMessage("已从${source}识别激活码。兑换码将联网绑定本机；AIE3 授权码在本机验签。二维码图片不会上传或保存。")
             .setNegativeButton("取消", null)
             .setPositiveButton("确认激活") { _, _ ->
-                runCatching { licenseManager.activate(token) }
-                    .onSuccess { recreate() }
-                    .onFailure { activationStatusText?.text = it.message ?: "激活失败。" }
+                runProductActivation(token)
             }
             .show()
     }

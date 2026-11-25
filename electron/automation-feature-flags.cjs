@@ -4,6 +4,9 @@ function resolveAutomationFeatureFlags(env = process.env) {
   return Object.freeze({
     workBuddyRuntimeStatusV2: env.EDU_DISABLE_WORKBUDDY_RUNTIME_STATUS_V2 !== '1',
     routingDecisionV2: env.EDU_DISABLE_ROUTING_DECISION_V2 !== '1',
+    inboxAutomaticTriage: env.EDU_DISABLE_INBOX_AUTOMATIC_TRIAGE !== '1',
+    inboxEventRecovery: env.EDU_DISABLE_INBOX_EVENT_RECOVERY !== '1',
+    inboxLearnedRules: env.EDU_DISABLE_INBOX_LEARNED_RULES !== '1',
     provisionalProjectInbox: env.EDU_DISABLE_PROVISIONAL_PROJECT_INBOX !== '1',
     backlogConvergence: env.EDU_DISABLE_BACKLOG_CONVERGENCE !== '1',
     digestArtifactRepair: env.EDU_DISABLE_DIGEST_ARTIFACT_REPAIR !== '1',

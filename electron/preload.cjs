@@ -681,8 +681,11 @@ contextBridge.exposeInMainWorld('AndroidBridge', {
     return ipcRenderer.invoke('bridge:getLicenseStatus');
   },
   activateLicense(code) {
-    return invokeLegacy('bridge:activateLicense', code);
+    return String(code || '').trim().startsWith('AIE3.')
+      ? invokeLegacy('bridge:activateLicense', code)
+      : ipcRenderer.invoke('bridge:selfActivateLicense', code);
   },
+  recoverLicenseActivation(resumeOnly = false) { return ipcRenderer.invoke('bridge:selfActivateLicense', '', resumeOnly ? 'resume' : 'recover'); },
   importLicenseFile() {
     return invokeLegacy('bridge:importLicenseFile');
   },

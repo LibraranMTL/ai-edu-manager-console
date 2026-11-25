@@ -51,7 +51,7 @@ class LicenseQrScannerActivity : ComponentActivity() {
     private fun buildScannerView(): FrameLayout {
         previewView = PreviewView(this).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
         statusText = TextView(this).apply {
-            text = "将 License v3 二维码放入取景框内\n识别过程完全在本机完成"
+            text = "将激活码二维码放入取景框内\n识别过程完全在本机完成"
             textSize = 17f
             setTextColor(Color.WHITE)
             setBackgroundColor(0xB3000000.toInt())
@@ -78,7 +78,7 @@ class LicenseQrScannerActivity : ComponentActivity() {
 
     @androidx.annotation.OptIn(markerClass = [androidx.camera.core.ExperimentalGetImage::class])
     private fun startCamera() {
-        statusText.text = "将 License v3 二维码放入取景框内\n识别过程完全在本机完成"
+        statusText.text = "将激活码二维码放入取景框内\n识别过程完全在本机完成"
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             val cameraProvider = runCatching { providerFuture.get() }.getOrElse {

@@ -1,35 +1,42 @@
-# AI教育管家控制台 App
+# AI Education Manager · AI教育管家
+
+AI教育管家帮助家庭和教育工作者组织学生资料、跟踪学习过程并管理项目知识。Windows 主机连接学生端和教师端，Android 单机版支持在移动设备上独立使用。系统结合授权范围内的资料与 AI Agent，辅助整理、检索和生成学习成果。
+
+## 主要功能
+
+- 学生资料与档案管理，按学生和项目组织学习记录、原始资料和证据。
+- 智能资料收件箱，采集已授权来源的资料，分析项目归属，自动投递并保留处理回执。
+- 学情与成长记录，整理学习事件、报告、成长模型及教育档案。
+- 项目与知识管理，归集项目资料、研究过程和阶段成果，支持检索与协作。
+- 学习与课程支持，提供学习卡片、精选课程和专注模式。
+- 多端协同，Windows 学生端、Android 学生端及 Android 教师端连接 Windows 主机。
+- Android 单机版，支持在 Android 设备上管理学生资料和学习成果。
+- 激活与恢复，支持联网自助激活及原有设备码授权方式。
+
+## Overview
+
+AI Education Manager helps families and educators organize student materials, follow learning progress, and manage project knowledge. A Windows host works with student and teacher clients, while the Android standalone edition supports independent use on a mobile device. Authorized materials and AI agents assist with organizing, retrieval, and creating learning outputs.
+
+## Features
+
+- Organize student profiles, learning records, original materials, and evidence by student and project.
+- Collect materials from authorized sources in a smart inbox, assess project ownership, deliver eligible items automatically, and retain receipts.
+- Maintain learning records, reports, growth models, and education portfolios.
+- Manage project materials, research, milestones, knowledge retrieval, and collaboration.
+- Support learning cards, selected courses, and focus mode.
+- Connect Windows and Android student clients and the Android teacher client to a Windows host.
+- Use the Android standalone edition to manage student materials and learning outputs on one device.
+- Activate online with a code or use the existing device-code licensing method.
+
+## 下载 · Downloads
+
+[AI教育管家下载页面 / AI Education Manager downloads](https://www.greatbg.com/education/download.html)
+
+## 开发与维护 · Development and maintenance
+
+Bao Xiaowen · Shuyuan Bao · Shu Yuan Robert Zhao · Shuyang Bao · Lily Zhao
 
 版本历史与发布规则见 [CHANGELOG.md](CHANGELOG.md)。
-
-当前产品采用一个 Windows 主机与三类终端协同的四端结构：
-
-- Windows 主机端 0.19.5：采用八个一级菜单与页内 Tab；供教师或家长管理学生、项目、资料治理、成长模型、学情报告和终端连接。资料收件箱可关联自选下载目录，核验投递成功后才归档原件；支持个性化选题、规划与比赛研究、学习卡片及云端文档。本版修复 AI 会话自动采集投递目标下拉菜单卡顿，投递后原会话继续保留并显示回执；正式便携发布包重新构建并校验，仍未签名；
-- Windows 学生端正式下载 0.16.10：采用适合中小学生的横屏学习工作台，支持个人终端和共享终端、资料上传与屏幕采集、精选课程，以及表格等 Markdown 学情档案的正确渲染；
-- Android 学生端 0.6.16：采用横屏三列、竖屏与中等宽度两列的自适应方块卡片布局；支持个人终端和共享终端，学生可扫码或输入个人 ID 后上传资料、查看本人报告、档案、关联项目知识和精选课程；
-- Android 教师端正式下载 0.1.1：以独立紫红色应用连接主机，可检索全部学生，选择学生及其关联项目，将收集资料写入对应的主机原始资料库，并查看学情报告、成长模型、教育档案和项目知识。
-
-学生端资料入口只在当前学生范围内选择学生原始资料库或绑定项目原始资料库。共享学生终端使用扫码或个人 ID 建立单学生会话，不暴露学生名单，也不暴露主机端的档案初始化、项目管理和知识治理功能。Android 教师端则直接选择主机中的学生及其关联项目；上传结果进入 Windows 主机资料库，不向学生设备发送文件、通知或已读任务。教师端保留按学生和项目隔离的档案缓存，以便断开连接后继续查看已缓存内容。
-
-主机端“精选课程”分为“课程学习”和“课程管理”：课程学习用于打开已启用课程；课程管理向已激活的专业版、机构版和平台版开放。“机构精选课程”由本机四字段表单或 Excel 导入，只下发给本机构学生；“平台精选课程”由平台版用相同四字段形成平台课程包，供其他主机导入。平台版 License 是唯一发布权限，课程包只保留版本、文件 SHA-256 和完整性校验，不配置课程发布密钥。课程链接优先使用 HTTPS，也兼容目录中明确登记域名的 HTTP；金榜学霸旧 HTTPS 地址会自动迁移为其实际可用的 HTTP 地址。主机课程视图随侧栏折叠实时重排，并提供全屏学习。第三方页面仍在受限浏览容器中打开，页面顶部显示“待开始”采集条，必须先选择学生、项目和屏幕后主动开始。
-
-Windows 主机端提供“教育内容智能出版”：当前学生的学情报告和教育档案可生成 PDF、PNG 或 Markdown，支持正式报告、简明报告、成长要点、彩色和黑白模板，并可在输出前编辑派生草稿。默认“忠实原文”不调用 Agent；可选“Agent 智能提炼”要求每条结论携带可核对的原文摘录和来源章节，校验不通过时自动回退到忠实原文稿。卡片式输出使用 9:16 手机比例并按内容密度自动排版，不反向修改原始报告、教育档案、成长模型或知识资产。
-
-两台完整 Windows 主机可在“系统设置 → 知识协作”建立角色中立的协作关系，定向发布项目、交换任务，并按授权范围查询本机或远程知识。教育管家问答采用本地优先、局域网优先、Tailscale 回退和带时间离线快照；团队范围查询由“允许本机团队知识查询”和“允许远程协作团队知识查询”两个长期策略控制。用户也可对当前学生一次授权，自动采集 Codex、QClaw、WorkBuddy、OpenClaw、Claude Code、Hermes 此后新产生的当前会话；系统不读取授权前历史、系统提示、密钥或其他聊天，未自动接入的应用可通过对话资料箱粘贴、导入文件或公开分享链接。
-
-知识协作不会默认双向同步学生原始资料。项目原始资料使用“发布项目”，其他原始资料使用明确上传或投递；自动档案通道仅面向已确认知识、成长模型、已发布报告和最新完整教育档案，并且只在双方存在唯一的一对一学生 ID 映射时运行。用户可按学生暂停或立即同步；映射不明确时系统停止写入，不按姓名猜测。团队查询和明确对话投递已经完成双机真机验证；QClaw 远程知识路由与运行期间档案自动更新仍按执行看板保留受控复测门禁。
-
-当前操作手册见 `docs/delivery/Windows主机版操作手册.md`、`docs/delivery/Windows学生终端操作手册.md`、`docs/delivery/Android学生终端操作手册.md` 和 `docs/delivery/Android教师终端操作手册.md`。
-
-0.19.5 发布仅更新 Windows 主机版；其他端版本不随主机递增。正式下载入口为 https://www.greatbg.com/education/download.html，已发布到迁移后的青岛实例 `i-m5e6r68cl11nbh2y0o6z`；发布及核验记录见 `docs/delivery/Windows-0.19.5-正式发布记录-2026-10-01.md`。
-
-## 第一版定位
-
-- 不嵌入 QClaw 和 Obsidian。
-- 不绕过 QClaw 登录。
-- App 负责收集学生信息、生成档案模板、生成 QClaw 初始化指令、打开外部应用。
-- QClaw 负责创建 Agent 和每日定时资料消化任务。
-- Obsidian 负责查看学生学情档案。
 
 ## 本地运行
 

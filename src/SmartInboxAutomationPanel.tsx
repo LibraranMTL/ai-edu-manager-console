@@ -5,12 +5,12 @@ type Target = { studentId: string; type: 'student' | 'project'; id: string; cate
 type Group = { id: string; studentId: string; sourceName: string; reason: string; total: number;
   target: Target | null; actions: string[]; examples: { id: string; name: string; message: string }[] };
 type Entry = { id: string; name: string; eligible: boolean; state: string; reason?: string; message?: string; currentStatus?: string };
-type Job = { businessResult?: string; target?: Target; targetStudentId?: string; action?: string; id: string; type: string; status: string; total: number; page?: number; entries?: Entry[];
+type Job = { humanItems?: { id: string; name: string; reason: string; message: string }[]; businessResult?: string; target?: Target; targetStudentId?: string; action?: string; id: string; type: string; status: string; total: number; page?: number; entries?: Entry[];
   counts: Record<string, number>; previewCounts?: Record<string, number>; expiresAt: string };
 type LearnedRule = { version: number; id: string; studentId: string; identifier?: string; directory?: string; state?: string;
   count: number; active: boolean; suspended?: boolean; observations?: unknown[] };
 const reasonNames: Record<string, string> = { student_conflict: '确认资料主体', student_unknown: '确认学生',
-  no_candidate: '项目待匹配', classification_review: '分类待确认', execution_unknown: '核对执行结果',
+  no_candidate: '项目待匹配', technical_wait: '技术等待／自动恢复', classification_review: '分类待确认', execution_unknown: '核对执行结果',
   receipt_review: '核对投递结果', original_missing: '原件失效', internal_task: '系统会话', learning_review: '学习规则纠正后的复核' };
 const jobNames: Record<string, string> = { preview: '待确认', running: '自动处理中', paused: '已暂停', complete: '已完成' };
 
@@ -94,7 +94,8 @@ export function SmartInboxAutomationPanel({ api, studentId, students, projects }
     </section> : null}
     {jobs.filter(job => job.status !== 'preview').map(job => <section className="material-source-panel" key={job.id}>
       <strong>{job.type === 'backlog' ? '历史积压' : '问题组'} · {job.status === 'complete' ? job.businessResult === 'settled' ? '全部完成' : job.businessResult === 'processing' ? '已恢复处理中' : '本轮结束，仍有待处理' : jobNames[job.status] || job.status} · {job.total} 项</strong>
-      <p>等待 {job.counts.pending}，处理中 {job.counts.processing}，已投递 {job.counts.delivered}，已回收 {job.counts.ignored}，技术等待 {job.counts.technicalWaiting || 0}，业务待确认 {job.counts.review}，跳过 {job.counts.skipped}，失败 {job.counts.failed}。</p>
+      <p>等待 {job.counts.pending}，处理中 {job.counts.processing}，已投递 {job.counts.delivered}，已回收 {job.counts.ignored}，技术等待 {job.counts.technicalWaiting || 0}，来源不可用 {job.counts.sourceUnavailable || 0}，需人工确认 {job.counts.review}，跳过 {job.counts.skipped}，失败 {job.counts.failed}。</p>
+      <div aria-label="本批次需人工确认">{job.counts.review ? <><strong>需人工确认 {job.counts.review} 项</strong><ul>{job.humanItems?.map(item => <li key={item.id}>{item.name} · {reasonNames[item.reason] || "需要决定"} · {item.message}</li>)}</ul>{job.counts.review > 25 ? <p>其余事项可在问题组中查看。</p> : null}</> : <p>本批次当前无需人工确认。</p>}</div>
       <div className="actions"><button disabled={busy} onClick={() => void run(async () => { setExcluded(new Set()); setPreview(await call<Job>('batchDetail', { id: job.id })); })}>逐项结果</button>
         {['running', 'paused'].includes(job.status) ? <button disabled={busy} onClick={() => void run(async () => { await call('controlBatch', { id: job.id, action: job.status === 'paused' ? 'resume' : 'pause' }); })}>{job.status === 'paused' ? '继续' : '暂停'}</button> : null}</div>
     </section>)}

@@ -26,6 +26,29 @@ function parseRoutingResult(raw) {
   const text = raw.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1');
   try { return JSON.parse(text); } catch { throw Object.assign(Error('分类结果不是有效JSON'), { code: 'ROUTING_JSON_INVALID' }); }
 }
+// Credentials are not routing evidence. Keep originals and fingerprints intact;
+// sanitize only the outbound model request, including retained context strings.
+function redactRoutingText(value) {
+  let count = 0;
+  const replace = (...args) => { count++; return args[1] + '[凭据已隐藏]'; };
+  const text = String(value).replace(/(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
+    () => { count++; return '[私钥已隐藏]'; })
+    .replace(/((?:登录密码|管理员密码|管理密码|授权密码|激活码|兑换码|购买码|password|passwd|api[_ -]?key|access[_ -]?token|client[_ -]?secret|secret)[^\r\n:：=]{0,24}[:：=][ \t*]*(?:\r?\n[ \t]*){0,3}(?:```[a-z]*[ \t]*\r?\n)?[ \t"'`]*)([a-z0-9+\/_.=-]{8,})(?=[ \t"'`]*(?:\r?\n|$|[,，。;}]))/gim, replace)
+    .replace(/(\bAuthorization\s*:\s*Bearer\s+)([a-z0-9+\/_.=-]{8,})/gi, replace)
+    .replace(/\bsk-[a-z0-9_-]{16,}\b/gi, () => { count++; return '[凭据已隐藏]'; });
+  return { text, count };
+}
+function prepareRoutingInput(text, context) {
+  const body = redactRoutingText(readableContent(text).text);
+  let count = body.count;
+  const sanitize = value => {
+    if (typeof value === 'string') { const result = redactRoutingText(value); count += result.count; return result.text; }
+    if (Array.isArray(value)) return value.map(sanitize);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitize(child)]));
+    return value;
+  };
+  return { text: body.text, context: sanitize(context), redactions: count, policyVersion: 'routing-privacy-v1' };
+}
 // Only deterministic, fully readable content can authorize recycling. A model
 // assessment, extraction failure or missing project candidate cannot do so.
 function assessContent({ text = '', name = '', size, sourceType, truncated, blocked }) {
@@ -43,4 +66,4 @@ function assessContent({ text = '', name = '', size, sourceType, truncated, bloc
   if (users.length && users.every(m => typeof m.content === 'string' && (test.test(m.content) || legacyTest.test(m.content)))) return { action: 'recycle', reason: 'capture_probe' };
   return { action: 'classify', reason: 'normal_content' };
 }
-module.exports = { readableContent, quoteExists, parseRoutingResult, assessContent };
+module.exports = { readableContent, quoteExists, parseRoutingResult, assessContent, redactRoutingText, prepareRoutingInput };

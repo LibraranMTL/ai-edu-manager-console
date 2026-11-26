@@ -99,6 +99,34 @@ function request(f) {
       assetId: f.conversationAsset.id }] });
 }
 
+test('single conversation delivery never scans unrelated project contents and still enforces target scope', async t => {
+  const f = await fixture(t);
+  f.scope.readProjects = () => { throw Error('unrelated projects must not be read or hashed'); };
+  f.scope.normalizeProject = () => { throw Error('full project scans are not scope checks'); };
+  const delivered = JSON.parse(await f.scope.deliverConversationMaterials(f.student.id, request(f)));
+  assert.equal(delivered.ok, true, delivered.message);
+  f.currentProject().studentIds = ['someone-else'];
+  assert.equal(JSON.parse(await f.scope.deliverConversationMaterials(f.student.id, request(f))).ok, false);
+  f.currentProject().studentIds = [f.student.id]; f.currentProject().status = 'archived';
+  assert.equal(JSON.parse(await f.scope.deliverConversationMaterials(f.student.id, request(f))).ok, false);
+  assert.equal(f.deliveries().deliveries.length, 1);
+});
+
+test('project-scoped conversation resolution reads only selected project metadata and preserves student boundary', async t => {
+  const f = await fixture(t);
+  f.scope.readProjects = () => { throw Error('unrelated digest scan'); };
+  f.scope.normalizeProject = () => { throw Error('unrelated digest scan'); };
+  f.scope.conversationImportLocation = () => ({ indexPath: 'synthetic-index', indexFallback: {} });
+  f.scope.projectConversationGovernanceDir = () => f.root;
+  f.scope.readJsonFile = file => file === 'synthetic-index'
+    ? { imports: [{ assetId: f.conversationAsset.id }] } : f.conversationAsset;
+  bind(f.scope, 'resolveConversationInboxAsset');
+  const source = { sourceScopeType: 'project', sourceScopeId: f.project.id, assetId: f.conversationAsset.id };
+  assert.equal(f.scope.resolveConversationInboxAsset(f.student, source).asset.id, f.conversationAsset.id);
+  assert.equal(f.scope.resolveConversationInboxAsset({ id: 'foreign-student' }, source), null);
+  assert.equal(f.scope.resolveConversationInboxAsset(f.student, { ...source, sourceScopeId: 'foreign-project' }), null);
+});
+
 test('trusted cross-student intake resolves original capture scope and records one target receipt', async t => {
   const f = await fixture(t), targetStudent = { id: 'student-2', name: 'Target', rawPath: path.join(f.root, 'target-raw') };
   await fs.mkdir(targetStudent.rawPath);

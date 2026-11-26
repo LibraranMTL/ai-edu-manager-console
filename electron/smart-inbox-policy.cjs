@@ -1,6 +1,10 @@
 'use strict';
 const crypto = require('node:crypto');
-const ROUTING_POLICY_VERSION = 'smart-inbox-routing-v7';
+const ROUTING_POLICY_VERSION = 'smart-inbox-routing-v8';
+// Local decision improvements do not buy a fresh model-call budget.
+const ANALYSIS_CONTRACT_VERSION = 'smart-inbox-routing-v7';
+const TECHNICAL_WAIT_REASONS = ['classification_invalid', 'extraction_incomplete', 'routing_verification_incomplete', 'analysis_budget_exhausted'];
+const isTechnicalWait = item => !item.originalMissing && TECHNICAL_WAIT_REASONS.includes(item.reasonCode);
 const DEFAULT_SCHEDULE = Object.freeze({ mode: 'daily', time: '20:00', weekday: 1, minutes: 1440 });
 const EXTRACTABLE = new Set(['.txt', '.md', '.csv', '.docx', '.xlsx', '.pptx', '.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp']);
 const digest = value => crypto.createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -205,6 +209,19 @@ function validateSuggestion(result, context, text) {
   try { return validateSuggestionInput(result, context, text); }
   catch (error) { if (!error.code) error.code = 'ROUTING_FIELDS_INVALID'; throw error; }
 }
+function validateSourceBoundSuggestion(result, context, text, sourceBound = false) {
+  try { return validateSuggestion(result, context, text); }
+  catch (error) {
+    const value = require('./smart-inbox-content.cjs').parseRoutingResult(result), assessment = value?.assessment;
+    // Source authorization already fixes ownership. Discard an unsupported
+    // model subject claim; never synthesize a quote, change the host student,
+    // repair candidate evidence, or forgive a foreign subject/project.
+    if (!sourceBound || error.code !== 'ROUTING_QUOTE_MISMATCH' || !assessment
+      || assessment.studentId !== context.studentId || !require('./smart-inbox-content.cjs').quoteExists(text, assessment.evidence)
+      || require('./smart-inbox-content.cjs').quoteExists(text, assessment.subjectEvidence)) throw error;
+    return validateSuggestion({ ...value, assessment: { ...assessment, studentId: '', subjectEvidence: '' } }, context, text);
+  }
+}
 function validateSuggestionInput(result, context, text) {
   result = require('./smart-inbox-content.cjs').parseRoutingResult(result);
   // With no candidate and no claimed subject, provider commentary is not
@@ -271,6 +288,53 @@ function verifiedCoverage(assessment, projects) {
   return Boolean(assessment && assessment.score >= .85 && assessment.evidence.trim().length >= 12
     && projects.every(project => assessment.checkedProjectIds.includes(project.id)));
 }
+// A literal, distinctive product name in readable content can resolve a project
+// even in continuous Chinese prose. Generic Chinese fragments remain recall
+// hints. Check the whole authorized scope, including overlapping product names.
+function projectIdentityEvidence(text, projects, { allowProductAbbreviation = false } = {}) {
+  const body = require('./smart-inbox-content.cjs').readableContent(text).text;
+  const hits = projects.flatMap(project => {
+    const names = [project.name, ...(project.aliases || [])].filter(Boolean).flatMap(name => {
+      const value = String(name).trim();
+      const base = value.replace(/项目$/, '');
+      return [{ name: value }, { name: base }, ...(allowProductAbbreviation && /^AI\s*[\p{Script=Han}]{4,}$/iu.test(base)
+        ? [{ name: base.replace(/^AI\s*/i, ''), abbreviated: true }] : [])];
+    });
+    const hit = names.find(({ name, abbreviated }) => (abbreviated || name.length >= 5 && /[a-z]/i.test(name)) && /\p{Script=Han}/u.test(name)
+      && new RegExp(`(^|[^a-zA-Z0-9_-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-zA-Z0-9_-])`, 'u').test(body));
+    return hit ? [{ projectId: project.id, evidence: hit.name, abbreviated: Boolean(hit.abbreviated) }] : [];
+  });
+  if (hits.length !== 1) return null;
+  const hit = hits[0];
+  const competingIdentityIds = projects.filter(project => project.id !== hit.projectId && [project.name, ...(project.aliases || [])]
+    .some(name => String(name || '').includes(hit.evidence))).map(project => project.id);
+  if (competingIdentityIds.length && !hit.abbreviated) return null;
+  return { ...hit, competingIdentityIds };
+}
+// Only results revalidated for the current content/context may be supplied.
+// Missing fields can reuse real earlier evidence; no checked IDs are invented.
+function mergeVerifiedRouting(stages, projects) {
+  if (!stages.length) return { suggestion: null, coverage: false, reusedStages: [] };
+  const latest = stages.at(-1), first = latest.result.candidates[0];
+  const key = c => c ? `${c.studentId}:${c.type}:${c.id}` : '';
+  const compatible = stages.filter(stage => key(stage.result.candidates[0]) === key(first)
+    && !stage.result.conflict && stage.result.assessment
+    && stage.result.assessment.score >= .85 && stage.result.assessment.evidence.trim().length >= 12
+    && !stage.result.assessment.competingProjectIds.length && stage.result.assessment.kind !== 'unknown');
+  let assessment = latest.result.assessment;
+  const authoritative = latest.purpose === 'competition_review' && verifiedCoverage(assessment, projects);
+  const incompatible = !authoritative && stages.some(stage => stage.result.conflict
+    || stage.result.candidates[0] && key(stage.result.candidates[0]) !== key(first)
+    || stage.result.assessment?.competingProjectIds.length);
+  if (!incompatible && compatible.length && (!assessment || compatible.every(stage => stage.result.assessment.kind === assessment.kind))) {
+    const base = assessment || compatible.at(-1).result.assessment;
+    assessment = { ...base, checkedProjectIds: [...new Set(compatible.flatMap(stage => stage.result.assessment.checkedProjectIds))] };
+  }
+  const suggestion = { ...latest.result, ...(assessment ? { assessment } : {}),
+    ...(incompatible ? { conflict: true } : {}) };
+  return { suggestion, coverage: !incompatible && verifiedCoverage(assessment, projects),
+    reusedStages: incompatible ? [] : compatible.map(stage => stage.purpose) };
+}
 function automaticTarget({ source, item, context, text, suggestion, rules = [], routingV2Enabled = true,
   classificationAttempted = true }) {
   if (!source.automatic || item.manualLocked || item.truncated || item.extractionBlocked || item.originalMissing
@@ -333,11 +397,12 @@ function automaticTarget({ source, item, context, text, suggestion, rules = [], 
   }
   const [first, second] = suggestion?.candidates || [];
   const conflictResolution = suggestion?.conflict === true;
-  if (conflictResolution || (second && first && first.type === 'project' && second.type === 'project' && first.score - second.score < .10)) return null;
+  if (conflictResolution || (second && first && first.type === 'project' && second.type === 'project'
+    && first.id !== second.id && first.score - second.score < .10)) return null;
   const configuredMinimum = confidenceThreshold(source.confidenceThreshold ?? .85);
   if (first?.type === 'student' && first.studentId === source.studentId && first.score >= configuredMinimum
     && (!second || first.score - second.score >= .10)
-    && first.evidence && text.includes(first.evidence)) {
+    && first.evidence && require('./smart-inbox-content.cjs').quoteExists(text, first.evidence)) {
     if (suggestion.assessment && (suggestion.assessment.kind !== 'learning'
       || suggestion.assessment.competingProjectIds.length || suggestion.assessment.studentId !== source.studentId)) return null;
     return { target: target(first), basis: 'student_raw_fallback', resolutionBasis: 'student_raw_fallback',
@@ -349,7 +414,7 @@ function automaticTarget({ source, item, context, text, suggestion, rules = [], 
   const confidentCategory = first?.score >= configuredMinimum && first.score - (second?.score || 0) >= .10;
   if (!first || first.type !== 'project'
     || first.score < minimum
-    || !first.evidence || !text.includes(first.evidence) || !context.projects.some(p => p.id === first.id)) return null;
+    || !first.evidence || !require('./smart-inbox-content.cjs').quoteExists(text, first.evidence) || !context.projects.some(p => p.id === first.id)) return null;
   if (explicit.length && !explicit.some(project => project.id === first.id)) return null;
   const exact = explicit.length === 1 && identifiers(first.evidence, context.projects).some(p => p.id === first.id);
   // Semantic routing requires a substantive quotation, not a filename or a one-word guess.
@@ -383,4 +448,4 @@ const ROUTING_SCHEMA = { type: 'object', additionalProperties: false, required: 
     },
   } },
 } };
-module.exports = { normalizeLegacyRoutingResult, learnedRuleMatches, ROUTING_POLICY_VERSION, DEFAULT_SCHEDULE, EXTRACTABLE, digest, schedule, nextRun, target, sameTarget, studentScopeMatches, identifiers, validateUserRule, matchUserRules, selectRoutingCandidates, boundedRoutingContext, validateSuggestion, validateAssessment, verifiedCoverage, automaticTarget, confidenceThreshold, ROUTING_SCHEMA };
+module.exports = { normalizeLegacyRoutingResult, learnedRuleMatches, ROUTING_POLICY_VERSION, ANALYSIS_CONTRACT_VERSION, TECHNICAL_WAIT_REASONS, isTechnicalWait, projectIdentityEvidence, mergeVerifiedRouting, validateSourceBoundSuggestion, DEFAULT_SCHEDULE, EXTRACTABLE, digest, schedule, nextRun, target, sameTarget, studentScopeMatches, identifiers, validateUserRule, matchUserRules, selectRoutingCandidates, boundedRoutingContext, validateSuggestion, validateAssessment, verifiedCoverage, automaticTarget, confidenceThreshold, ROUTING_SCHEMA };

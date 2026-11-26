@@ -175,7 +175,11 @@ test('web manuals are synchronized to the current product workflows', () => {
   const androidTeacher = read(path.join('release', '网站文件', 'android-teacher-manual.html'));
   const androidStandalone = read(path.join('release', '网站文件', 'android-standalone-manual.html'));
 
-  assert.match(windowsStudent, new RegExp(`配套主机：Windows 主机 ${publicManifest.windowsVersionName.replaceAll('.', '\\.')}`, 'u'));
+  const declaredHost = read(path.join('docs', 'delivery', 'Windows学生终端操作手册.md')).match(/配套主机：Windows 主机 (\d+\.\d+\.\d+)/)[1];
+  assert.match(windowsStudent, new RegExp(`配套主机：Windows 主机 ${declaredHost.replaceAll('.', '\\.')}`, 'u'));
+  const hostParts = declaredHost.split('.').map(Number), formalParts = publicManifest.windowsVersionName.split('.').map(Number);
+  const firstDifference = hostParts.findIndex((part, index) => part !== formalParts[index]);
+  assert.ok(firstDifference === -1 || hostParts[firstDifference] < formalParts[firstDifference], 'manual cannot require a future unreleased host');
   assert.match(androidStudent, /配套主机：Windows\s+主机端需开启学生终端协作服务/u);
   assert.match(androidStudent, new RegExp(`适用版本：Android 学生端 ${publicManifest.tabletTerminalVersionName.replaceAll('.', '\\.')}（versionCode ${publicManifest.tabletTerminalVersionCode}）`, 'u'));
   assert.match(androidStudent, /拍照\s*\/\s*上传图片或文件/u);
@@ -186,9 +190,9 @@ test('web manuals are synchronized to the current product workflows', () => {
   assert.match(androidTeacher, /在主机暂时不可连接时仍可从缓存查看/u);
   assert.match(
     androidStandalone,
-    new RegExp(`正式版 ${publicManifest.standaloneVersionName.replaceAll('.', '\\.')}`, 'u'),
+    new RegExp(`适用版本：Android 单机版 ${publicManifest.standaloneVersionName.replaceAll('.', '\\.')}`, 'u'),
   );
-  assert.match(androidStandalone, /单机版不依赖 Windows 主机/u);
+  assert.match(androidStandalone, /单机版[^<。\n]{0,80}不依赖\s*Windows\s*主机/u);
   for (const manual of [windowsStudent, androidStudent, androidTeacher]) {
     assert.match(manual, /android-teacher-manual\.html/u);
     assert.match(manual, /android-standalone-manual\.html/u);

@@ -145,3 +145,16 @@ test('main process routes CLI Agent launch and automatic retry through shared pe
   assert.match(launch, /deferTaskForAdapter\(task, adapterId/);
   assert.match(launch, /releaseHeavyPermit\(\)/);
 });
+
+test('local intake bypasses Agent cooldown while preserving pressure and active work limits', () => {
+  let clock = 1000;
+  const gate = new CaptureHeavyWorkGate({ minLocalAgentGapMs: 30000, now: () => clock });
+  gate.tryAcquire({ kind: 'agent_classification', studentId: 'a' })();
+  assert.equal(gate.tryAcquire({ kind: 'agent_classification', studentId: 'a' }), null);
+  assert.equal(gate.tryAcquire({ kind: 'inbox_local', studentId: 'a', snapshot: { captureActive: true } }), null);
+  const local = gate.tryAcquire({ kind: 'inbox_local', studentId: 'a' });
+  assert.equal(typeof local, 'function');
+  assert.equal(gate.tryAcquire({ kind: 'inbox_local', studentId: 'b' }), null);
+  local();
+  assert.equal(gate.tryAcquire({ kind: 'agent_classification', studentId: 'a' }), null);
+});

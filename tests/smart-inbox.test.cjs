@@ -5,9 +5,55 @@ const path = require('node:path');
 const os = require('node:os');
 const { createSmartInbox, reasonGroup } = require('../electron/smart-inbox.cjs');
 const P = require('../electron/smart-inbox-policy.cjs');
+const Content = require('../electron/smart-inbox-content.cjs');
 const context = { studentId: 'student-a', projects: [{ id: 'project-physics', name: '物理', studentIds: ['student-a', 'student-b'], categories: [{ categoryId: 'notes', name: '记录' }] }, { id: 'project-biology', name: '生物', studentIds: ['student-a'], categories: [] }] };
 const target = { studentId: 'student-a', type: 'project', id: 'project-physics', categoryId: '' };
 const suggestion = (text = 'project-physics') => ({ candidates: [{ ...target, score: .98, evidence: text, reason: '正文含明确项目编号' }], sensitive: false, conflict: false, reason: '建议物理项目' });
+test('v8 reuses verified assessment across stages without inventing project coverage', () => {
+  const assessment = { kind: 'project', studentId: 'student-a', evidence: '有充分正文证据的物理项目实验记录', subjectEvidence: '', score: .95,
+    tags: ['实验'], checkedProjectIds: ['project-physics'], competingProjectIds: [] };
+  const recall = { ...suggestion(), assessment };
+  const classified = { ...suggestion(), assessment: { ...assessment, checkedProjectIds: ['project-biology'] } };
+  const merged = P.mergeVerifiedRouting([{ purpose: 'candidate_recall', result: recall }, { purpose: 'classification', result: classified }], context.projects);
+  assert.equal(merged.coverage, true);
+  const missing = P.mergeVerifiedRouting([{ purpose: 'candidate_recall', result: recall }, { purpose: 'classification', result: suggestion() }], context.projects);
+  assert.equal(missing.suggestion.assessment.kind, 'project'); assert.equal(missing.coverage, false);
+  assert.deepEqual(missing.suggestion.assessment.checkedProjectIds, ['project-physics']);
+  const weak = P.mergeVerifiedRouting([{ purpose: 'candidate_recall', result: { ...recall, assessment: { ...assessment, score: .50 } } },
+    { purpose: 'classification', result: classified }], context.projects);
+  assert.equal(weak.coverage, false, 'low-confidence assessment cannot supply missing coverage');
+  const competing = P.mergeVerifiedRouting([{ purpose: 'candidate_recall', result: recall },
+    { purpose: 'classification', result: { ...suggestion(), candidates: [{ ...suggestion().candidates[0], id: 'project-biology' }] } }], context.projects);
+  assert.equal(competing.suggestion.conflict, true); assert.equal(competing.coverage, false);
+});
+test('v8 distinctive product identity resolves Chinese prose but overlapping names and metadata cannot', () => {
+  const projects = [{ id: 'edu', name: 'AI教育管家项目' }, { id: 'health', name: 'AI健康管家项目' }];
+  assert.equal(P.projectIdentityEvidence('讨论AI教育管家的Windows部署和NAS备份。', projects).projectId, 'edu');
+  assert.equal(P.projectIdentityEvidence('AI教育管家与AI健康管家的共同设计。', projects), null);
+  assert.equal(P.projectIdentityEvidence('AI教育管家', [...projects, { id: 'copy', name: 'AI教育管家项目' }]), null);
+  assert.equal(P.projectIdentityEvidence(JSON.stringify({ schema: 'edu-manager.agent-conversation-submission.v1', title: 'AI教育管家',
+    messages: [{ role: 'user', content: '无关话题' }] }), projects), null);
+});
+test('v8 uncertain categories within one project deliver provisionally to its inbox', () => {
+  const value = suggestion('这是足够长的物理实验资料逐字引用证据');
+  value.candidates = [{ ...value.candidates[0], categoryId: 'notes', score: .95 }, { ...value.candidates[0], categoryId: '', score: .94 }];
+  const result = P.automaticTarget({ source: { automatic: true, studentId: 'student-a' }, item: {}, context,
+    text: '这是足够长的物理实验资料逐字引用证据，以及足够长的补充说明，用于确保完整正文满足可核验要求。', suggestion: value });
+  assert.equal(result.target.id, 'project-physics'); assert.equal(result.target.categoryId, ''); assert.equal(result.provisional, true);
+});
+test('v8 source-bound repair discards unsupported subject commentary without inventing ownership or quotes', () => {
+  const text = '正文中真实存在的项目设计与开发内容，足够支持可核验的项目归集。';
+  const value = { ...suggestion('正文中真实存在的项目设计与开发内容'), assessment: { kind: 'project', studentId: 'student-a',
+    evidence: '正文中真实存在的项目设计与开发内容', subjectEvidence: '模型概括的主体而非原文', score: .95,
+    tags: [], checkedProjectIds: ['project-physics'], competingProjectIds: [] } };
+  assert.throws(() => P.validateSuggestion(value, context, text), { code: 'ROUTING_QUOTE_MISMATCH' });
+  const repaired = P.validateSourceBoundSuggestion(value, context, text, true);
+  assert.equal(repaired.assessment.studentId, ''); assert.equal(repaired.assessment.subjectEvidence, '');
+  assert.equal(repaired.candidates[0].studentId, 'student-a');
+  assert.throws(() => P.validateSourceBoundSuggestion(value, context, text, false));
+  assert.throws(() => P.validateSourceBoundSuggestion({ ...value, assessment: { ...value.assessment, studentId: 'foreign' } }, context, text, true));
+  assert.throws(() => P.validateSourceBoundSuggestion({ ...value, candidates: [{ ...value.candidates[0], evidence: '补造的证据' }] }, context, text, true));
+});
 test('reason groups preserve unknown execution priority and classify legacy reviews for display', () => {
   assert.equal(reasonGroup({ status: 'execution_unknown', studentId: '', message: '没有足够的本机证据' }), 'execution_unknown');
   assert.equal(reasonGroup({ status: 'delivery_reconcile', studentId: 'student-a' }), 'receipt_review');
@@ -57,6 +103,138 @@ async function fixture(t, overrides = {}) {
   const write = (name, text = '教育实验记录：project-physics。') => fs.writeFile(path.join(source, name), text);
   return { dir, source, destination, directory, calls, host, engine, add, scan, write };
 }
+
+test('v8 legacy exhausted review reuses matching stored stages in trial and automatic delivery with zero new calls', async t => {
+  const text = '讨论教育管家的Windows与NAS部署架构，需要保留数据库和原始学习资料，按项目设计开发流程管理。';
+  const project = { id: 'p-edu', name: 'AI教育管家项目', studentIds: ['student-a'], categories: [] };
+  const projects = [project, { id: 'competing-edu', name: '科创教育管家', studentIds: ['student-a'], categories: [] },
+    ...Array.from({ length: 8 }, (_, n) => ({ id: `other-${n}`, name: `其他${n}`, studentIds: ['student-a'], categories: [] }))];
+  let modelCalls = 0;
+  const f = await fixture(t, { automaticTriage: false,
+    context: async (studentId, options = {}) => ({ studentId, projects: options.mode === 'details' ? projects.filter(p => options.projectIds.includes(p.id)) : projects }),
+    validateTarget: async value => { assert.equal(value.id, project.id); return value; },
+    classify: async ({ context: c }) => {
+      modelCalls++;
+      const result = { candidates: [{ studentId: 'student-a', type: 'project', id: project.id, categoryId: '', score: .90,
+        evidence: 'Windows与NAS部署架构，需要保留数据库和原始学习资料', reason: '项目设计资料' }], sensitive: false, conflict: false, reason: '项目归属明确' };
+      return c.purpose === 'candidate_recall' ? { ...result, assessment: { kind: 'project', studentId: 'student-a',
+        evidence: result.candidates[0].evidence, subjectEvidence: '', score: .92, tags: ['部署'], checkedProjectIds: [project.id, 'competing-edu'], competingProjectIds: [] } } : result;
+    } });
+  const source = await f.add(); await f.write('deployment.txt', text); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0]; assert.equal(row.status, 'review'); await f.engine.close();
+  const file = path.join(f.directory, 'items', `${row.id}.json`), record = JSON.parse(await fs.readFile(file));
+  record.analysisWork.calls = 3; delete record.routingEvidence; record.reasonCode = 'classification_review';
+  await fs.writeFile(file, JSON.stringify(record));
+  await fs.writeFile(path.join(f.directory, 'analysis-budgets', `${record.analysisWork.key}.json`), JSON.stringify({ calls: 3 }));
+  f.host.automaticTriage = true;
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  const trial = await restored.previewBacklog({ itemIds: [row.id] });
+  assert.equal(trial.results[0].suggestedAction, 'deliver', trial.results[0].reason);
+  assert.equal(modelCalls, 2); assert.equal(f.calls.deliver, 0);
+  await restored.tick(); assert.equal((await restored.detail(row.id)).status, 'delivered');
+  assert.equal(modelCalls, 2); assert.equal(f.calls.deliver, 1);
+  assert.equal((await restored.detail(row.id)).analysisWork.calls, 3);
+  await restored.tick(); assert.equal(f.calls.deliver, 1);
+});
+
+test('v8 a late source-bound result releases technical waiting without any new classifier call', async t => {
+  const text = '这是一份包含充分实验记录与研究过程的普通资料，可以逐字核验正文，但是没有具体项目名称。';
+  const project = { id: 'p-topic', name: '主题项目', studentIds: ['student-a'], categories: [] };
+  const projects = [project, ...Array.from({ length: 6 }, (_, n) => ({ id: `late-other-${n}`, name: `其他主题${n}`, studentIds: ['student-a'], categories: [] }))];
+  let calls = 0, recallContext, time = Date.now();
+  const result = { candidates: [{ studentId: 'student-a', type: 'project', id: project.id, categoryId: '', score: .95,
+    evidence: '包含充分实验记录与研究过程的普通资料', reason: '主题匹配' }], sensitive: false, conflict: false, reason: '资料主题匹配' };
+  const f = await fixture(t, { automaticTriage: false, now: () => time,
+    context: async (studentId, options = {}) => ({ studentId, projects: options.mode === 'details' ? projects.filter(p => options.projectIds.includes(p.id)) : projects }),
+    validateTarget: async value => value,
+    classify: async ({ context: c }) => { calls++; if (c.purpose === 'candidate_recall') recallContext = c; return result; } });
+  const source = await f.add(); await f.write('late-proof.txt', text); await f.scan(source.id);
+  const row = (await f.engine.list()).rows[0]; await f.engine.close();
+  const file = path.join(f.directory, 'items', row.id + '.json'), item = JSON.parse(await fs.readFile(file));
+  item.reasonCode = 'analysis_budget_exhausted'; item.analysisWork.calls = 3;
+  item.executionHistory ||= []; item.executionHistory.push({ executionId: 'late-returned-recall', execution: { stage: 'host_committed', purpose: 'candidate_recall' } });
+  await fs.writeFile(file, JSON.stringify(item));
+  await fs.writeFile(path.join(f.directory, 'analysis-budgets', item.analysisWork.key + '.json'), JSON.stringify({ calls: 3 }));
+  f.host.automaticTriage = true;
+  const restored = createSmartInbox(f.host); t.after(() => restored.close()); await restored.init();
+  const preview = await restored.previewBatch({ type: 'backlog', studentId: 'student-a' });
+  assert.equal(preview.counts.technicalWaiting, 1); assert.equal(preview.counts.review, 0); assert.equal(preview.counts.skipped, 0);
+  await restored.tick();
+  assert.equal((await restored.detail(row.id)).status, 'review'); assert.equal(calls, 2);
+  const late = { ...result, assessment: { kind: 'project', studentId: 'student-a', evidence: result.candidates[0].evidence,
+    subjectEvidence: '无法逐字核验的模型主体说明', score: .95, tags: [], checkedProjectIds: projects.map(p => p.id), competingProjectIds: [] } };
+  await fs.writeFile(path.join(f.directory, 'raw-results/late-returned-recall.json'), JSON.stringify({ itemId: row.id,
+    studentId: item.studentId, sha256: item.fingerprint.sha256, purpose: 'candidate_recall', contextHash: P.digest(recallContext), raw: late }));
+  time += 16 * 60_000; await restored.tick();
+  assert.equal((await restored.detail(row.id)).status, 'delivered'); assert.equal(calls, 2); assert.equal(f.calls.deliver, 1);
+  await restored.tick(); assert.equal(calls, 2); assert.equal(f.calls.deliver, 1);
+});
+
+test('v8 outbound classification redacts credentials in body and context while retaining the original', async t => {
+  const secret = 'SyntheticCredential_874239-A'; let calls = 0;
+  const text = `教育实验记录：project-physics。\n授权管理工具的登录密码：\n\n\`\`\`text\n${secret}\n\`\`\`\n`;
+  const f = await fixture(t, { context: async studentId => ({ ...context, studentId, profile: { summary: `password: ${secret}` } }),
+    classify: async input => { calls++; assert.equal(input.text.includes(secret), false);
+      assert.equal(JSON.stringify(input.context).includes(secret), false);
+      assert.equal(input.validationText.includes(secret), true); return suggestion(); } });
+  const source = await f.add(); await f.write('with-credential.txt', text); await f.scan(source.id);
+  const row = (await f.engine.list({ status: 'delivered' })).rows[0]; assert.ok(row); assert.equal(calls, 1);
+  assert.equal((await fs.readFile(path.join(f.source, 'with-credential.txt'), 'utf8')), text);
+  assert.equal((await f.engine.detail(row.id)).routingPrivacy.redactions, 2);
+  assert.equal(Content.redactRoutingText('Windows主机版本：0.24.4；资料正常').count, 0);
+  const key = '-----BEGIN PRIVATE KEY-----\nsynthetic-private-key\n-----END PRIVATE KEY-----';
+  assert.equal(Content.redactRoutingText(key).text.includes('synthetic-private-key'), false);
+  assert.equal(Content.redactRoutingText('Authorization: Bearer SyntheticBearer_123456').text.includes('SyntheticBearer_123456'), false);
+});
+
+for (const cooling of [false, true]) test(`live fairness prioritizes a verified local result during agent cooling=${cooling}`, async t => {
+  const f = await fixture(t, { processingTurnBudgetMs: 20 });
+  const source = await f.add({ automatic: false });
+  await f.write('slow.txt', 'slow project-physics'); await f.write('ready.txt', 'ready project-physics');
+  await f.scan(source.id); await f.engine.updateSource({ ...source, automatic: true }); await f.engine.close();
+  const saved = [];
+  for (const file of await fs.readdir(path.join(f.directory, 'items'))) {
+    const record = JSON.parse(await fs.readFile(path.join(f.directory, 'items', file), 'utf8'));
+    saved.push(record); await fs.unlink(path.join(f.directory, 'items', file));
+  }
+  const slow = saved.find(i => i.name === 'slow.txt');
+  for (const record of saved) {
+    record.id = record.name === 'slow.txt' ? 'a-slow' : 'z-ready';
+    const oldSnapshot = record.snapshotPath;
+    record.snapshotPath = path.join(f.directory, 'snapshots', record.id, record.name);
+    await fs.mkdir(path.dirname(record.snapshotPath), { recursive: true }); await fs.copyFile(oldSnapshot || path.join(f.source, record.name), record.snapshotPath);
+    record.status = 'pending'; record.automationEligible = true;
+    if (record.name === 'slow.txt') record.analysisWork.stages = {};
+    await fs.writeFile(path.join(f.directory, 'items', record.id + '.json'), JSON.stringify(record));
+  }
+  for (const file of await fs.readdir(path.join(f.directory, 'extractions'))) {
+    const cached = JSON.parse(await fs.readFile(path.join(f.directory, 'extractions', file), 'utf8'));
+    if (cached.sha256 === slow.fingerprint.sha256) await fs.unlink(path.join(f.directory, 'extractions', file));
+  }
+  const events = [], deliver = f.host.deliver; let calls = 0;
+  f.host.deliver = async (...args) => { events.push(`deliver:${args[2].name}`); await new Promise(r => setTimeout(r, 30)); return deliver(...args); };
+  f.host.classify = async () => { calls++; events.push('model:slow'); await new Promise(r => setTimeout(r, 40)); return suggestion(); };
+  let clock = 1000;
+  if (cooling) {
+    const { CaptureHeavyWorkGate } = require('../electron/capture-heavy-work-gate.cjs');
+    const gate = new CaptureHeavyWorkGate({ minLocalAgentGapMs: 30000, minStudentGapMs: 600000, now: () => clock });
+    gate.tryAcquire({ kind: 'agent_classification', studentId: 'student-a' })();
+    f.host.acquire = () => gate.tryAcquire({ kind: 'agent_classification', studentId: 'student-a' });
+    f.host.acquireLocal = () => gate.tryAcquire({ kind: 'inbox_local', studentId: 'student-a' });
+  }
+  const engine = createSmartInbox(f.host); t.after(() => engine.close()); await engine.init();
+  await engine.tick();
+  const readyAfter = await engine.detail('z-ready');
+  assert.equal(readyAfter.status, 'delivered', JSON.stringify({ message: readyAfter.message, reason: readyAfter.reasonCode, calls: readyAfter.analysisWork?.calls }));
+  assert.equal((await engine.detail('a-slow')).status, 'pending');
+  assert.deepEqual(events, ['deliver:ready.txt']); assert.equal(calls, 0);
+  if (cooling) {
+    await engine.tick(); assert.equal(f.calls.deliver, 1); assert.equal(calls, 0);
+    clock += 30001;
+  }
+  await engine.tick(); assert.equal((await engine.detail('a-slow')).status, 'delivered'); assert.equal(calls, 1);
+  await engine.tick(); assert.equal(events.filter(e => e === 'deliver:ready.txt').length, 1);
+});
 
 test('r7 classification budget survives source renaming, new item names and restart', async t => {
   let calls = 0;
@@ -1246,14 +1424,15 @@ test('paused batch survives a tick and resumes the same immutable preview', asyn
   assert.equal(f.calls.deliver, 0);
   await f.engine.controlBatch({ id: preview.id, action: 'resume' }); await f.engine.tick(); assert.equal(f.calls.deliver, 1);
 });
-test('missing original can be ignored as a group without bypassing delivery validation', async t => {
+test('missing original stays recoverable without entering human confirmation groups', async t => {
   const f = await fixture(t), source = await f.add({ automatic: false }); await f.write('missing-group.txt'); await f.scan(source.id);
   await fs.unlink(path.join(f.source, 'missing-group.txt')); await f.scan(source.id);
-  const group = (await f.engine.groups()).groups[0]; assert.deepEqual(group.actions, ['ignore']);
-  const preview = await f.engine.previewBatch({ type: 'group', groupId: group.id, action: 'ignore' });
-  await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
+  assert.equal((await f.engine.groups()).groups.length, 0);
+  const row = (await f.engine.list()).rows[0];
+  await f.engine.decide({ requestId: 'explicit-ignore', action: 'ignore', items: [row] });
   assert.equal((await f.engine.list({ status: 'ignored' })).total, 1); assert.equal(f.calls.deliver, 0);
 });
+
 test('a failed delivery is reported separately from skipped entries and does not stop the group', async t => {
   const f = await fixture(t), source = await f.add({ automatic: false });
   const deliver = f.host.deliver;
@@ -1266,7 +1445,7 @@ test('a failed delivery is reported separately from skipped entries and does not
   const preview = await f.engine.previewBatch({ type: 'group', groupId: group.id, action: 'accept' });
   await f.engine.controlBatch({ id: preview.id, action: 'start', confirmed: true }); await f.engine.tick();
   const result = await f.engine.batchDetail({ id: preview.id });
-  assert.equal(result.counts.failed, 1); assert.equal(result.counts.delivered, 1); assert.equal(result.counts.skipped, 0);
+  assert.equal(result.counts.technicalWaiting, 1); assert.equal(result.counts.delivered, 1); assert.equal(result.counts.skipped, 0);
 });
 test('a rule changed while the classifier runs invalidates the old decision before delivery', async t => {
   let f, source, updated = false;
@@ -1343,4 +1522,21 @@ test('interrupted association withdrawal is reconciled before another reroute, w
   const reconciled = await f.engine.decide({ requestId: 'resume', action: 'reconcile', items: [{ id: pending.id, revision: pending.revision }] });
   assert.equal(reconciled.results[0].ok, true); assert.equal(f.calls.deliver, 2); assert.equal(withdrawals, 2);
   const final = (await f.engine.list({ status: 'delivered' })).rows[0]; assert.match(final.reason, /保留/);
+});
+const { needsHuman } = require('../electron/smart-inbox-batches.cjs');
+test('only actual ownership or retention decisions enter human confirmation', () => {
+  for (const item of [
+    { status: 'execution_unknown', reconcileAttempts: 3 },
+    { status: 'delivery_reconcile', reconcileAttempts: 3 },
+    { status: 'review', studentId: 'a', originalMissing: true },
+    { status: 'review', studentId: 'a', reasonCode: 'classification_invalid', proposedTarget: {} },
+    { status: 'review', studentId: 'a', reasonCode: 'no_candidate' },
+    { status: 'review', studentId: 'a' },
+  ]) assert.equal(needsHuman(item), false, JSON.stringify(item));
+  for (const item of [
+    { status: 'review', studentId: '' },
+    { status: 'review', studentId: 'a', reasonCode: 'student_conflict' },
+    { status: 'review', studentId: 'a', suggestion: { conflict: true } },
+    { status: 'review', studentId: 'a', reasonCode: 'retention_decision' },
+  ]) assert.equal(needsHuman(item), true, JSON.stringify(item));
 });

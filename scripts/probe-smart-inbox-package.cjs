@@ -19,7 +19,7 @@ app.whenReady().then(async () => {
   const checks = [], hashes = {}, cleanupWarnings = []; let error, service, taskHost;
   try {
     Object.defineProperty(process, 'resourcesPath', { value: resources });
-    for (const name of ['smart-inbox-content.cjs', 'smart-inbox-cleanup.cjs', 'smart-inbox.cjs', 'smart-inbox-batches.cjs', 'smart-inbox-conversation.cjs', 'smart-inbox-policy.cjs', 'smart-inbox-agent.cjs', 'smart-inbox-host.cjs', 'smart-inbox-associations.cjs', 'agent-invocation-service.cjs', 'agent-authorization-detection.cjs', 'task-circuit-probe.cjs', 'task-executor-circuit.cjs', 'project-material-extract.cjs', 'workbuddy-runtime.cjs', 'workbuddy-controlled.cjs', 'workbuddy-profile-gate.cjs', 'workbuddy-cli-manager.cjs', 'classification-auth.cjs', 'student-controlled-material.cjs', 'project-material-host.cjs', 'project-materials.cjs', 'main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'download-inbox.cjs', 'project-material-classification.cjs', 'task-protocol.cjs', 'task-store-service.cjs', 'task-progress-buffer.cjs', 'task-io-client.cjs', 'task-io-worker.cjs', 'task-store-writer.cjs', 'task-read-model.cjs']) {
+    for (const name of ['capture-heavy-work-gate.cjs', 'smart-inbox-content.cjs', 'smart-inbox-cleanup.cjs', 'smart-inbox.cjs', 'smart-inbox-batches.cjs', 'smart-inbox-conversation.cjs', 'smart-inbox-policy.cjs', 'smart-inbox-agent.cjs', 'smart-inbox-host.cjs', 'smart-inbox-associations.cjs', 'agent-invocation-service.cjs', 'agent-authorization-detection.cjs', 'task-circuit-probe.cjs', 'task-executor-circuit.cjs', 'project-material-extract.cjs', 'workbuddy-runtime.cjs', 'workbuddy-controlled.cjs', 'workbuddy-profile-gate.cjs', 'workbuddy-cli-manager.cjs', 'classification-auth.cjs', 'student-controlled-material.cjs', 'project-material-host.cjs', 'project-materials.cjs', 'main.cjs', 'preload.cjs', 'capture-inbox.cjs', 'download-inbox.cjs', 'project-material-classification.cjs', 'task-protocol.cjs', 'task-store-service.cjs', 'task-progress-buffer.cjs', 'task-io-client.cjs', 'task-io-worker.cjs', 'task-store-writer.cjs', 'task-read-model.cjs']) {
       const packaged = await fs.readFile(path.join(runtime, name));
       const staged = await fs.readFile(path.join(stagedRuntime, name));
       assert.equal(Buffer.compare(packaged, staged), 0, `${name} differs from audited staged runtime (${packaged.length} != ${staged.length})`);
@@ -29,6 +29,17 @@ app.whenReady().then(async () => {
     assert.equal(Buffer.compare(legacyModule, await fs.readFile(path.join(stagedRuntime, 'smart-inbox-legacy.cjs'))), 0);
     hashes['smart-inbox-legacy.cjs'] = crypto.createHash('sha256').update(legacyModule).digest('hex');
     checks.push('packaged intake modules including the shared WorkBuddy profile gate, unified legacy bridge and IPC/import dependencies exactly match the audited staged runtime');
+    const content = require(path.join(runtime, 'smart-inbox-content.cjs'));
+    const policy = require(path.join(runtime, 'smart-inbox-policy.cjs'));
+    assert.equal(policy.ROUTING_POLICY_VERSION, 'smart-inbox-routing-v8');
+    assert.equal(policy.ANALYSIS_CONTRACT_VERSION, 'smart-inbox-routing-v7');
+    const syntheticSecret = 'SyntheticPackageCredential_98251';
+    const privateBody = `正文项目设计证据保持完整。\n登录密码：\n\n\`\`\`text\n${syntheticSecret}\n\`\`\``;
+    const safeInput = content.prepareRoutingInput(privateBody, { previousSuggestion: { reason: `password: ${syntheticSecret}` } });
+    assert.equal(JSON.stringify(safeInput).includes(syntheticSecret), false); assert.equal(safeInput.redactions, 2);
+    assert.ok(content.quoteExists(privateBody, '正文项目设计证据保持完整。'));
+    assert.equal(policy.isTechnicalWait({ reasonCode: 'analysis_budget_exhausted' }), true);
+    checks.push('ASAR v8 preserves the existing model-call budget contract, groups technical waits and redacts credentials in outbound text and retained context');
     const invocation = require(path.join(runtime, 'agent-invocation-service.cjs'));
     const packagedStatus = invocation.agentProfileStatus({ providerId: 'codex', profile: invocation.CLASSIFICATION_PROFILE,
       capability: { available: true, authorized: true, exePath: 'synthetic-codex', label: 'Codex' }, circuit: { phase: 'authorization' } });
@@ -130,6 +141,57 @@ app.whenReady().then(async () => {
     assert.equal(preview.status, 'preview'); assert.equal(agentCalls, 2); assert.equal(deliveries, 2);
     assert.equal((await service.engine.batchDetail({ id: preview.id })).id, preview.id);
     checks.push('ASAR problem groups and durable backlog preview are available without model calls or delivery');
+    // New isolated project document, real extraction and registry, durable
+    // classification first, then restart under the actual Agent cooldown gate.
+    const { createSmartInbox } = require(path.join(runtime, 'smart-inbox.cjs'));
+    const { CaptureHeavyWorkGate } = require(path.join(runtime, 'capture-heavy-work-gate.cjs'));
+    const sampleRoot = path.join(root, 'cooldown-sample'); await fs.mkdir(sampleRoot);
+    const sampleFile = path.join(sampleRoot, 'new-project-deployment.md');
+    const sampleText = 'Synthetic项目的Windows主机部署设计记录。本文记录资料收件箱本地投递、回执登记和部署验证步骤，并保留完整原始依据供项目归集使用。';
+    await fs.writeFile(sampleFile, sampleText);
+    let modelCalls = 0, imports = 0, clock = 1000;
+    const gate = new CaptureHeavyWorkGate({ minLocalAgentGapMs: 30000, now: () => clock });
+    const host = { directory: path.join(root, 'cooldown-state'), stableAgeMs: 0, automaticAllowed: () => true,
+      forbiddenRoots: () => [destination], context: async id => ({ studentId: id, projects: [{ ...p, categories: [] }] }),
+      validateTarget: async value => { assert.equal(value.studentId, student.id); assert.equal(value.id, p.id); return value; },
+      acquire: () => gate.tryAcquire({ kind: 'agent_classification', studentId: student.id }),
+      acquireLocal: () => gate.tryAcquire({ kind: 'inbox_local', studentId: student.id }),
+      extract: async item => ({ text: await fs.readFile(item.snapshotPath, 'utf8'), warnings: [] }),
+      classify: async () => { modelCalls++; return { candidates: [{ studentId: student.id, type: 'project', id: p.id,
+        categoryId: '', score: .98, evidence: sampleText, reason: '新资料明确项目设计内容' }], sensitive: false, conflict: false, reason: '' }; },
+      deliver: async (snapshot, _, item, checkpoint) => {
+        imports++; const destinationPath = path.join(destination, '收件箱', item.id + '.md');
+        await checkpoint({ destinationPath }); await fs.copyFile(snapshot, destinationPath);
+        const registered = await materialHost.registerTerminalUpload(destinationPath, { eventId: item.id, studentId: student.id,
+          sourceType: 'host_material_source', intakeAssociation: { itemId: item.id, operationId: item.operationId } });
+        return { ok: true, recordId: registered.material.materialId, path: destinationPath };
+      }, events: async () => [] };
+    let sampleEngine = createSmartInbox(host);
+    const sampleSource = await sampleEngine.updateSource({ folder: sampleRoot, studentId: student.id, enabled: true, automatic: false });
+    await sampleEngine.requestScan(sampleSource.id); await sampleEngine.tick();
+    const sampleRow = (await sampleEngine.list()).rows[0];
+    await sampleEngine.updateSource({ ...sampleSource, automatic: true }); await sampleEngine.close();
+    const sampleItemFile = path.join(host.directory, 'items', sampleRow.id + '.json');
+    const savedSample = JSON.parse(await fs.readFile(sampleItemFile, 'utf8'));
+    assert.equal(savedSample.execution.stage, 'host_committed');
+    Object.assign(savedSample, { status: 'pending', automationEligible: true });
+    await fs.writeFile(sampleItemFile, JSON.stringify(savedSample));
+    assert.equal(host.acquire(), null, 'actual Agent gate remains in cooldown');
+    const callsBefore = modelCalls, importStart = performance.now(); let worstLagMs = 0, lastPulse = performance.now();
+    const pulse = setInterval(() => { const at = performance.now(); worstLagMs = Math.max(worstLagMs, at - lastPulse - 25); lastPulse = at; }, 25);
+    try {
+      sampleEngine = createSmartInbox(host); await sampleEngine.init(); await sampleEngine.tick();
+      const result = await sampleEngine.detail(sampleRow.id);
+      assert.equal(result.status, 'delivered', result.message); assert.equal(imports, 1); assert.equal(modelCalls, callsBefore);
+      await sampleEngine.tick(); await sampleEngine.requestScan(sampleSource.id); await sampleEngine.tick();
+      assert.equal(imports, 1); assert.equal(modelCalls, callsBefore);
+      const registry = await materialHost.store.read();
+      assert.equal(registry.materials.filter(m => m.materialId === result.receipt.recordId).length, 1);
+      assert.equal((await require(path.join(runtime, 'project-materials.cjs')).hashStableFile(result.receipt.path)).sha256, result.fingerprint.sha256);
+      checks.push({ check: 'new same-class document delivered during actual Agent cooldown, restart and rescan without duplicate registration',
+        modelCallsBefore: callsBefore, additionalModelCalls: modelCalls - callsBefore, imports, registrations: 1,
+        elapsedMs: Math.round(performance.now() - importStart), mainEventLoopWorstLagMs: Math.round(worstLagMs) });
+    } finally { clearInterval(pulse); await sampleEngine.close(); }
     const { createIntakeAssociations } = require(path.join(runtime, 'smart-inbox-associations.cjs'));
     const { hashStableFile } = require(path.join(runtime, 'project-materials.cjs'));
     const projects = ['old-project', 'new-project'].map(id => ({ id, name: id, studentIds: [student.id], materialStorageMode: 'workspace-v1',

@@ -36,6 +36,7 @@ function reasonGroup(item) {
   if (item.status === 'execution_unknown') return 'execution_unknown';
   if (['delivery_reconcile', 'archive_pending', 'delivering'].includes(item.status)) return 'receipt_review';
   if (item.originalMissing) return 'original_missing';
+  if (P.isTechnicalWait(item)) return 'technical_wait';
   if (item.reasonCode === 'student_conflict' || /多个学生|涉及其他学生/.test(message)) return 'student_conflict';
   if (!item.studentId) return 'student_unknown';
   if (item.conversationKind === 'internal_task') return 'internal_task';
@@ -52,6 +53,7 @@ function createSmartInbox(host) {
   const root = host.directory, sources = new Map(), items = new Map(), rules = new Map(), userRules = new Map();
   const cacheFiles = new Map(), itemOperations = new Map();
   const previews = new Map(), batches = new Map();
+  const localProbeCursors = new Map();
   let readIndex = null;
   let cacheBytes = 0;
   let loaded, active = null, closed = false, blocked = '', turn = 0, commands = Promise.resolve();
@@ -611,6 +613,91 @@ function createSmartInbox(host) {
     const subject = require('./smart-inbox-conversation.cjs').explicitStudentSubject(text, host.studentHints?.() || []);
     return subject && host.automaticAllowed(subject.studentId) ? subject : null;
   }
+  async function analysisKey(item, source, lightContext, runtime) {
+    return P.digest({ sourceId: source.id, sourcePolicy: [source.studentId, source.target, source.confidenceThreshold, source.autoAttributeShared],
+      sha256: item.fingerprint.sha256, runtime, extractor: host.extractorVersion || 'v1', lightContext,
+      rules: userRuleVersion(), policy: P.ANALYSIS_CONTRACT_VERSION, ownership: item.ownershipBasis,
+      learned: [...rules.values()].filter(rule => rule.sourceId === source.id)
+        .map(rule => [rule.id, rule.active, rule.suspended, rule.target]).sort((a, b) => a[0].localeCompare(b[0])) });
+  }
+  // Reconstruct and compare each stage's original authorized context. A saved
+  // suggestion by itself is not enough: content, runtime, rules and scope must
+  // still match. This path is shared by dry-run and real processing.
+  async function storedRouting(item, source, lightContext, text, fingerprint) {
+    if (!item.analysisWork?.stages || !fingerprint || fingerprint.sha256 !== item.fingerprint?.sha256
+      || item.studentId !== lightContext.studentId || item.manualLocked || item.receipt
+      || item.execution?.stage !== 'host_committed') return null;
+    const runtime = await host.recoveryIdentity?.(item.studentId) || '';
+    const sameWork = item.analysisWork.key === await analysisKey(item, source, lightContext, runtime);
+    const currentIdentity = P.projectIdentityEvidence(text, lightContext.projects, { allowProductAbbreviation: true });
+    if (!sameWork && !currentIdentity) return null;
+    const conversation = inspectConversation(text, host.studentHints?.() || [], item.studentId);
+    if (conversation.studentConflict) return null;
+    const work = item.analysisWork.stages, candidateIds = item.routingScope?.candidateIds || [];
+    if (candidateIds.length > 5) return null;
+    const details = candidateIds.length ? await host.context(item.studentId, { mode: 'details', projectIds: candidateIds }) : lightContext;
+    const bounded = P.boundedRoutingContext(details, text), stages = [], repairedExecutions = [];
+    const storedStages = Object.entries(work).map(([purpose, value]) => ({ ...value, purpose }));
+    for (const executionId of [item.executionId, ...(item.executionHistory || []).map(h => h.executionId)].filter(Boolean)) {
+      const saved = await read(fileFor('raw-results', executionId), null);
+      if (saved?.itemId === item.id && saved.studentId === item.studentId && saved.sha256 === fingerprint.sha256
+        && ['candidate_recall', 'classification', 'competition_review'].includes(saved.purpose)) storedStages.push({ ...saved, executionId });
+    }
+    const order = ['candidate_recall', 'classification', 'competition_review'];
+    storedStages.sort((a, b) => order.indexOf(a.purpose) - order.indexOf(b.purpose));
+    let previousSuggestion;
+    for (const cached of storedStages) {
+      const purpose = cached.purpose;
+      let context;
+      if (purpose === 'candidate_recall') {
+        const hints = await host.workspaceCandidates?.(item.studentId, [conversation.workspacePath, conversation.repositoryPath]) || [];
+        context = { ...lightContext, projects: lightContext.projects.map(project => ({ ...project,
+          summary: String(project.summary || '').slice(0, 300), categories: [], materialTerms: [], knowledgeTerms: [], workspaceHint: hints.includes(project.id) })) };
+      } else if (purpose === 'classification') context = bounded.context;
+      else context = { ...lightContext, projects: lightContext.projects.map(project => ({ ...project,
+        categories: bounded.context?.projects.find(p => p.id === project.id)?.categories || [], summary: String(project.summary || '').slice(0, 300) })),
+        candidateDetails: bounded.context?.projects.slice(0, 5) || [], previousSuggestion };
+      if (!context) continue;
+      const agentContext = { ...context, purpose, ownership: { studentId: item.studentId, basis: item.ownershipBasis,
+        studentConflict: conversation.studentConflict, mentionedStudentIds: conversation.studentIds || [] },
+        confirmedExamples: [...rules.values()].filter(rule => rule.sourceId === source.id && rule.studentId === item.studentId).slice(-8),
+        extractionLimitations: item.extractionWarnings || [] };
+      const hashes = [P.digest(agentContext)], lastFailure = item.executionHistory?.at(-1);
+      if (lastFailure?.execution?.purpose === purpose && /^ROUTING_[A-Z_]+$/.test(lastFailure.blockReason?.validationCode || ''))
+        hashes.push(P.digest({ ...agentContext, validationFeedback: { code: lastFailure.blockReason.validationCode,
+          instruction: '纠正上次合同错误。证据必须逐字摘自所给可读正文；不确定主体时studentId和subjectEvidence填空，不创造ID或引用。' } }));
+      // Changed ranking/profile metadata invalidates old coverage. It need not
+      // discard a grounded project suggestion when a unique literal identity
+      // independently resolves that project in the CURRENT authorized scope.
+      if (!hashes.includes(cached.contextHash) && !currentIdentity) continue;
+      try {
+        previousSuggestion = P.validateSourceBoundSuggestion(cached.raw ?? cached.result, agentContext, text,
+          source.studentId === item.studentId && P.studentScopeMatches(item, source));
+        stages.push({ purpose, result: previousSuggestion });
+        if (cached.raw) repairedExecutions.push(cached.executionId);
+      } catch { /* A stale or ungrounded saved result never authorizes delivery. */ }
+    }
+    if (!stages.length) return null;
+    const merged = P.mergeVerifiedRouting(stages, lightContext.projects), first = merged.suggestion.candidates[0];
+    const identity = currentIdentity;
+    const agreeingStages = stages.filter(stage => stage.result.candidates[0]?.id === first?.id
+      && stage.result.candidates[0]?.score >= (source.confidenceThreshold || .85)
+      && stage.result.candidates[0]?.evidence.trim().length >= 12);
+    const identityEvidence = identity && first?.type === 'project' && first.id === identity.projectId
+      && (!identity.abbreviated || new Set(agreeingStages.map(stage => stage.purpose)).size >= 2)
+      && identity.competingIdentityIds.every(id => merged.suggestion.assessment?.checkedProjectIds.includes(id))
+      && !merged.suggestion.conflict && first.score >= (source.confidenceThreshold || .85)
+      && first.evidence.trim().length >= 12 && Content.quoteExists(text, first.evidence)
+      && (!merged.suggestion.assessment || merged.suggestion.assessment.kind === 'project'
+        && merged.suggestion.assessment.score >= (source.confidenceThreshold || .85)
+        && !merged.suggestion.assessment.competingProjectIds.length) ? identity : null;
+    const coverage = Boolean(identityEvidence) || sameWork && (merged.coverage || lightContext.projects.length <= 5);
+    const context = { ...lightContext, projects: lightContext.projects.map(project => ({ ...project,
+      categories: bounded.context?.projects.find(p => p.id === project.id)?.categories || [] })) };
+    const decision = coverage ? P.automaticTarget({ source: { ...source, studentId: item.studentId }, item, context, text,
+      suggestion: merged.suggestion, rules: host.learnedRulesEnabled === false ? [] : [...rules.values()] }) : null;
+    return { ...merged, coverage, identityEvidence, decision, repairedExecutions };
+  }
   async function analyze(item, source, remainingBytes = 200 * 1024) {
     if (!P.studentScopeMatches(item, source)) return save('items', { ...item, status: 'review', reasonCode: 'student_conflict', message: '来源学生已修改，历史资料须人工核对' });
     if (!item.studentId && (!source.automatic || !source.autoAttributeShared)) return save('items', { ...item, status: 'review', message: '共享来源未开启自动投递；可确认学生后由 AI 分类。' });
@@ -687,11 +774,19 @@ function createSmartInbox(host) {
       else if (matches.length > 1) return review('相同文件指纹已关联多个项目，请确认。', 'multiple_fingerprint_targets');
     }
     const decisionRuleVersion = userRuleVersion();
-    const workKey = P.digest({ sourceId: source.id, sourcePolicy: [source.studentId, source.target, source.confidenceThreshold, source.autoAttributeShared], sha256: item.fingerprint.sha256,
-      runtime: !decision ? await host.recoveryIdentity?.(item.studentId) || '' : '', extractor: host.extractorVersion || 'v1',
-      lightContext, rules: decisionRuleVersion, policy: P.ROUTING_POLICY_VERSION, ownership: item.ownershipBasis,
-      learned: [...rules.values()].filter(rule => rule.sourceId === source.id).map(rule => [rule.id, rule.active, rule.suspended, rule.target]).sort((a, b) => a[0].localeCompare(b[0])) });
-    if (item.analysisWork?.key !== workKey) item = await save('items', { ...item, analysisWork: { key: workKey, calls: 0, stages: {} } });
+    const workKey = await analysisKey(item, source, lightContext, !decision ? await host.recoveryIdentity?.(item.studentId) || '' : '');
+    const stored = !decision && triageEnabled ? await storedRouting(item, source, lightContext, data.text, item.fingerprint) : null;
+    if (stored?.decision) {
+      decision = stored.decision; suggestion = stored.suggestion; stats.cacheHits++;
+      if (stored.repairedExecutions.length) item = await save('items', { ...item,
+        localResultRepair: { executionIds: stored.repairedExecutions, at: iso(), basis: 'source_bound_subject_discarded' } });
+    }
+    if (item.analysisWork?.key !== workKey && !stored?.decision) item = await save('items', { ...item, analysisWork: { key: workKey, calls: 0, stages: {} } });
+    const verifiedStages = [];
+    let budgetExhausted = false;
+    const rememberStage = (purpose, result) => { verifiedStages.push({ purpose, result }); return result; };
+    const validateResult = (result, context) => P.validateSourceBoundSuggestion(result, context, data.text,
+      source.studentId === item.studentId && !conversation.studentConflict && P.studentScopeMatches(item, source));
     async function classifyStage(purpose, context) {
       const agentContext = { ...context, purpose, ownership: { studentId: item.studentId, basis: item.ownershipBasis,
         studentConflict: conversation.studentConflict, mentionedStudentIds: conversation.studentIds || [] },
@@ -704,41 +799,45 @@ function createSmartInbox(host) {
       const contextHash = P.digest(agentContext), cached = item.analysisWork.stages[purpose];
       const validationContext = { ...agentContext }; delete validationContext.validationFeedback;
       const scopeContextHash = P.digest(validationContext);
-      if (cached?.contextHash === contextHash) { stats.cacheHits++; return P.validateSuggestion(cached.result, agentContext, data.text); }
+      if (cached?.contextHash === contextHash || cached?.contextHash === scopeContextHash) { stats.cacheHits++; return rememberStage(purpose, validateResult(cached.result, agentContext)); }
       const recovered = item.recoveredDecision;
       if (recovered?.workKey === workKey && recovered.contextHash === contextHash && recovered.purpose === purpose) {
-        const result = P.validateSuggestion(recovered.result, agentContext, data.text);
+        const result = validateResult(recovered.result, agentContext);
         item = await save('items', { ...item, recoveredDecision: null, analysisWork: { ...item.analysisWork,
           stages: { ...item.analysisWork.stages, [purpose]: { contextHash, result } } } });
-        stats.cacheHits++; return result;
+        stats.cacheHits++; return rememberStage(purpose, result);
       }
       const extractionCache = await read(data.cacheFile, null);
       const shared = extractionCache?.routingStages?.[purpose];
       if (shared?.contextHash === contextHash) {
-        stats.cacheHits++; return P.validateSuggestion(shared.result, agentContext, data.text);
+        stats.cacheHits++; return rememberStage(purpose, validateResult(shared.result, agentContext));
       }
       for (const executionId of [item.executionId, ...(item.executionHistory || []).slice(-3).map(h => h.executionId)].filter(Boolean)) {
         const saved = await read(fileFor('raw-results', executionId), null);
         if (!saved || saved.itemId !== item.id || saved.studentId !== item.studentId || saved.sha256 !== item.fingerprint.sha256
           || saved.contextHash !== contextHash && saved.contextHash !== scopeContextHash && saved.scopeContextHash !== scopeContextHash || saved.purpose !== purpose) continue;
         try {
-          const repaired = P.validateSuggestion(saved.raw, agentContext, data.text);
+          const repaired = validateResult(saved.raw, agentContext);
           stats.cacheHits++;
           item = await save('items', { ...item, analysisWork: { ...item.analysisWork, stages: {
             ...item.analysisWork.stages, [purpose]: { contextHash, result: repaired } } }, localResultRepair: { executionId, at: iso() } });
-          return repaired;
+          return rememberStage(purpose, repaired);
         } catch { /* Unsupported or ungrounded output still consumes the original budget. */ }
       }
       const budgetFile = fileFor('analysis-budgets', workKey), budget = await read(budgetFile, { calls: item.analysisWork.calls || 0 });
       item.analysisWork.calls = Math.max(item.analysisWork.calls, budget.calls);
-      if (item.analysisWork.calls >= 3) return null;
+      if (item.analysisWork.calls >= 3) { budgetExhausted = true; return null; }
       await writeJsonAtomic(budgetFile, { calls: item.analysisWork.calls + 1, at: iso(), studentId: item.studentId, sha256: item.fingerprint.sha256 });
       const executionId = crypto.randomUUID();
       item = await save('items', { ...item, status: 'analyzing', executionId, attempts: item.attempts + 1, blockReason: null,
         analysisWork: { ...item.analysisWork, calls: item.analysisWork.calls + 1 },
         execution: { stage: 'qualifying', purpose, contextHash, workKey, sha256: item.fingerprint.sha256, studentId: item.studentId } });
-      const result = await host.classify({ context: agentContext, text: Content.readableContent(data.text).text,
+      const outbound = Content.prepareRoutingInput(data.text, agentContext);
+      if (outbound.redactions) item = await save('items', { ...item,
+        routingPrivacy: { policyVersion: outbound.policyVersion, redactions: outbound.redactions, sourcePreserved: true } });
+      const result = await host.classify({ context: outbound.context, text: outbound.text,
         validationText: data.text, executionId, itemId: item.id,
+        allowSourceSubjectFallback: source.studentId === item.studentId && !conversation.studentConflict && P.studentScopeMatches(item, source),
         onRawResult: async raw => {
           const payload = JSON.stringify(raw);
           if (payload && Buffer.byteLength(payload) <= 200 * 1024) await writeJsonAtomic(fileFor('raw-results', executionId), {
@@ -758,7 +857,7 @@ function createSmartInbox(host) {
           item = await save('items', { ...item, execution: { ...item.execution, ...stage } });
         },
         onResult: async result => writeJsonAtomic(fileFor('decisions', executionId), { itemId: item.id, studentId: item.studentId,
-          sha256: item.fingerprint.sha256, purpose, contextHash, workKey, result: P.validateSuggestion(result, agentContext, data.text), at: iso() }),
+          sha256: item.fingerprint.sha256, purpose, contextHash, workKey, result: validateResult(result, agentContext), at: iso() }),
       }).catch(async error => {
         if (error.blockReason?.stage === 'not_sent' || item.execution?.stage === 'qualifying') {
           item = await save('items', { ...item, analysisWork: { ...item.analysisWork, calls: Math.max(0, item.analysisWork.calls - 1) } });
@@ -766,7 +865,7 @@ function createSmartInbox(host) {
         }
         throw error;
       });
-      const validated = P.validateSuggestion(result, agentContext, data.text);
+      const validated = validateResult(result, agentContext);
       await writeJsonAtomic(fileFor('decisions', executionId), { itemId: item.id, studentId: item.studentId,
         sha256: item.fingerprint.sha256, purpose, contextHash, workKey, result: validated, at: iso() });
       item = await save('items', { ...item, analysisWork: { ...item.analysisWork,
@@ -774,9 +873,10 @@ function createSmartInbox(host) {
       const currentCache = await read(data.cacheFile, null);
       if (currentCache) await putCache(data.cacheFile, { ...currentCache, routingStages: { ...(currentCache.routingStages || {}), [purpose]: { contextHash, result: validated } } });
       stats.classified++;
-      return validated;
+      return rememberStage(purpose, validated);
     }
-    let decisionContext = lightContext, coverage = lightContext.projects.length <= 5;
+    let decisionContext = lightContext, coverage = stored?.coverage || lightContext.projects.length <= 5,
+      reusedStages = stored?.reusedStages || [], identityEvidence = stored?.identityEvidence || null;
     if (!decision) {
       let selected = P.selectRoutingCandidates({ context: lightContext, text: data.text, item, ruleMatch });
       if (lightContext.projects.length > 5 && !selected.strong) {
@@ -805,6 +905,22 @@ function createSmartInbox(host) {
         coverage = selected.complete || selected.strong;
         routingScope = { ...routingScope, candidateIds, totalProjects: lightContext.projects.length, complete: coverage, strong: selected.strong };
       }
+      const reuse = P.mergeVerifiedRouting(verifiedStages, lightContext.projects);
+      if (reuse.suggestion) suggestion = reuse.suggestion;
+      coverage ||= reuse.coverage;
+      reusedStages = reuse.reusedStages;
+      const identity = P.projectIdentityEvidence(data.text, lightContext.projects, { allowProductAbbreviation: true }), first = suggestion.candidates[0];
+      const agreeingStages = verifiedStages.filter(stage => stage.result.candidates[0]?.id === first?.id
+        && stage.result.candidates[0]?.score >= (source.confidenceThreshold || .85)
+        && stage.result.candidates[0]?.evidence.trim().length >= 12);
+      if (identity && first?.type === 'project' && first.id === identity.projectId && !suggestion.conflict
+        && (!identity.abbreviated || new Set(agreeingStages.map(stage => stage.purpose)).size >= 2)
+        && identity.competingIdentityIds.every(id => suggestion.assessment?.checkedProjectIds.includes(id))
+        && first.score >= (source.confidenceThreshold || .85) && first.evidence.trim().length >= 12 && Content.quoteExists(data.text, first.evidence)
+        && (!suggestion.assessment || suggestion.assessment.kind === 'project' && suggestion.assessment.score >= (source.confidenceThreshold || .85)
+          && !suggestion.assessment.competingProjectIds.length)) {
+        coverage = true; identityEvidence = identity;
+      }
       if (triageEnabled && (!coverage || suggestion.conflict || conversation.studentConflict
         || suggestion.assessment && (suggestion.assessment.score < .85 || suggestion.assessment.kind === 'unknown'))) {
         const reviewContext = { ...lightContext, projects: lightContext.projects.map(project => ({ ...project, categories: decisionContext.projects.find(value => value.id === project.id)?.categories || [],
@@ -812,8 +928,10 @@ function createSmartInbox(host) {
         if (Buffer.byteLength(JSON.stringify(reviewContext)) <= 100 * 1024) {
           const checked = await classifyStage('competition_review', reviewContext);
           if (checked) {
-            suggestion = checked;
-            coverage = P.verifiedCoverage(checked.assessment, lightContext.projects);
+            const reviewed = P.mergeVerifiedRouting(verifiedStages, lightContext.projects);
+            suggestion = reviewed.suggestion;
+            coverage = reviewed.coverage;
+            reusedStages = reviewed.reusedStages;
             // Only category IDs from the detailed authorized context can be used.
             decisionContext = { ...reviewContext, projects: reviewContext.projects.map(project => ({ ...project,
               categories: decisionContext.projects.find(value => value.id === project.id)?.categories || [] })) };
@@ -856,7 +974,14 @@ function createSmartInbox(host) {
     if (ruleMatch.status === 'matched') await auditRule('matched_deliver', item, ruleMatch);
     const sharedUnresolved = !decision && !item.studentId && source.automatic && source.autoAttributeShared
       && !item.analysisWork.stages.competition_review;
-    item = await save('items', { ...item, status: sharedUnresolved ? 'retry' : 'review', reasonCode: decision ? '' : 'classification_review', suggestion, blockReason: null,
+    const [best, next] = suggestion.candidates;
+    const businessAmbiguity = suggestion.conflict || suggestion.assessment?.competingProjectIds.length
+      || P.identifiers(data.text, lightContext.projects).length > 1
+      || best?.type === 'project' && next?.type === 'project' && best.id !== next.id && best.score - next.score < .10;
+    const technicalWait = !decision && !businessAmbiguity && (!coverage || budgetExhausted);
+    const waitReason = budgetExhausted ? 'analysis_budget_exhausted' : 'routing_verification_incomplete';
+    item = await save('items', { ...item, status: sharedUnresolved ? 'retry' : 'review', reasonCode: decision ? '' : technicalWait ? waitReason : 'classification_review', suggestion, blockReason: null,
+      routingEvidence: { reusedStages, coveredAll: coverage, identityEvidence, policyVersion: P.ROUTING_POLICY_VERSION },
       routingWorkKey: workKey, routingScope, nextRetryAt: sharedUnresolved ? new Date(now() + 6 * 60 * 60 * 1000).toISOString() : '',
       execution: item.execution ? { ...item.execution, stage: 'host_committed' } : null,
       identifier: P.identifiers(data.text, lightContext.projects).length === 1 ? P.identifiers(data.text, lightContext.projects)[0].id : '',
@@ -870,7 +995,9 @@ function createSmartInbox(host) {
         linkedStudentIds: decision.linkedStudentIds || [decision.target.studentId], categoryDecision: decision.target.categoryId || '',
         confidence: decision.confidence ?? null, evidence: decision.evidence || '', resolutionBasis: decision.resolutionBasis || decision.basis || '',
         provisional: decision.provisional === true, policyVersion: P.ROUTING_POLICY_VERSION } : null,
-      message: sharedUnresolved ? '共享资料已进入自动暂存池，等待相关项目上下文变化。' : suggestion.reason || '请确认投递位置' });
+      message: technicalWait ? budgetExhausted ? '分析预算已用满，保留已核验结果，等待服务、上下文或晚到结果变化后自动恢复；无需人工分类。'
+        : '项目核验证据尚未完整，保留已有建议并自动恢复；无需人工分类。'
+        : sharedUnresolved ? '共享资料已进入自动暂存池，等待相关项目上下文变化。' : suggestion.reason || '请确认投递位置' });
     if (decision && source.enabled && source.automatic && host.automaticAllowed(item.studentId)) item = await deliverItem(item, source, decision.target, true);
     return { ...item, textBytes };
   }
@@ -940,6 +1067,21 @@ function createSmartInbox(host) {
     let checked = 0;
     for (const item of items.values()) {
       const source = sources.get(item.sourceId);
+      const technical = item.status === 'review' && P.isTechnicalWait(item) && item.execution?.stage === 'host_committed'
+        && item.automationEligible && !item.receipt && batchMayRun(item);
+      if (technical && checked < 5 && source?.enabled && source.automatic && !source.detached && !item.manualLocked
+        && host.eventRecovery !== false && host.automaticAllowed(item.studentId) && (passiveChecks.get(item.id) || 0) <= now()) {
+        checked++; passiveChecks.set(item.id, now() + 15 * 60_000);
+        try {
+          const preview = await previewOne(item);
+          if (preview.eligible && preview.suggestedAction === 'deliver') await withItemLock(item.id, async () => {
+            const current = items.get(item.id);
+            if (current?.revision === item.revision && current.status === item.status) await save('items', {
+              ...current, status: 'pending', nextRetryAt: '', message: '已找到可复用的核验证据，自动续接；不新增分类调用。' });
+          });
+        } catch { /* Missing originals or invalid proofs remain retained. */ }
+        continue;
+      }
       if (checked >= 5 || !['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(item.status)
         || Number(item.reconcileAttempts || 0) < 3 || !source?.enabled || source.detached || item.manualLocked
         || host.eventRecovery === false || !host.automaticAllowed(item.studentId)
@@ -983,6 +1125,44 @@ function createSmartInbox(host) {
         && Number(value.reconcileAttempts || 0) < 3
         && (!value.nextReconcileAt || Date.parse(value.nextReconcileAt) <= now());
       let pendingAvailable = [...items.values()].some(i => inScope(i) && ['pending', 'retry'].includes(i.status) && due(i));
+      // This lane cannot call analyze or an executor. Preview and commit both
+      // revalidate the original and current authorization under the item lock.
+      if (pendingAvailable && source.automatic && host.acquireLocal) {
+        const candidates = [...items.values()].filter(i => inScope(i) && due(i)
+          && ['pending', 'retry'].includes(i.status) && i.automationEligible && !i.manualLocked && !i.receipt
+          && i.execution?.stage === 'host_committed' && i.analysisWork?.stages);
+        const cursor = (localProbeCursors.get(id) || 0) % (candidates.length || 1);
+        const started = performance.now(); let checked = 0, delivered = 0;
+        for (; checked < Math.min(20, candidates.length) && !closed; checked++) {
+          if (performance.now() - started >= 2000 || delivered >= 5) break;
+          const value = candidates[(cursor + checked) % candidates.length];
+          const permit = await host.acquireLocal(source, manual);
+          if (!permit) break;
+          try {
+            await withItemLock(value.id, async () => {
+              const item = items.get(value.id);
+              if (!item || !inScope(item) || !['pending', 'retry'].includes(item.status)
+                || item.receipt || item.manualLocked || sources.get(id)?.revision !== source.revision) return;
+              const preview = await previewOne({ ...item, status: 'review' });
+              if (!preview.eligible || preview.suggestedAction !== 'deliver'
+                || preview.target?.type !== 'project' || preview.target.studentId !== item.studentId) return;
+              await deliverItem(item, source, preview.target, true);
+              delivered++; changed = true;
+            });
+          } catch (error) {
+            await withItemLock(value.id, async () => {
+              const item = items.get(value.id);
+              if (!item || !['pending', 'retry'].includes(item.status)) return;
+              await save('items', { ...item, status: 'retry', nextRetryAt: new Date(now() + 60_000).toISOString(),
+                message: `本地投递等待恢复：${error.message}` });
+            });
+          } finally { permit(); }
+          await yieldTurn();
+        }
+        if (candidates.length) localProbeCursors.set(id, (cursor + checked) % candidates.length);
+        if (delivered) await host.settleItems?.([...items.values()].filter(i => i.sourceId === id));
+        pendingAvailable = [...items.values()].some(i => inScope(i) && ['pending', 'retry'].includes(i.status) && due(i));
+      }
       const reconcileAvailable = [...items.values()].some(i => inScope(i) && reconcileDue(i));
       if (!pendingAvailable && !reconcileAvailable) {
         if(resumeIds&&![...items.values()].some(item=>inScope(item)&&['pending','retry'].includes(item.status)))await save('sources',{...sources.get(id),resumeItemIds:[],pendingManual:false,manualWork:false});
@@ -1018,12 +1198,12 @@ function createSmartInbox(host) {
               const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
               await save('items', { ...current, reconcileAttempts: attempts,
                 nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
-                message: attempts >= 3 ? '未找到可验证的执行结果；自动核对已暂停，请人工核对。' : '尚未找到执行结果，将自动再次核对。' });
+                message: attempts >= 3 ? '等待可验证的执行结果；后台每15分钟检查晚到证据，不重新发送。' : '尚未找到执行结果，将自动再次核对。' });
               return;
             }
             const evidence = await reconciliationEvidence(current);
             if (evidence?.notDelivered) {
-              const permit = await host.acquire(source, false); if (!permit) return;
+              const permit = await (host.acquireLocal || host.acquire).call(host, source, false); if (!permit) return;
               try { await resumeVerifiedDelivery(current, source); } finally { permit(); }
               reconciled++; changed = true; return;
             }
@@ -1032,7 +1212,7 @@ function createSmartInbox(host) {
               const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
               await save('items', { ...current, reconcileAttempts: attempts,
                 nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
-                message: attempts >= 3 ? '未找到可验证的投递回执；自动核对已暂停，请人工核对。' : '尚未找到投递回执，将自动再次核对。' });
+                message: attempts >= 3 ? '等待可验证的投递回执；后台每15分钟检查登记，不重复复制。' : '尚未找到投递回执，将自动再次核对。' });
               return;
             }
             await verifyReceipt(current, receipt);
@@ -1043,7 +1223,7 @@ function createSmartInbox(host) {
             const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
             await save('items', { ...current, reconcileAttempts: attempts,
               nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
-              message: attempts >= 3 ? `${error.message}；自动核对已暂停，请人工核对。` : error.message });
+              message: attempts >= 3 ? `${error.message}；保留执行证据，后台低频自动核验。` : error.message });
           }
         });
         await yieldTurn();
@@ -1080,7 +1260,7 @@ function createSmartInbox(host) {
               const attempts = Math.max(0, Number(current.reconcileAttempts || 0)) + 1;
               await save('items', { ...current, reconcileAttempts: attempts,
                 nextReconcileAt: attempts >= 3 ? '' : new Date(now() + Math.min(15 * 60_000, 30_000 * 2 ** (attempts - 1))).toISOString(),
-                message: attempts >= 3 ? `${error.message}；自动核对已暂停，请人工核对。` : error.message });
+                message: attempts >= 3 ? `${error.message}；保留执行证据，后台低频自动核验。` : error.message });
             }
           });
           await yieldTurn();
@@ -1091,8 +1271,27 @@ function createSmartInbox(host) {
         if (reconciled) await host.settleItems?.([...items.values()].filter(item => item.sourceId === id));
         return reconciled;
       }
-      const batchItems = [...items.values()]
-        .filter(i => inScope(i) && ['pending', 'retry'].includes(i.status) && (!i.nextRetryAt || Date.parse(i.nextRetryAt) <= now()))
+      const workQueue = [...items.values()]
+        .filter(i => inScope(i) && ['pending', 'retry'].includes(i.status) && due(i));
+      // Finished, durable classifier results can often be committed locally.
+      // Do not put them behind a whole source's slow remote calls. This only
+      // changes priority: analyze still rechecks scope, bytes and permissions.
+      const probes = source.automatic ? workQueue.filter(i => i.automationEligible && !i.manualLocked && !i.receipt
+        && i.execution?.stage === 'host_committed' && i.analysisWork?.stages) : [];
+      const ready = new Set(), probeStart = performance.now();
+      const cursor = (localProbeCursors.get(id) || 0) % (probes.length || 1);
+      let checked = 0;
+      for (; checked < Math.min(20, probes.length) && !closed; checked++) {
+        if (checked && performance.now() - probeStart >= 500) break;
+        const item = probes[(cursor + checked) % probes.length];
+        try {
+          const preview = await previewOne({ ...item, status: 'review' });
+          if (preview.eligible && preview.suggestedAction === 'deliver') ready.add(item.id);
+        } catch { /* A priority probe cannot bypass normal recovery checks. */ }
+      }
+      if (probes.length) localProbeCursors.set(id, (cursor + checked) % probes.length);
+      workQueue.sort((a, b) => Number(ready.has(b.id)) - Number(ready.has(a.id)));
+      const batchItems = workQueue
         .slice(0, 20)
         .map(i => ({ id: i.id, revision: i.revision || '', studentId: i.studentId || '',
           target: i.target || i.proposedTarget || null, sha256: i.fingerprint?.sha256 || '', attempts: Number(i.attempts || 0) }));
@@ -1101,15 +1300,19 @@ function createSmartInbox(host) {
         await save('sources', { ...sources.get(id), error: '', waitingReason: '', waitingSince: '' });
       }
       const analysisBatch = batchId || crypto.randomUUID();
+      const turnStart = performance.now(), turnBudgetMs = Math.min(5000, Math.max(10, Number(host.processingTurnBudgetMs) || 2000));
       let count = 0, budget = reconciliationBytes;
-      for (const value of items.values()) {
+      for (const value of workQueue) {
         if (count >= 20 || budget >= 200 * 1024 || closed || (!manual && !host.automaticAllowed())) break;
+        // Cooperative deadline: never interrupt an in-flight operation. Yield
+        // after its verified result so batches and other sources can progress.
+        if (count && performance.now() - turnStart >= turnBudgetMs) break;
         if (!inScope(value) || !['pending', 'retry'].includes(value.status) || (value.nextRetryAt && Date.parse(value.nextRetryAt) > now())) continue;
         if (sources.get(id)?.revision !== source.revision || (!manual && !sources.get(id)?.enabled)) break;
         count++; changed = true;
         try {
           const result = await withItemLock(value.id, async () => analyze(await save('items', { ...(items.get(value.id) || value), analysisBatch }), source, 200 * 1024 - budget));
-          if (result?.deferred) break;
+          if (result?.deferred) continue;
           budget += result?.textBytes || 0;
         }
         catch (e) {
@@ -1121,8 +1324,11 @@ function createSmartInbox(host) {
             const retry = taskRetryDecision({ ...current, attempt: current.attempts, maxAttempts: 3 }, { code: e.code, message: e.message }, { now: now(), stopConfirmed: e.stopConfirmed === true });
             const resourceRetry = e.blockReason?.category === 'resource' && e.blockReason.recoverable;
             const mayRetry = !e.blockReason && retry.autoRetry || resourceRetry && (retry.autoRetry || e.code === 'EXECUTOR_CIRCUIT_OPEN');
+            const validationFailure = !unknown && /^ROUTING_[A-Z_]+$/.test(e.code || '');
             await save('items', { ...current, status: unknown ? 'execution_unknown' : mayRetry ? 'retry' : 'review',
-              blockReason: e.blockReason || null, nextRetryAt: mayRetry ? retry.nextRetryAt || new Date(now() + 60000).toISOString() : '', message: e.message });
+              ...(validationFailure ? { reasonCode: 'classification_invalid', lastValidationError: { code: e.code, message: e.message, at: iso() } } : {}),
+              blockReason: e.blockReason || null, nextRetryAt: mayRetry ? retry.nextRetryAt || new Date(now() + 60000).toISOString() : '',
+              message: validationFailure ? `分类核验待恢复：${e.message}；资料和已核验结果保留，无需人工分类。` : e.message });
           });
         }
         await yieldTurn();
@@ -1165,7 +1371,7 @@ function createSmartInbox(host) {
         const scopeChanged = Boolean(source.projectContextHash && source.projectContextHash !== contextHash
           || source.routingConfigHash && source.routingConfigHash !== configHash);
       const needsRuntime = [...items.values()].some(row => row.sourceId === source.id && row.status === 'review'
-        && (['classification_invalid', 'extraction_incomplete'].includes(row.reasonCode) || row.blockReason?.category === 'agent'));
+        && (P.isTechnicalWait(row) || row.blockReason?.category === 'agent'));
       const runtimeIdentity = needsRuntime ? await host.recoveryIdentity?.(id) || '' : source.runtimeIdentity || '';
       const hash = P.digest([contextHash, source.revision, userRuleVersion(), P.ROUTING_POLICY_VERSION, runtimeIdentity, host.extractorVersion || 'v1',
           [...rules.values()].filter(rule => rule.sourceId === source.id).map(rule => [rule.id, rule.active, rule.suspended, rule.target]).sort((a, b) => a[0].localeCompare(b[0]))]);
@@ -1174,7 +1380,9 @@ function createSmartInbox(host) {
         for (const row of items.values()) {
           if (row.sourceId !== source.id || !row.automationEligible || row.manualLocked || row.originalMissing || !batchMayRun(row)) continue;
           const recoverable = row.blockReason?.recoverable === true && row.blockReason.category !== 'unknown';
-          const relevant = changed && (scopeChanged || ['classification_invalid', 'extraction_incomplete'].includes(row.reasonCode))
+          const localUpgrade = row.status === 'review' && row.reasonCode === 'classification_review'
+            && row.execution?.stage === 'host_committed' && row.routingEvidence?.policyVersion !== P.ROUTING_POLICY_VERSION;
+          const relevant = (localUpgrade || changed && (scopeChanged || P.isTechnicalWait(row)))
             && ['review', 'retry'].includes(row.status) && (!row.receipt || row.reassociation);
           const reassociate = source.projectContextHash && source.projectContextHash !== contextHash
             && row.status === 'delivered' && row.awaitingProject && row.target?.type === 'student';
@@ -1419,7 +1627,9 @@ function createSmartInbox(host) {
             await checkCurrent(item, source);
             await save('sources', { ...sources.get(source.id), manualWork: true });
             item = await save('items', { ...item, originalMissing: false, status: 'pending', automationEligible: true, nextRetryAt: '', revision: item.revision + 1,
-              suggestion: null, proposedTarget: null, blockReason: null, execution: null, message: '已加入分析队列；完成后请在本学生的待处理／已投递查看。' });
+              suggestion: null, proposedTarget: null, blockReason: null,
+              execution: item.execution?.stage === 'host_committed' ? item.execution : null,
+              message: '已加入分析队列；完成后请在本学生的待处理／已投递查看。' });
           } else if (request.action === 'reconcile') {
             if (item.status === 'execution_unknown') {
               const evidence = await reconciliationEvidence(item), saved = evidence?.decision;
@@ -1587,6 +1797,14 @@ function createSmartInbox(host) {
       routingV2Enabled: host.routingV2Enabled !== false, classificationAttempted: false });
     if (local) return { ...base, eligible: true, fingerprint: data.fingerprint, suggestedAction: 'deliver', target: local.target,
       reason: `本机确定性依据：${local.basis}` };
+    const stored = host.automaticTriage !== false && routingItem.automationEligible
+      ? await storedRouting(routingItem, source, context, data.text, data.fingerprint) : null;
+    if (stored?.decision) return { ...base, eligible: true, fingerprint: data.fingerprint, suggestedAction: 'deliver', target: stored.decision.target,
+      reusedStages: stored.reusedStages, identityEvidence: stored.identityEvidence, candidateComplete: stored.coverage,
+      reason: `复用已核验结果，项目归属明确${stored.decision.target.provisional ? '，细分类别暂存项目收件箱' : ''}；无需新增模型调用。` };
+    if (Number(item.analysisWork?.calls || 0) >= 3 && (P.isTechnicalWait(item) || stored && !stored.decision && !stored.suggestion.conflict))
+      return { ...base, suggestedAction: 'wait', fingerprint: data.fingerprint,
+        reason: '现有预算已用满且核验证据未完整，等待服务、上下文或晚到结果变化后自动恢复；不转人工分类。' };
     const candidates = P.selectRoutingCandidates({ context, text: data.text, item, ruleMatch: match });
     const canRecallAll = Buffer.byteLength(JSON.stringify(context)) <= 100 * 1024;
     const mayClassify = candidates.candidateIds.length || !context.projects.length || canRecallAll;
@@ -1603,14 +1821,14 @@ function createSmartInbox(host) {
     const requested = new Set((input.itemIds || []).map(String));
     const trialStudentId = String(input.studentId || '');
     const candidates = [...items.values()].filter(item => (!trialStudentId || item.studentId === trialStudentId) && (requested.size ? requested.has(item.id)
-      : item.status === 'review' && (['no_candidate', 'candidate_scope_too_large'].includes(item.reasonCode) || /项目上下文过多|候选项目过多|无法可靠缩小|没有足够的本机证据|包含敏感资料线索/.test(item.message || ''))));
+      : item.status === 'review' && (P.isTechnicalWait(item) || ['classification_review', 'no_candidate', 'candidate_scope_too_large'].includes(item.reasonCode) || /项目上下文过多|候选项目过多|无法可靠缩小|没有足够的本机证据|包含敏感资料线索/.test(item.message || ''))));
     const pageSize = 100, page = Math.max(1, Math.floor(Number(input.page) || 1));
     const results = [];
     for (const item of candidates.slice((page - 1) * pageSize, page * pageSize)) { results.push(await previewOne(item, extraRule)); await yieldTurn(); }
     const previewId = crypto.randomUUID(), expiresAt = new Date(now() + 15 * 60_000).toISOString();
     previews.set(previewId, { previewId, expiresAt, results, draftRule: Boolean(extraRule), ruleSetVersion: userRuleVersion() });
     for (const [id, preview] of previews) if (Date.parse(preview.expiresAt) <= now()) previews.delete(id);
-    const counts = results.reduce((value, result) => { const key = result.eligible ? result.suggestedAction : 'ineligible'; value[key] = (value[key] || 0) + 1; return value; }, {});
+    const counts = results.reduce((value, result) => { const key = result.suggestedAction === 'wait' ? 'wait' : result.eligible ? result.suggestedAction : 'ineligible'; value[key] = (value[key] || 0) + 1; return value; }, {});
     return { previewId, expiresAt, ruleSetVersion: userRuleVersion(), total: candidates.length, page, pageSize, counts, results };
   }
   async function applyPreview(input = {}) {
@@ -1636,7 +1854,8 @@ function createSmartInbox(host) {
             || item.fingerprint?.sha256 && item.fingerprint.sha256 !== entry.fingerprint.sha256) throw Error('原件指纹已变化');
           await save('sources', { ...source, manualWork: true });
           const saved = await save('items', { ...item, status: 'pending', revision: item.revision + 1, nextRetryAt: '',
-            suggestion: null, proposedTarget: null, blockReason: null, execution: null,
+            suggestion: null, proposedTarget: null, blockReason: null,
+            execution: item.execution?.stage === 'host_committed' ? item.execution : null,
             trialConfirmation: { previewId: preview.previewId, ruleSetVersion: preview.ruleSetVersion, at: iso() },
             message: '已按只读试算确认重新处理；正式处理仍会再次核对原件、范围、回执和规则版本。' });
           results.push({ id: entry.id, ok: true, revision: saved.revision });
@@ -1784,7 +2003,7 @@ function createSmartInbox(host) {
           switched: Boolean(i.execution.switched || i.execution.attempts?.some(a => a.providerId && a.providerId !== i.execution.providerId)) } : null,
         message: i.status === 'pending' && sources.get(i.sourceId)?.waitingReason || i.message, proposedTarget: i.proposedTarget, target: i.target,
         suggestionConflict: Boolean(i.suggestion?.conflict), candidateTargets: i.suggestion?.conflict ? (i.suggestion.candidates || []).map(({ studentId, type, id, categoryId }) => ({ studentId, type, id, categoryId })) : [],
-        reason: i.status === 'pending' ? sources.get(i.sourceId)?.waitingReason || i.message : i.originalMissing || i.extractionPartial || i.associationChange?.retained ? i.message : i.suggestion?.conflict ? i.suggestion.reason || i.message : i.suggestion?.candidates[0]?.reason || i.message, manualLocked: i.manualLocked,
+        reason: i.status === 'pending' ? sources.get(i.sourceId)?.waitingReason || i.message : P.isTechnicalWait(i) || i.originalMissing || i.extractionPartial || i.associationChange?.retained ? i.message : i.suggestion?.conflict ? i.suggestion.reason || i.message : i.suggestion?.candidates[0]?.reason || i.message, manualLocked: i.manualLocked,
         reconcileAttempts: Number(i.reconcileAttempts || 0), reconcileExhausted: ['execution_unknown', 'delivery_reconcile'].includes(i.status) && Number(i.reconcileAttempts || 0) >= 3, createdAt: i.createdAt,
       })) };
     },

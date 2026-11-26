@@ -40,13 +40,21 @@ test('isolated Windows desktop shows first run and resumes a paused guide', { sk
     pending.set(key, { resolve, reject, timer });
     socket.send(JSON.stringify({ id: key, method: 'Runtime.evaluate', params: { expression: `(async () => (${expression}))()`, awaitPromise: true, returnByValue: true } }));
   }).then(result => { if (result.exceptionDetails) throw Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text); return result.result.value; });
+  let bridgeReady = false;
+  for (let i = 0; i < 80; i++) {
+    try { bridgeReady = await evaluate('Boolean(window.AndroidBridge && window.AndroidBridge.firstRun)'); }
+    catch (error) { if (!/context.*destroyed|Cannot find context/i.test(error.message)) throw error; }
+    if (bridgeReady) break;
+    await pause(250);
+  }
+  assert.equal(bridgeReady, true, 'first-run preload bridge became ready');
   let snapshot;
   for (let i = 0; i < 80; i++) {
     snapshot = await evaluate('JSON.parse(await window.AndroidBridge.firstRun("snapshot"))');
-    if (snapshot.status !== 'waiting') break;
+    if (snapshot.status !== 'waiting' && !(snapshot.code === 'business_initializing' && snapshot.retryable === true)) break;
     await pause(500);
   }
-  assert.equal(snapshot.status, 'new');
+  assert.equal(snapshot.status, 'new', JSON.stringify(snapshot));
   let visible = false;
   for (let i = 0; i < 30; i++) {
     visible = await evaluate('document.body.innerText.includes("开始使用 AI教育管家")');

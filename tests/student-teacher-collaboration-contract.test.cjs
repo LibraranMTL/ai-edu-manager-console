@@ -86,7 +86,9 @@ test('current client sources and formal manifest remain aligned', () => {
   assert.ok([formal.windowsVersionName, nextWindowsVersion(formal.windowsVersionName)].includes(candidate.version));
   assert.equal(formal.tabletTerminalVersionName, '0.6.34');
   assert.equal(formal.teacherTerminalVersionName, '0.1.5');
-  assert.equal(formal.standaloneVersionName, '1.3.8');
+  const standaloneBuild = read('android-standalone-manager/app/build.gradle.kts');
+  assert.equal(formal.standaloneVersionName, standaloneBuild.match(/versionName\s*=\s*"([^"]+)"/)[1]);
+  assert.equal(formal.standaloneVersionCode, Number(standaloneBuild.match(/versionCode\s*=\s*(\d+)/)[1]));
 });
 
 test('teacher project knowledge is a read-only file dialog and collaboration 404 is explained', () => {

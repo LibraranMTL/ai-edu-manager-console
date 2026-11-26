@@ -151,7 +151,7 @@ function createSmartInboxHost(h) {
     eventRecovery: h.eventRecovery !== false,
     learnedRulesEnabled: h.learnedRulesEnabled !== false,
     canReuseReceipt: target => { const project = h.projects().find(p => String(p.id) === target.id); return Boolean(project && h.isWorkspace(project)); },
-    acquire: h.acquire, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch,
+    acquire: h.acquire, acquireLocal: h.acquireLocal, waitingReason: h.waitingReason, beginBatch: h.beginBatch, endBatch: h.endBatch,
     settleItems: h.settleItems, changed: h.changed, onError: h.onError,
     extractorVersion: EXTRACTOR_VERSION,
     validateTarget: async t => {

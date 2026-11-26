@@ -160,7 +160,8 @@ function createRoutingAgent({ select, route, validateRoute, circuit = () => ({ a
           const raw = await invoke(adapter, { context: input.context, text: input.text });
           resultReceived = true;
           try { await input.onRawResult?.(raw); } catch (error) { error.resultStorageFailed = true; throw error; }
-          const result = validateSuggestion(raw, input.context, input.validationText ?? input.text);
+          const result = require('./smart-inbox-policy.cjs').validateSourceBoundSuggestion(raw, input.context,
+            input.validationText ?? input.text, input.allowSourceSubjectFallback === true);
           resultValidated = true;
           await input.onResult?.(result);
           await record({ stage: 'result_validated' });

@@ -22,7 +22,7 @@ class CaptureHeavyWorkGate {
     // Classification is a bounded intake step, not a digest/report workload.
     // It still shares the single local-Agent permit, but must not impose the
     // ten-minute same-student cooldown on the task that consumes its result.
-    const studentCooldownEligible = !['agent_classification', 'agent_probe'].includes(normalizedKind);
+    const studentCooldownEligible = !['agent_classification', 'agent_probe', 'inbox_local'].includes(normalizedKind);
     const now = this.now();
     const wait = (reason = 'resource_busy', retryAfterMs = 0) => {
       this.lastBlock = { reason, retryAfterMs: Math.max(0, Number(retryAfterMs) || 0),

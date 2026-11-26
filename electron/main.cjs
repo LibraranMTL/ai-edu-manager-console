@@ -925,12 +925,12 @@ function getSmartInbox() {
         }
         return result;
       },
-      acquire(source, manual) {
+      acquire(source, manual, { localOnly = false } = {}) {
         if (!publicLicenseStatus().active || !projectArchiveRuntime.status().ready || !taskPowerRecovery.canDispatch() || taskStoreGuard.status()) return null;
         if (source.studentId && studentConversationCaptureBlocked(findStudentByKey(source.studentId))) return null;
         if (!manual && source.studentId && automaticStudentTaskBlocked({ sourceType: 'student', sourceId: source.studentId }, findStudentByKey(source.studentId))) return null;
         const waitingMs = source.waitingSince ? Math.max(0, Date.now() - Date.parse(source.waitingSince)) : 0;
-        const release = captureHeavyWorkGate.tryAcquire({ kind: 'agent_classification', studentId: source.studentId || 'shared-intake',
+        const release = captureHeavyWorkGate.tryAcquire({ kind: localOnly ? 'inbox_local' : 'agent_classification', studentId: source.studentId || 'shared-intake',
           sessionId: `intake-${source.id}`, snapshot: captureTimelineResourceSnapshot(), requestOrigin: manual ? 'user' : 'background',
           // Continuous UI use must not starve intake forever. This bypasses
           // only the foreground grace period; real CPU, memory and active-work
@@ -938,6 +938,9 @@ function getSmartInbox() {
           ignoreForegroundDelay: waitingMs >= 60_000 });
         if (!release) scheduleSmartInboxResourceRetry(captureHeavyWorkGate.blockState().retryAfterMs || 30_000);
         return release;
+      },
+      acquireLocal(source, manual) {
+        return this.acquire(source, manual, { localOnly: true });
       },
       waitingReason(source, manual) {
         if (!publicLicenseStatus().active) return '许可未激活，自动分析已暂停';
@@ -33765,10 +33768,11 @@ function resolveConversationInboxAsset(student, request) {
       ? { asset, sourceScopeType, sourceScopeId, sourceScopeName: student.name }
       : null;
   }
-  const project = readProjects().map(normalizeProject).find((item) => (
-    String(item.id) === sourceScopeId
-    && (item.studentIds || []).map(String).includes(String(student.id))
-  ));
+  // Resolving one source needs its scope, not fresh digest scans of every
+  // project's raw files. The selected original is verified by the importer.
+  const storedProject = getProjectMetadata(sourceScopeId);
+  const project = storedProject ? normalizeProjectMetadata(storedProject) : null;
+  if (!project?.studentIds?.map(String).includes(String(student.id))) return null;
   if (!project) return null;
   const asset = readJsonFile(path.join(projectConversationGovernanceDir(project), 'assets', `${assetId}.json`), null);
   return asset?.storedPath && fs.existsSync(asset.storedPath)
@@ -33889,12 +33893,12 @@ async function deliverConversationMaterials(studentId, requestJson, intakeSnapsh
       return JSON.stringify({ ok: false, message: '投递目标与当前学生不一致，未写入任何资料。' });
     }
     if (targetType === 'project') {
-      targetProject = readProjects().map(normalizeProject).find((project) => (
-        String(project.id) === targetId
-        && (project.studentIds || []).map(String).includes(String(student.id))
-        && !['sealed', 'archived'].includes(String(project.status || ''))
-      ));
-      if (!targetProject) return JSON.stringify({ ok: false, message: '所选项目未与当前学生关联或当前不可写。' });
+      const storedProject = getProjectMetadata(targetId);
+      targetProject = storedProject ? normalizeProjectMetadata(storedProject) : null;
+      if (!targetProject?.studentIds?.map(String).includes(String(student.id))
+        || ['sealed', 'archived'].includes(String(targetProject.status || ''))) {
+        return JSON.stringify({ ok: false, message: '所选项目未与当前学生关联或当前不可写。' });
+      }
       targetProject = ensureProjectWorkspace(targetProject);
       targetRoot = isWorkspaceMaterialProject(targetProject) ? targetProject.workspacePath : targetProject.rawPath;
       targetName = targetProject.name;

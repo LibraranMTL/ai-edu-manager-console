@@ -3,11 +3,13 @@ const crypto = require('node:crypto');
 const P = require('./smart-inbox-policy.cjs');
 
 function needsHuman(item) {
-  if (['classification_invalid', 'extraction_incomplete'].includes(item.reasonCode) && !item.originalMissing) return false;
+  if (P.isTechnicalWait(item)) return false;
   if (['delivered', 'ignored'].includes(item.status)) return Boolean(item.learningReview);
+  if (item.originalMissing || ['execution_unknown', 'delivery_reconcile'].includes(item.status)) return false;
   if (item.blockReason?.recoverable || ['pending', 'retry', 'analyzing', 'delivering', 'archive_pending'].includes(item.status)) return false;
-  if (['execution_unknown', 'delivery_reconcile'].includes(item.status)) return Number(item.reconcileAttempts || 0) >= 3;
-  return item.status === 'review';
+  return item.status === 'review' && (!item.studentId || item.reasonCode === 'student_conflict'
+    || Boolean(item.suggestion?.conflict) || Boolean(item.proposedTarget)
+    || item.reasonCode === 'retention_decision');
 }
 function problemKey(item, reason) {
   return P.digest([item.studentId || '', item.sourceId, reason(item), item.proposedTarget || item.target || null,
@@ -20,22 +22,27 @@ function createInboxBatches({ init, items, sources, batches, save, now, changed,
   const inScope = (item, query) => (!query.studentId || !item.studentId || item.studentId === query.studentId)
     && (!query.sourceId || item.sourceId === query.sourceId);
   function summarize(batch) {
-    const counts = { pending: 0, processing: 0, delivered: 0, ignored: 0, review: 0, technicalWaiting: 0, skipped: 0, failed: 0 };
+    const counts = { pending: 0, processing: 0, delivered: 0, ignored: 0, review: 0, technicalWaiting: 0, sourceUnavailable: 0, skipped: 0, failed: 0 };
     for (const entry of batch.entries) {
       const row = items.get(entry.id);
-      if (entry.state === 'skipped' || entry.state === 'failed') counts[entry.state]++;
-      else if (entry.state !== 'queued') counts.pending++;
+      if (entry.message === '用户排除') counts.skipped++;
+      else if (entry.state === 'pending') counts.pending++;
       else if (row?.status === 'delivered') counts.delivered++;
       else if (row?.status === 'ignored') counts.ignored++;
-      else if (row && (['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(row.status)
-        || row.status === 'review' && (row.blockReason?.category === 'agent' || ['classification_invalid', 'extraction_incomplete'].includes(row.reasonCode) && !row.originalMissing))) counts.technicalWaiting++;
+      else if (entry.state === 'skipped' && entry.message !== entry.reason) counts.skipped++;
+      else if (row?.originalMissing) counts.sourceUnavailable++;
       else if (row && needsHuman(row)) counts.review++;
+      else if (row && (row.status === 'review' || P.isTechnicalWait(row)
+        || ['execution_unknown', 'delivery_reconcile', 'archive_pending'].includes(row.status))) counts.technicalWaiting++;
+      else if (entry.state === 'skipped' || entry.state === 'failed') counts[entry.state]++;
       else counts.processing++;
     }
     return { id: batch.id, type: batch.type, studentId: batch.studentId, status: batch.status, action: batch.action,
       target: batch.target, targetStudentId: batch.targetStudentId,
+      humanItems: batch.entries.filter(entry => entry.message !== '用户排除' && items.has(entry.id) && needsHuman(items.get(entry.id)))
+        .slice(0, 25).map(entry => ({ id: entry.id, name: items.get(entry.id).name, reason: reason(items.get(entry.id)), message: items.get(entry.id).message })),
       total: batch.entries.length, counts, createdAt: batch.createdAt, expiresAt: batch.expiresAt,
-      businessResult: counts.pending || counts.processing ? 'processing' : counts.technicalWaiting || counts.review || counts.failed ? 'attention' : 'settled',
+      businessResult: counts.pending || counts.processing ? 'processing' : counts.technicalWaiting || counts.sourceUnavailable || counts.review || counts.failed || counts.skipped ? 'attention' : 'settled',
       previewCounts: batch.previewCounts, error: batch.error || '' };
   }
   return {

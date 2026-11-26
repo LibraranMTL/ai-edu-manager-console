@@ -9,6 +9,7 @@ const { createSmartInbox } = require('../electron/smart-inbox.cjs');
   await fs.writeFile(path.join(source, '已失效资料.docx'), 'synthetic missing file');
   await fs.writeFile(path.join(authSource, '授权恢复验证.txt'), 'AUTH-RECOVERY project-physics 合成授权恢复资料');
   await fs.writeFile(path.join(backlogSource, '内部授权会话.md'), '"title": "codex 授权会话"\n系统内部授权状态记录，不属于学生学习项目。');
+  await fs.writeFile(path.join(backlogSource, '技术核验待恢复.txt'), 'TECH-WAIT 这份实验资料的正文证据已经保存，但还需要补齐跨项目核验记录，系统应该继续自动恢复而不是要求人工分类。');
   let authorizationReady = false, fallbackEnabled = false;
   const allProjects = [{ id: 'project-physics', name: '物理研究', studentIds: ['test-a', 'test-b'], identifiers: ['project-physics'], categories: [{ categoryId: 'notes', name: '实验记录' }] },
     ...Array.from({ length: 5 }, (_, index) => ({ id: `project-extra-${index}`, name: `候选项目${index + 1}`, studentIds: ['test-a'], identifiers: [`project-extra-${index}`], categories: [] }))];
@@ -17,6 +18,9 @@ const { createSmartInbox } = require('../electron/smart-inbox.cjs');
     context: async (id, options) => context(id, options), validateTarget: async target => { if (!['test-a', 'test-b'].includes(target.studentId)) throw Error('学生范围无效'); return target; },
     extract: async item => ({ text: await fs.readFile(item.snapshotPath, 'utf8'), warnings: [] }),
     classify: async input => {
+      if (input.text.includes('TECH-WAIT')) return { candidates: [{ studentId: input.context.studentId, type: 'project',
+        id: 'project-physics', categoryId: '', score: .90, evidence: '这份实验资料的正文证据已经保存，但还需要补齐跨项目核验记录', reason: '推荐物理研究，等待核验补齐' }],
+        sensitive: false, conflict: false, reason: '推荐项目已保存，跨项目核验尚未完成' };
       if (input.text.includes('AUTH-RECOVERY') && !authorizationReady) throw Object.assign(Error('后台未登录，资料已保留'), { code: 'AUTHENTICATION_REQUIRED',
         blockReason: { code: 'AUTHENTICATION_REQUIRED', category: 'agent', stage: 'qualifying', recoverable: true, message: '后台未登录，资料已保留' } });
       return { candidates: [{ studentId: input.context.studentId, type: 'project', id: 'project-physics', categoryId: '', score: input.text.includes('第1次') || input.text.includes('AUTH-RECOVERY') ? .98 : .8, evidence: 'project-physics', reason: input.text.includes('第1次') || input.text.includes('AUTH-RECOVERY') ? '明确项目编号，通过可信校验' : '正文介绍物理实验，建议人工确认' }], sensitive: false, conflict: false, reason: '建议确认实验归属' };

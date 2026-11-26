@@ -30,7 +30,7 @@ AI Education Manager helps families and educators organize student materials, fo
 
 ## 下载 · Downloads
 
-[AI教育管家下载页面 / AI Education Manager downloads](https://www.greatbg.com/education/download.html)
+[中文下载页面](https://www.greatbg.com/education/download.html) · [English downloads](https://www.greatbg.com/education/download-en.html)
 
 ## 开发与维护 · Development and maintenance
 

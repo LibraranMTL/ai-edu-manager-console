@@ -4,7 +4,7 @@
 
 AI教育管家帮助家庭、学生和教育工作者收集学习资料、维护学生档案并管理项目知识。Windows 主机连接学生端和教师端，Android 单机版可在手机或平板上独立运行。用户可连接受支持的 AI Agent，辅助整理和分析已授权资料。
 
-[中文下载页面](https://www.greatbg.com/education/download.html) · [English downloads](https://www.greatbg.com/education/download-en.html) · [版本清单](https://www.greatbg.com/download/edu-manager-version.json) · [发布记录](https://github.com/LibraranMTL/ai-edu-manager-console/releases)
+[官网入口](https://education.robogala.com) · [中文下载页](https://www.greatbg.com/education/download.html) · [English downloads](https://www.greatbg.com/education/download-en.html) · [版本清单](https://www.greatbg.com/download/edu-manager-version.json) · [发布记录](https://github.com/LibraranMTL/ai-edu-manager-console/releases)
 
 ## 当前正式版本
 
@@ -47,7 +47,7 @@ AI教育管家帮助家庭、学生和教育工作者收集学习资料、维护
 
 ### Windows 主机
 
-1. 从[下载中心](https://www.greatbg.com/education/download.html)下载 Windows 主机安装版，也可选择便携 EXE 或 ZIP。升级前退出旧版并备份状态。
+1. 从[中文下载页](https://www.greatbg.com/education/download.html)下载 Windows 主机安装版，也可选择便携 EXE 或 ZIP。升级前退出旧版并备份状态。
 2. 运行安装包并启动 AI教育管家。Windows 程序尚未进行 Authenticode 签名，安装前请核对官网来源与[版本清单](https://www.greatbg.com/download/edu-manager-version.json)中的文件哈希。
 3. 在“系统设置 → 基础设置 → 许可证授权”输入购买的激活码，联网激活。原设备码授权和许可证文件导入继续可用，同一设备可恢复已有激活。
 4. 新建或接管学生档案并选择资料位置。如需 Agent 辅助处理，配置并授权受支持的 Agent。

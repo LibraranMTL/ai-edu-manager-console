@@ -4,7 +4,7 @@
 
 AI Education Manager helps families, students and educators collect learning materials, maintain student portfolios and organize project knowledge. A Windows host coordinates student and teacher clients. Android standalone runs independently on a phone or tablet. Users can connect supported AI agents to help organize and analyze authorized material.
 
-[Download center](https://www.greatbg.com/education/download-en.html) · [中文下载](https://www.greatbg.com/education/download.html) · [Version manifest](https://www.greatbg.com/download/edu-manager-version.json) · [Release notes](https://github.com/LibraranMTL/ai-edu-manager-console/releases)
+[Official website](https://education.robogala.com) · [English downloads](https://www.greatbg.com/education/download-en.html) · [中文下载](https://www.greatbg.com/education/download.html) · [Version manifest](https://www.greatbg.com/download/edu-manager-version.json) · [Release notes](https://github.com/LibraranMTL/ai-edu-manager-console/releases)
 
 ## Editions and current releases
 
@@ -47,7 +47,7 @@ The editions have independent version numbers. The download center provides the 
 
 ### Windows host
 
-1. Download the **Windows host installer** from the [download center](https://www.greatbg.com/education/download-en.html). A portable EXE and ZIP are also available. Close an older host and back up its state before upgrading.
+1. Download the **Windows host installer** from the [English download page](https://www.greatbg.com/education/download-en.html). A portable EXE and ZIP are also available. Close an older host and back up its state before upgrading.
 2. Run the installer and start AI Education Manager. The program is not Authenticode-signed. Check its origin and compare the file checksum with the [version manifest](https://www.greatbg.com/download/edu-manager-version.json).
 3. In **System Settings → Basic Settings → License**, enter a purchased activation code and activate online. Existing device-code licenses and license-file import remain available. An existing activation can be recovered on the same device.
 4. Create or connect a student record and select the storage location. Configure and authorize a supported agent if you want agent-assisted processing.

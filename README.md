@@ -1,141 +1,87 @@
-# AI Education Manager · AI教育管家
+# AI Education Manager
 
-AI教育管家帮助家庭和教育工作者组织学生资料、跟踪学习过程并管理项目知识。Windows 主机连接学生端和教师端，Android 单机版支持在移动设备上独立使用。系统结合授权范围内的资料与 AI Agent，辅助整理、检索和生成学习成果。
+**English** | [简体中文](README.zh-CN.md)
 
-## 主要功能
+AI Education Manager helps families, students and educators collect learning materials, maintain student portfolios and organize project knowledge. A Windows host coordinates student and teacher clients. Android standalone runs independently on a phone or tablet. Users can connect supported AI agents to help organize and analyze authorized material.
 
-- 学生资料与档案管理，按学生和项目组织学习记录、原始资料和证据。
-- 智能资料收件箱，采集已授权来源的资料，分析项目归属，自动投递并保留处理回执。
-- 学情与成长记录，整理学习事件、报告、成长模型及教育档案。
-- 项目与知识管理，归集项目资料、研究过程和阶段成果，支持检索与协作。
-- 学习与课程支持，提供学习卡片、精选课程和专注模式。
-- 多端协同，Windows 学生端、Android 学生端及 Android 教师端连接 Windows 主机。
-- Android 单机版，支持在 Android 设备上管理学生资料和学习成果。
-- 激活与恢复，支持联网自助激活及原有设备码授权方式。
+[Download center](https://www.greatbg.com/education/download-en.html) · [中文下载](https://www.greatbg.com/education/download.html) · [Version manifest](https://www.greatbg.com/download/edu-manager-version.json) · [Release notes](https://github.com/LibraranMTL/ai-edu-manager-console/releases)
 
-## Overview
+## Editions and current releases
 
-AI Education Manager helps families and educators organize student materials, follow learning progress, and manage project knowledge. A Windows host works with student and teacher clients, while the Android standalone edition supports independent use on a mobile device. Authorized materials and AI agents assist with organizing, retrieval, and creating learning outputs.
+| Edition | Current stable version | Purpose |
+| --- | --- | --- |
+| Windows host | **0.24.5** | Manage students, materials, projects, agents, reports and connected clients |
+| Windows student | **0.19.3** | Collect learning material and use the student workspace with a host |
+| Android student | **0.6.34** | Upload or share learning material and view content provided by the host |
+| Android teacher | **0.1.5** | Select a student and project, collect material and view host records |
+| Android standalone | **1.3.9** | Run a full student knowledge workspace directly on an Android device |
+
+The editions have independent version numbers. The download center provides the current packages and previous versions where available. Windows packages are currently unsigned. Verify the source and published checksum before installing.
 
 ## Features
 
-- Organize student profiles, learning records, original materials, and evidence by student and project.
-- Collect materials from authorized sources in a smart inbox, assess project ownership, deliver eligible items automatically, and retain receipts.
-- Maintain learning records, reports, growth models, and education portfolios.
-- Manage project materials, research, milestones, knowledge retrieval, and collaboration.
-- Support learning cards, selected courses, and focus mode.
-- Connect Windows and Android student clients and the Android teacher client to a Windows host.
-- Use the Android standalone edition to manage student materials and learning outputs on one device.
-- Activate online with a code or use the existing device-code licensing method.
+### Student records and learning
 
-## 下载 · Downloads
+- Create or take over student records and organize source material by student. Track learning events, learning resources, knowledge points, growth models and reports with their supporting evidence.
+- Use learning cards and learning actions, browse selected courses and review published educational records. Windows focus mode provides configurable application and web rules.
+- Generate and export supported reports and education content for review and communication.
 
-[中文下载页面](https://www.greatbg.com/education/download.html) · [English downloads](https://www.greatbg.com/education/download-en.html)
+### Material collection and smart inbox
 
-## 开发与维护 · Development and maintenance
+- Import files and collect photos, screen captures, recordings and AI conversations. Automatic conversation capture operates within configured user authorization.
+- Connect material sources to the inbox. The system checks student and project scope, reuses verified classification results, and automatically delivers eligible items with receipts. Ambiguous ownership remains available for review.
+- Retry recoverable extraction, classification and delivery checks. Confirmed internal tasks and genuinely empty material can be recycled under the configured retention policy. Original files and valid evidence are retained.
 
-Bao Xiaowen · Shuyuan Bao · Shu Yuan Robert Zhao · Shuyang Bao · Lily Zhao
+### Projects, knowledge and agents
 
-版本历史与发布规则见 [CHANGELOG.md](CHANGELOG.md)。
+- Organize project material, project knowledge, milestones, topic ideas and research. Link students to projects and review related reports and outcomes.
+- Connect supported agents such as WorkBuddy or Codex through the host's controlled integration. Agent availability, authentication and dispatch readiness are distinct checks.
+- Use authorized knowledge collaboration between trusted nodes and review the scope before sharing or publishing records.
 
-## 本地运行
+### Multi-device and standalone use
+
+- Pair student and teacher clients with the Windows host. Student access follows the configured student scope. Teachers select a student and an authorized project when collecting material.
+- Android standalone maintains a local workspace, supports material collection, OCR, selected courses, student records, projects, backups and online self-service activation.
+
+## Installation and first use
+
+### Windows host
+
+1. Download the **Windows host installer** from the [download center](https://www.greatbg.com/education/download-en.html). A portable EXE and ZIP are also available. Close an older host and back up its state before upgrading.
+2. Run the installer and start AI Education Manager. The program is not Authenticode-signed. Check its origin and compare the file checksum with the [version manifest](https://www.greatbg.com/download/edu-manager-version.json).
+3. In **System Settings → Basic Settings → License**, enter a purchased activation code and activate online. Existing device-code licenses and license-file import remain available. An existing activation can be recovered on the same device.
+4. Create or connect a student record and select the storage location. Configure and authorize a supported agent if you want agent-assisted processing.
+5. Add approved sources in the material inbox, review source and student scope, and enable automatic processing as appropriate. Use the task and inbox views to check progress, receipts and items requiring a decision.
+
+[Windows host manual (Chinese)](https://www.greatbg.com/education/windows-host-manual.html)
+
+### Student and teacher clients
+
+1. Install the relevant Windows student, Android student or Android teacher package from the download center.
+2. Start the Windows host and its client service. Connect the device using the pairing instructions in the applicable manual.
+3. On a student client, establish the intended student session before uploading or viewing records. On the teacher client, select the student and permitted project before uploading.
+
+[Windows student manual](https://www.greatbg.com/education/windows-student-manual.html) · [Android student manual](https://www.greatbg.com/education/android-student-manual.html) · [Android teacher manual](https://www.greatbg.com/education/android-teacher-manual.html) (Chinese)
+
+### Android standalone
+
+1. Download and install the signed Android standalone APK. Before upgrading, create an encrypted backup. An existing release signed with the same certificate can be updated in place.
+2. On first launch, connect to the internet and enter or scan a purchased activation code. Existing device-code authorization is also supported.
+3. Select and authorize a persistent local directory, then create or connect a student record. Configure an available supported agent when needed.
+
+[Android standalone manual (Chinese)](https://www.greatbg.com/education/android-standalone-manual.html)
+
+## Development
+
+The Windows host is an Electron and Vite application. From the repository root, install dependencies and start the development server:
 
 ```powershell
 pnpm install
 pnpm dev
 ```
 
-## 构建
+Run `pnpm typecheck` and `pnpm test:windows` for the Windows checks. Release and platform-specific builds have additional packaging and acceptance requirements. Android teacher build instructions are in [android-teacher-terminal](android-teacher-terminal/README.md). See [CHANGELOG.md](CHANGELOG.md) for historical changes.
 
-```powershell
-pnpm build
-```
+## Development and maintenance
 
-## Android 打包路线
-
-Android 教师端使用仓库内的独立原生构建路线：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File android-teacher-terminal\build.ps1
-```
-
-以下 Capacitor 路线仅用于早期 Android Web/PWA 原型，不是当前教师终端 APK 的构建方式。
-
-当前工程已预置 Capacitor 配置。安装 Android Studio / Android SDK 后执行：
-
-```powershell
-pnpm add @capacitor/core @capacitor/cli @capacitor/android
-pnpm build
-npx cap add android
-npx cap sync android
-```
-
-然后用 Android Studio 打开 `android/` 目录打包 APK。
-
-## Android 文件能力说明
-
-浏览器/PWA 不能直接静默创建任意公共目录。真正 APK 版本建议接入 Capacitor Filesystem 或自定义 Android 原生插件，用于：
-
-- 在用户授权后创建 `Documents/学生资料/{学生名}知识库`
-- 写入 `AGENT.md`、`Soul.md`、`Memory.md`
-- 调用外部 App：QClaw、Obsidian
-- 记录初始化状态
-
-第一版 Web/PWA 原型先提供“下载初始化包”和“复制 QClaw 指令”，用于验证销售和交付流程。
-
-## 0.4.5 Windows 主机控制台发布说明
-
-- Windows 主机控制台版本：`0.4.5`，发布物：`release/windows/AI-edu-manager-console-Windows-0.4.5.exe`。
-- Android 平板终端版本保持：`0.4.3`，发布物：`release/tablet-terminal/AI-edu-manager-tablet-terminal-0.4.3.apk`。
-- 新增“接管已有知识库 + 绑定已有 Agent 工具”：可登记既有 QClaw、Hohu、Marvis、OpenClaw 学生知识库，不移动、不复制、不删除旧文件。
-- Agent 工具新增 OpenClaw，补齐安装检测、打开状态、打开按钮、下载入口和初始化提示。
-- 上传资料、档案浏览、消化指令、Soul 工作规则统一使用学生记录中的真实知识库路径。
-
-### 0.4.5 更新清单建议字段
-
-```json
-{
-  "versionCode": 55,
-  "versionName": "0.4.5",
-  "windowsVersionCode": 55,
-  "windowsVersionName": "0.4.5",
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.5.exe",
-  "tabletTerminalVersionCode": 53,
-  "tabletTerminalVersionName": "0.4.3",
-  "tabletTerminalApkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.3.apk",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.3.apk",
-  "notes": "Windows 0.4.5：新增接管已有知识库与绑定已有 Agent 工具能力，支持标准知识库和接管知识库并存；Agent 工具新增 OpenClaw，并同步安装检测、打开状态、初始化指令、Soul 工作规则和资料路径。平板终端 0.4.3 保持不变。"
-}
-```
-
-## 0.4.0 双端收敛说明
-
-- Windows 主机控制台版本：`0.4.0`，发布物：`release/windows/AI-edu-manager-console-Windows-0.4.0.exe`。
-- Android 平板终端版本：`0.4.0`，发布物：`release/tablet-terminal/AI-edu-manager-tablet-terminal-0.4.0.apk`。
-- Windows 默认学生根目录：`D:\学生资料`。
-- 平板终端只保留客户功能：连接主机、上传资料到主机、查看学情档案、联系教育管家、连接状态与系统设置。
-- Windows 主机端保留管理员功能：学生初始化、QClaw 辅助、主机服务、扫码配对、设备授权、上传记录、备份恢复、安全诊断。
-
-### 0.4.0 新增交付能力
-
-- 主机数据备份与恢复：导出/恢复学生索引、设备授权、上传记录和主机事件。
-- 主机上传状态闭环：上传记录可标记为“待消化 / 已提交消化 / 已处理完成”。
-- 安全与诊断：上传文件类型和大小限制、API Token 重置、诊断日志导出。
-- 首次使用清单：Windows 首页显示创建学生、启动服务、绑定平板、上传资料的完成状态。
-- 平板终端更新与诊断：支持检查更新、复制诊断信息给售后排查。
-
-### 更新清单建议字段
-
-```json
-{
-  "versionCode": 50,
-  "versionName": "0.4.0",
-  "windowsVersionCode": 50,
-  "windowsUrl": "https://www.greatbg.com/download/AI-edu-manager-console-Windows-0.4.0.exe",
-  "tabletTerminalVersionCode": 50,
-  "tabletTerminalVersionName": "0.4.0",
-  "tabletTerminalUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.0.apk",
-  "apkUrl": "https://www.greatbg.com/download/AI-edu-manager-tablet-terminal-0.4.0.apk",
-  "notes": "0.4.0：双端交付稳定性增强，包含备份恢复、上传状态闭环、诊断日志和平板终端更新检查。"
-}
-```
+Bao Xiaowen · Shuyuan Bao · Shu Yuan Robert Zhao · Shuyang Bao · Lily Zhao
